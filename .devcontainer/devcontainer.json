@@ -1,0 +1,30 @@
+{
+  "name": "dbgate-dev",
+  "dockerComposeFile": ["../docker-compose.yaml"],
+  "service": "dev",
+  "workspaceFolder": "/workspace",
+  "customizations": {
+    "vscode": {
+      "settings": {
+        "cmake.configureOnOpen": true,
+        "cmake.generator": "Ninja",
+        "C_Cpp.default.compilerPath": "/usr/bin/g++-14",
+        "C_Cpp.default.cppStandard": "c++20",
+        "editor.formatOnSave": true,
+        "editor.defaultFormatter": "xaver.clang-format",
+        "[cpp]": {
+          "editor.defaultFormatter": "xaver.clang-format"
+        }
+      },
+      "extensions": [
+        "ms-vscode.cpptools",
+        "ms-vscode.cmake-tools",
+        "xaver.clang-format",
+        "golang.go",
+        "ms-azuretools.vscode-docker"
+      ]
+    }
+  },
+  "forwardPorts": [13306, 3306, 8080],
+  "postCreateCommand": "g++ --version && cmake --version && go version && mysql --version && claude --version && codex --version"
+}
