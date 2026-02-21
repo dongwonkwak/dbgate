@@ -26,5 +26,5 @@
     }
   },
   "forwardPorts": [13306, 3306, 8080],
-  "postCreateCommand": "g++ --version && cmake --version && go version && mysql --version"
+  "postCreateCommand": "g++ --version && cmake --version && go version && mysql --version && claude --version && codex --version"
 }

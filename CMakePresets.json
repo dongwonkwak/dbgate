@@ -7,36 +7,44 @@
   },
   "configurePresets": [
     {
+      "name": "base",
+      "hidden": true,
+      "toolchainFile": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+      "cacheVariables": {
+        "CMAKE_CXX_COMPILER": "g++-14"
+      }
+    },
+    {
       "name": "default",
       "displayName": "Release",
       "description": "Release build with optimizations",
+      "inherits": "base",
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build/${presetName}",
       "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Release",
-        "CMAKE_CXX_COMPILER": "g++-14"
+        "CMAKE_BUILD_TYPE": "Release"
       }
     },
     {
       "name": "debug",
       "displayName": "Debug",
       "description": "Debug build with symbols",
+      "inherits": "base",
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build/${presetName}",
       "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Debug",
-        "CMAKE_CXX_COMPILER": "g++-14"
+        "CMAKE_BUILD_TYPE": "Debug"
       }
     },
     {
       "name": "asan",
       "displayName": "AddressSanitizer",
       "description": "Debug build with ASan + LeakSanitizer",
+      "inherits": "base",
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build/${presetName}",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
-        "CMAKE_CXX_COMPILER": "g++-14",
         "CMAKE_CXX_FLAGS": "-fsanitize=address,leak -fno-omit-frame-pointer -g",
         "CMAKE_EXE_LINKER_FLAGS": "-fsanitize=address,leak"
       }
@@ -45,11 +53,11 @@
       "name": "tsan",
       "displayName": "ThreadSanitizer",
       "description": "Debug build with ThreadSanitizer",
+      "inherits": "base",
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build/${presetName}",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
-        "CMAKE_CXX_COMPILER": "g++-14",
         "CMAKE_CXX_FLAGS": "-fsanitize=thread -fno-omit-frame-pointer -g",
         "CMAKE_EXE_LINKER_FLAGS": "-fsanitize=thread"
       }

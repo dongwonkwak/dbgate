@@ -3,14 +3,8 @@
   "version-string": "0.1.0",
   "description": "DB Access Control Proxy",
   "dependencies": [
-    {
-      "name": "boost-asio",
-      "version>=": "1.85.0"
-    },
-    {
-      "name": "boost-system",
-      "version>=": "1.85.0"
-    },
+    "boost-asio",
+    "boost-system",
     "spdlog",
     "yaml-cpp",
     "gtest",
