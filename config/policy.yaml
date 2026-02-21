@@ -1,0 +1,64 @@
+# dbgate 정책 설정
+global:
+  log_level: info
+  log_format: json
+  max_connections: 1000
+  connection_timeout: 30s
+
+# 사용자/IP별 접근 제어
+access_control:
+  - user: "admin"
+    source_ip: "10.0.0.0/8"
+    allowed_tables: ["*"]
+    allowed_operations: ["*"]
+    time_restriction: null
+
+  - user: "readonly_user"
+    source_ip: "192.168.1.0/24"
+    allowed_tables: ["users", "orders", "products"]
+    allowed_operations: ["SELECT"]
+    time_restriction:
+      allow: "09:00-18:00"
+      timezone: "Asia/Seoul"
+
+  - user: "app_service"
+    source_ip: "172.16.0.0/12"
+    allowed_tables: ["users", "orders"]
+    allowed_operations: ["SELECT", "INSERT", "UPDATE"]
+    blocked_operations: ["DROP", "TRUNCATE", "ALTER"]
+
+# SQL 구문 차단 규칙
+sql_rules:
+  block_statements:
+    - DROP
+    - TRUNCATE
+    - "DELETE FROM * WHERE 1=1"
+
+  block_patterns:
+    - "UNION\\s+SELECT"
+    - "'\\s*OR\\s+'.*'\\s*=\\s*'"
+    - "SLEEP\\s*\\("
+    - "BENCHMARK\\s*\\("
+
+# 프로시저 제어
+procedure_control:
+  mode: "whitelist"
+  whitelist:
+    - "sp_get_user_info"
+    - "sp_update_order_status"
+  block_dynamic_sql: true
+  block_create_alter: true
+
+# 데이터 유출 방지
+data_protection:
+  max_result_rows: 10000
+  block_schema_access: true
+  sensitive_columns:
+    - pattern: "ssn|social_security"
+    - pattern: "card_number|credit_card"
+
+# 알림 설정
+alerts:
+  on_block: true
+  on_high_volume_query: true
+  threshold_qps: 500
