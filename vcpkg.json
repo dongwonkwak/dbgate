@@ -1,0 +1,19 @@
+{
+  "name": "dbgate",
+  "version-string": "0.1.0",
+  "description": "DB Access Control Proxy",
+  "dependencies": [
+    {
+      "name": "boost-asio",
+      "version>=": "1.85.0"
+    },
+    {
+      "name": "boost-system",
+      "version>=": "1.85.0"
+    },
+    "spdlog",
+    "yaml-cpp",
+    "gtest",
+    "openssl"
+  ]
+}
