@@ -153,6 +153,14 @@ dbgate/
 ├── .devcontainer/                 # 개발 환경
 │   ├── devcontainer.json
 │   └── Dockerfile
+├── .claude/
+│   └── agents/                    # Claude Code 서브에이전트 정의
+│       ├── architect.md
+│       ├── network-engineer.md
+│       ├── security-engineer.md
+│       ├── infra-engineer.md
+│       ├── qa-engineer.md
+│       └── technical-writer.md
 ├── .github/
 │   ├── pull_request_template.md   # PR 템플릿 (@codex review 포함)
 │   └── workflows/
@@ -534,7 +542,73 @@ DB 접근제어 프록시. C++ 코어 + Go 운영도구.
 - 하드코딩된 포트/경로 (config에서 읽을 것)
 ```
 
-### 10.2 인터페이스 선행 정의
+### 10.2 서브에이전트 구성
+
+Claude Code의 커스텀 에이전트(`.claude/agents/`)를 활용하여 병렬 개발한다. Architect 포함 총 6개 에이전트가 각자 담당 영역을 맡는다.
+
+```
+메인 에이전트 (Architect) [model: opus]
+│  전체 설계 조율, 인터페이스 확정, 모듈 통합 시 충돌 해결
+│
+├── Task 1: Network Engineer [model: sonnet]
+│   담당: proxy/, protocol/, health/
+│   역할: Boost.Asio 프록시 서버, MySQL 프로토콜, SSL/TLS, 헬스체크
+│
+├── Task 2: Security Engineer [model: sonnet]
+│   담당: parser/, policy/
+│   역할: SQL 파서, Injection 탐지, 프로시저 탐지, 정책 엔진
+│
+├── Task 3: Infrastructure Engineer [model: sonnet]
+│   담당: logger/, stats/, tools/, deploy/, .github/workflows/
+│   역할: 구조화 로거, 통계/UDS, Go CLI, 웹 대시보드, CI/CD, Docker
+│
+├── Task 4: QA Engineer [model: sonnet]
+│   담당: tests/, tests/fuzz/, tests/integration/, benchmarks/
+│   역할: 단위 테스트, libFuzzer 퍼징, 통합 테스트, 벤치마크
+│
+└── Task 5: Technical Writer [model: haiku]
+    담당: docs/
+    역할: ADR, Threat Model, README
+```
+
+**서브에이전트 규칙:**
+
+- 인터페이스 헤더는 Architect가 확정. 서브에이전트는 변경 불가 (읽기만)
+- 변경이 필요하면 메인 에이전트에 제안 후 승인
+- 각 서브에이전트는 자기 담당 디렉토리 내에서만 파일 생성/수정
+- 서로 다른 파일을 건드리므로 충돌 최소화
+
+**에이전트 설정 요약:**
+
+| 에이전트 | model | permissionMode | memory | tools |
+|---------|-------|---------------|--------|-------|
+| Architect | opus | plan | project | Read, Glob, Grep, Bash |
+| Network Engineer | sonnet | - | - | Read, Edit, MultiEdit, Glob, Grep, Bash, Write |
+| Security Engineer | sonnet | - | - | Read, Edit, MultiEdit, Glob, Grep, Bash, Write |
+| Infra Engineer | sonnet | - | - | Read, Edit, MultiEdit, Glob, Grep, Bash, Write |
+| QA Engineer | sonnet | - | project | Read, Edit, MultiEdit, Glob, Grep, Bash, Write |
+| Technical Writer | haiku | - | - | Read, Edit, MultiEdit, Glob, Grep, Write |
+
+- Architect: `memory: project` — 인터페이스 결정 이력, 변경 요청 추적
+- QA Engineer: `memory: project` — 발견한 버그 패턴, flaky 테스트 이력, 퍼징 결과 축적
+- Architect: `permissionMode: plan` — 파일 수정 불가, 설계/조율에만 집중
+
+**Hooks (Phase 4부터 도입 예정):**
+
+- Stop 훅: 구현 에이전트 작업 완료 시 빌드+테스트 자동 검증
+- PreToolUse 훅: Architect 파일 수정 이중 방지
+
+**Phase별 서브에이전트 활용:**
+
+| Phase | Network | Security | Infra | QA | Writer |
+|-------|---------|----------|-------|----|--------|
+| 2 | protocol/proxy 헤더 | parser/policy 헤더 | logger/stats 헤더 | - | ADR 2개 |
+| 3 | MySQL 프로토콜 구현 | SQL 파서/정책 엔진 | 로거 구현 | 각 모듈 단위 테스트 | ADR 2개 |
+| 4 | 프록시 서버 통합 | - | CI 파이프라인, Go CLI | 통합 테스트 | - |
+| 5 | SSL/TLS | - | 벤치마크 | 퍼징/추가 테스트 | - |
+| 6 | - | - | Docker 배포, 웹 대시보드 | - | README/Threat Model |
+
+### 10.3 인터페이스 선행 정의
 
 모든 모듈의 인터페이스(헤더)를 먼저 확정한 후 구현에 들어간다.
 
@@ -577,7 +651,7 @@ public:
 };
 ```
 
-### 10.3 브랜치 전략
+### 10.4 브랜치 전략
 
 ```
 main (항상 빌드 가능 상태 유지)
