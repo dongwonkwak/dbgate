@@ -42,6 +42,13 @@ set(DBGATE_SOURCES
     src/proxy/session.cpp
     src/proxy/proxy_server.cpp
     src/health/health_check.cpp
+    # parser — DON-23 Phase 2 stub
+    src/parser/sql_parser.cpp
+    src/parser/procedure_detector.cpp
+    src/parser/injection_detector.cpp
+    # policy — DON-23 Phase 2 stub
+    src/policy/policy_engine.cpp
+    src/policy/policy_loader.cpp
 )
 
 # ─── Main executable ───────────────────────────────────────────────────────
