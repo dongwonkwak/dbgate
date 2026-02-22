@@ -49,6 +49,8 @@ set(DBGATE_SOURCES
     # policy — DON-23 Phase 2 stub
     src/policy/policy_engine.cpp
     src/policy/policy_loader.cpp
+    # logger — DON-23 Phase 2 stub
+    src/logger/structured_logger.cpp
 )
 
 # ─── Main executable ───────────────────────────────────────────────────────
