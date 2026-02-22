@@ -15,6 +15,9 @@ services:
       - MYSQL_USER=dbgate
       - MYSQL_PASSWORD=dbgate_pass
       - MYSQL_DATABASE=dbgate_test
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
 
   mysql:
     image: mysql:8.0
