@@ -42,7 +42,7 @@ set(DBGATE_SOURCES
 add_executable(dbgate ${DBGATE_SOURCES})
 
 target_include_directories(dbgate PRIVATE
-    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/src   # src/common/types.hpp 등 공통 헤더는 "common/types.hpp" 형태로 참조
 )
 
 target_link_libraries(dbgate PRIVATE
