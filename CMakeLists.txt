@@ -7,7 +7,7 @@ project(dbgate
 )
 
 # ─── C++ Standard ───────────────────────────────────────────────────────────
-set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
@@ -36,6 +36,12 @@ find_package(GTest REQUIRED)
 # Will be populated as modules are implemented
 set(DBGATE_SOURCES
     src/main.cpp
+    src/protocol/mysql_packet.cpp
+    src/protocol/handshake.cpp
+    src/protocol/command.cpp
+    src/proxy/session.cpp
+    src/proxy/proxy_server.cpp
+    src/health/health_check.cpp
 )
 
 # ─── Main executable ───────────────────────────────────────────────────────
