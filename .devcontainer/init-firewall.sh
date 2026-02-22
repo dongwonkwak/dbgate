@@ -55,13 +55,14 @@ fi
 
 echo "Processing GitHub IPs..."
 while read -r cidr; do
+    [ -z "$cidr" ] && continue
     if [[ ! "$cidr" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}/[0-9]{1,2}$ ]]; then
         echo "ERROR: Invalid CIDR range from GitHub meta: $cidr"
         exit 1
     fi
     echo "Adding GitHub range $cidr"
     ipset add allowed-domains "$cidr"
-done < <(echo "$gh_ranges" | jq -r '(.web + .api + .git)[]' | aggregate -q)
+done < <(echo "$gh_ranges" | jq -r '(.web + .api + .git)[] | select(test("^[0-9]+(\\.[0-9]+){3}/[0-9]+$"))' | aggregate -q)
 
 # Resolve and add other allowed domains
 for domain in \
