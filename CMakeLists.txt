@@ -7,7 +7,7 @@ project(dbgate
 )
 
 # ─── C++ Standard ───────────────────────────────────────────────────────────
-set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
@@ -36,13 +36,28 @@ find_package(GTest REQUIRED)
 # Will be populated as modules are implemented
 set(DBGATE_SOURCES
     src/main.cpp
+    src/protocol/mysql_packet.cpp
+    src/protocol/handshake.cpp
+    src/protocol/command.cpp
+    src/proxy/session.cpp
+    src/proxy/proxy_server.cpp
+    src/health/health_check.cpp
+    # parser — DON-23 Phase 2 stub
+    src/parser/sql_parser.cpp
+    src/parser/procedure_detector.cpp
+    src/parser/injection_detector.cpp
+    # policy — DON-23 Phase 2 stub
+    src/policy/policy_engine.cpp
+    src/policy/policy_loader.cpp
+    # logger — DON-23 Phase 2 stub
+    src/logger/structured_logger.cpp
 )
 
 # ─── Main executable ───────────────────────────────────────────────────────
 add_executable(dbgate ${DBGATE_SOURCES})
 
 target_include_directories(dbgate PRIVATE
-    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/src   # src/common/types.hpp 등 공통 헤더는 "common/types.hpp" 형태로 참조
 )
 
 target_link_libraries(dbgate PRIVATE

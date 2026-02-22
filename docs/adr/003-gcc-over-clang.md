@@ -6,7 +6,7 @@ Accepted
 
 ## Context
 
-C++20 코루틴(`co_await`)을 핵심적으로 사용하는 dbgate 프로젝트에서 기본 컴파일러를 선택해야 한다. 주요 후보는 GCC 14와 Clang 18이다.
+C++23 코루틴(`co_await`)을 핵심적으로 사용하는 dbgate 프로젝트에서 기본 컴파일러를 선택해야 한다. 주요 후보는 GCC 14와 Clang 18이다.
 
 ## Decision
 
@@ -16,7 +16,7 @@ C++20 코루틴(`co_await`)을 핵심적으로 사용하는 dbgate 프로젝트�
 
 ### Positive
 
-- **코루틴 안정성**: GCC 14의 C++20 코루틴 구현이 Boost.Asio와의 조합에서 안정적으로 동작. Clang은 일부 코루틴 edge case에서 codegen 이슈가 보고된 바 있음.
+- **코루틴 안정성**: GCC 14의 C++23 코루틴 구현이 Boost.Asio와의 조합에서 안정적으로 동작. Clang은 일부 코루틴 edge case에서 codegen 이슈가 보고된 바 있음.
 - **Linux 표준 컴파일러**: Ubuntu 24.04의 기본 C++ 컴파일러로 별도 설치 없이 사용 가능.
 - **libstdc++ 호환성**: Boost, spdlog 등 대부분의 C++ 라이브러리가 libstdc++를 기준으로 테스트됨.
 - **Sanitizer 지원**: ASan, TSan, UBSan 모두 GCC 14에서 안정적으로 동작.

@@ -11,7 +11,7 @@
         "cmake.configureOnOpen": true,
         "cmake.generator": "Ninja",
         "C_Cpp.default.compilerPath": "/usr/bin/g++-14",
-        "C_Cpp.default.cppStandard": "c++20",
+        "C_Cpp.default.cppStandard": "c++23",
         "editor.formatOnSave": true,
         "[cpp]": {
           "editor.defaultFormatter": "xaver.clang-format"

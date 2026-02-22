@@ -34,7 +34,7 @@
 │  [Client Socket]                                  │
 │       │                                           │
 │       ▼                                           │
-│  Boost.Asio (epoll 기반 비동기 I/O, C++20 코루틴)   │
+│  Boost.Asio (epoll 기반 비동기 I/O, C++23 코루틴)   │
 │       │                                           │
 │       ▼                                           │
 │  MySQL Protocol Handler (핸드셰이크 패스스루)       │
@@ -77,17 +77,17 @@
 
 | 용도 | 라이브러리 | 이유 |
 |------|-----------|------|
-| 비동기 I/O | **Boost.Asio** (C++20 코루틴) | strand로 멀티스레드 안전, SSL 내장, co_await로 깔끔한 비동기 코드 |
+| 비동기 I/O | **Boost.Asio** (C++23 코루틴) | strand로 멀티스레드 안전, SSL 내장, co_await로 깔끔한 비동기 코드 |
 | SSL/TLS | **Boost.Asio SSL** | 클라이언트↔프록시, 프록시↔MySQL 양 구간 암호화 |
 | 로그 | **spdlog** | 구조화 JSON 로그, 고성능, 업계 표준 |
 | 설정 | **yaml-cpp** | YAML 정책 파일 파싱 |
 | 테스트 | **Google Test** | 표준 C++ 테스트 프레임워크 |
 | 퍼징 | **libFuzzer** | MySQL 패킷 파서, SQL 파서 퍼징 |
 | 빌드 | **CMake** + **vcpkg** | Boost 등 의존성 관리 |
-| C++ 표준 | **C++20** | 코루틴(co_await) 활용 |
-| 컴파일러 | **GCC 14** (기본), Clang 호환 유지 | Boost.Asio 코루틴 안정성, Linux 환경 표준 |
+| C++ 표준 | **C++23** | 코루틴(co_await), std::expected 활용 |
+| 컴파일러 | **GCC 14** (기본), Clang 호환 유지 | Boost.Asio 코루틴 안정성, std::expected 지원, Linux 환경 표준 |
 
-**C++20 코루틴 릴레이 코드 예시:**
+**C++23 코루틴 릴레이 코드 예시:**
 
 ```cpp
 asio::awaitable<void> relay(tcp::socket& client, tcp::socket& server) {
@@ -513,7 +513,7 @@ DB 접근제어 프록시. C++ 코어 + Go 운영도구.
 - 새 파일 추가 시 CMakeLists.txt 업데이트 필수
 
 ## C++ 코딩 규칙
-- C++20, GCC 14 기준
+- C++23, GCC 14 기준
 - 비동기는 반드시 Boost.Asio co_await 사용 (raw thread 금지)
 - 메모리: shared_ptr/unique_ptr 사용, raw new/delete 금지
 - 에러: 예외 대신 expected/error_code 패턴
@@ -803,7 +803,7 @@ sysbench oltp_read_only --mysql-host=localhost --mysql-port=13306 run
 | 언어 분리 | C++ 데이터패스 + Go 컨트롤플레인 | 성능 vs 편의 적재적소 |
 | Async I/O | Boost.Asio (raw epoll 대신) | 핵심 로직 집중, strand로 스레드 안전, SSL 내장 |
 | 컴파일러 | GCC 14 (Clang 호환 유지) | 코루틴 안정성, Linux 표준 |
-| C++ 표준 | C++20 | co_await 코루틴으로 비동기 코드 간결화 |
+| C++ 표준 | C++23 | co_await 코루틴으로 비동기 코드 간결화, std::expected 활용 |
 | 핸드셰이크 | 패스스루 (투명 릴레이) | auth plugin 호환성, 구현 복잡도 회피 |
 | SQL 파서 | 키워드 분류 + 정규식 | 풀 파서 불필요, 한계 명시 |
 | 세션 모델 | 1:1 릴레이 | 커넥션 풀링의 세션 상태 관리 복잡도 회피 |
