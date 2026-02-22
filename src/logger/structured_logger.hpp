@@ -19,7 +19,12 @@
 #include "log_types.hpp"
 
 #include <filesystem>
+#include <memory>
 #include <string_view>
+
+namespace spdlog {
+class logger;
+}
 
 // ---------------------------------------------------------------------------
 // StructuredLogger
@@ -34,7 +39,7 @@ public:
     explicit StructuredLogger(LogLevel min_level,
                               const std::filesystem::path& log_path);
 
-    ~StructuredLogger() = default;
+    ~StructuredLogger();
 
     // 복사 금지 (spdlog 인스턴스 소유권 명확화)
     StructuredLogger(const StructuredLogger&)            = delete;
@@ -66,8 +71,10 @@ public:
     void error(std::string_view msg);
 
 private:
-    LogLevel              min_level_;
-    std::filesystem::path log_path_;
-    // Phase 3 구현: spdlog::logger 인스턴스를 shared_ptr 로 보유
-    // std::shared_ptr<spdlog::logger> logger_;
+    LogLevel                          min_level_;
+    std::filesystem::path             log_path_;
+    std::shared_ptr<spdlog::logger>   logger_;
+
+    // Helper: spdlog LogLevel 으로 변환
+    int to_spdlog_level(LogLevel level) const;
 };
