@@ -57,4 +57,4 @@ DerivePointerAlignment: false
 # Other
 ReflowComments: true
 FixNamespaceComments: true
-Standard: c++20
+Standard: c++23
