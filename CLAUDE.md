@@ -10,7 +10,7 @@ MySQL 클라이언트와 서버 사이에 위치하여 SQL을 파싱하고 정�
 - 새 파일 추가 시 CMakeLists.txt 업데이트 필수
 
 ## C++ 코딩 규칙
-- C++20, GCC 14 기준
+- C++23, GCC 14 기준
 - 비동기는 반드시 Boost.Asio co_await 사용 (raw thread 금지)
 - 메모리: shared_ptr/unique_ptr 사용, raw new/delete 금지
 - 에러: 예외 대신 expected/error_code 패턴

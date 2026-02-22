@@ -34,7 +34,7 @@
 │  [Client Socket]                                  │
 │       │                                           │
 │       ▼                                           │
-│  Boost.Asio (epoll 기반 비동기 I/O, C++20 코루틴)   │
+│  Boost.Asio (epoll 기반 비동기 I/O, C++23 코루틴)   │
 │       │                                           │
 │       ▼                                           │
 │  MySQL Protocol Handler (핸드셰이크 패스스루)       │
@@ -77,17 +77,17 @@
 
 | 용도 | 라이브러리 | 이유 |
 |------|-----------|------|
-| 비동기 I/O | **Boost.Asio** (C++20 코루틴) | strand로 멀티스레드 안전, SSL 내장, co_await로 깔끔한 비동기 코드 |
+| 비동기 I/O | **Boost.Asio** (C++23 코루틴) | strand로 멀티스레드 안전, SSL 내장, co_await로 깔끔한 비동기 코드 |
 | SSL/TLS | **Boost.Asio SSL** | 클라이언트↔프록시, 프록시↔MySQL 양 구간 암호화 |
 | 로그 | **spdlog** | 구조화 JSON 로그, 고성능, 업계 표준 |
 | 설정 | **yaml-cpp** | YAML 정책 파일 파싱 |
 | 테스트 | **Google Test** | 표준 C++ 테스트 프레임워크 |
 | 퍼징 | **libFuzzer** | MySQL 패킷 파서, SQL 파서 퍼징 |
 | 빌드 | **CMake** + **vcpkg** | Boost 등 의존성 관리 |
-| C++ 표준 | **C++20** | 코루틴(co_await) 활용 |
-| 컴파일러 | **GCC 14** (기본), Clang 호환 유지 | Boost.Asio 코루틴 안정성, Linux 환경 표준 |
+| C++ 표준 | **C++23** | 코루틴(co_await), std::expected 활용 |
+| 컴파일러 | **GCC 14** (기본), Clang 호환 유지 | Boost.Asio 코루틴 안정성, std::expected 지원, Linux 환경 표준 |
 
-**C++20 코루틴 릴레이 코드 예시:**
+**C++23 코루틴 릴레이 코드 예시:**
 
 ```cpp
 asio::awaitable<void> relay(tcp::socket& client, tcp::socket& server) {
