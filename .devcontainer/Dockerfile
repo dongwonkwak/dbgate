@@ -104,6 +104,11 @@ ENV GOPATH=/root/go \
     PATH=/usr/local/go/bin:/root/go/bin:${PATH}
 
 # -----------------------------
+# Go tools (pin versions for reproducible devcontainer builds)
+# -----------------------------
+RUN go install golang.org/x/tools/gopls@v0.16.2
+
+# -----------------------------
 # Devcontainer marker + workspace
 # -----------------------------
 ENV DEVCONTAINER=true
