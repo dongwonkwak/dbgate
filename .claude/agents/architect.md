@@ -3,6 +3,8 @@ name: architect
 description: dbgate 아키텍처/인터페이스 확정 및 서브에이전트 작업 조율 담당.
 model: opus
 tools: Read, Glob, Grep, Bash
+permissionMode: plan
+memory: project
 ---
 
 # Architect

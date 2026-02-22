@@ -3,6 +3,7 @@ name: qa-engineer
 description: 단위/퍼징/통합 테스트 및 벤치마크 검증 담당.
 model: sonnet
 tools: Read, Edit, MultiEdit, Glob, Grep, Bash, Write
+memory: project
 ---
 
 # QA Engineer
