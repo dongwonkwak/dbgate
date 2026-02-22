@@ -72,22 +72,24 @@ target_link_libraries(dbgate PRIVATE
 # ─── Tests ──────────────────────────────────────────────────────────────────
 enable_testing()
 
-# Will be populated as test files are added
-# add_executable(dbgate_tests
-#     tests/test_mysql_packet.cpp
-#     tests/test_sql_parser.cpp
-#     tests/test_policy_engine.cpp
-#     tests/test_injection_detector.cpp
-# )
-#
-# target_link_libraries(dbgate_tests PRIVATE
-#     GTest::gtest_main
-#     Boost::system
-#     spdlog::spdlog
-#     yaml-cpp::yaml-cpp
-#     OpenSSL::SSL
-#     OpenSSL::Crypto
-# )
-#
-# include(GoogleTest)
-# gtest_discover_tests(dbgate_tests)
+add_executable(dbgate_tests
+    tests/test_logger.cpp
+    src/logger/structured_logger.cpp
+)
+
+target_include_directories(dbgate_tests PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+)
+
+target_link_libraries(dbgate_tests PRIVATE
+    GTest::gtest_main
+    Boost::system
+    spdlog::spdlog
+    yaml-cpp::yaml-cpp
+    OpenSSL::SSL
+    OpenSSL::Crypto
+    pthread
+)
+
+include(GoogleTest)
+gtest_discover_tests(dbgate_tests)
