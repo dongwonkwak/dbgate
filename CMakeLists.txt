@@ -76,10 +76,15 @@ add_executable(dbgate_tests
     tests/test_logger.cpp
     tests/test_mysql_packet.cpp
     tests/test_handshake_auth.cpp
+    tests/test_sql_parser.cpp
+    tests/test_injection_detector.cpp
     src/logger/structured_logger.cpp
     src/protocol/mysql_packet.cpp
     src/protocol/command.cpp
     src/protocol/handshake.cpp
+    src/parser/sql_parser.cpp
+    src/parser/injection_detector.cpp
+    src/parser/procedure_detector.cpp
 )
 
 target_include_directories(dbgate_tests PRIVATE
