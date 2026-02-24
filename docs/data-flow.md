@@ -83,11 +83,105 @@
 #### 문서화해야 하는 한계/주의점
 - SQL 파싱 범위 밖 쿼리는 보수적으로 처리되는지 확인 필요
 
-## 시나리오 2+: TODO
-- `BLOCK` 흐름
-- 파싱 실패 / 정책 오류 (`fail-close`)
-- `COM_QUERY` 외 커맨드
-- 세션 종료/타임아웃/EOF
+## 시나리오 2: 정책 차단 흐름 (BLOCK)
+
+### 입력
+- 클라이언트가 `COM_QUERY` 패킷으로 차단 대상 SQL 전송 (예: `DROP TABLE users`)
+
+### 사전 조건
+- 세션 핸드셰이크 완료
+- 정책 로드 성공 상태
+
+### 주요 컴포넌트
+- `proxy/session`, `protocol/command`, `parser/sql_parser`, `policy/policy_engine`, `logger`, `stats`
+
+### 출력/결과
+- MySQL 서버로 릴레이하지 않음
+- 클라이언트에 MySQL ERR 패킷 반환
+- 차단 로그(`BlockLog`) 기록, 통계 갱신
+
+#### 단계
+1. 세션이 `COM_QUERY` 패킷을 수신하고 SQL 문자열을 추출한다.
+2. `SqlParser::parse()`로 구문 분류(`SqlCommand::kDrop` 등) 및 테이블명 추출.
+3. `InjectionDetector::check()`로 인젝션 패턴 검사 (UNION/OR/SLEEP 등 10개 기본 패턴).
+4. `ProcedureDetector::detect()`로 CALL/PREPARE/EXECUTE 여부 확인.
+5. `PolicyEngine::evaluate()`가 `kBlock` 반환.
+6. 세션이 MySQL ERR 패킷을 생성하여 클라이언트로 전송한다.
+7. `log_block()` 호출, `stats.on_query(blocked=true)`.
+
+#### 관측성 포인트
+- 로그: `BlockLog` (session_id, db_user, client_ip, raw_sql, matched_rule, reason)
+- 통계: `total_queries++`, `blocked_queries++`, block_rate 갱신
+
+#### 문서화해야 하는 한계/주의점
+- `InjectionDetector` 패턴은 config에서 주입; 빈 패턴 목록은 fail-close(전체 차단)
+- `SqlParser` 파싱 실패 시 시나리오 3으로 전환
+
+---
+
+## 시나리오 3: 파싱 실패 / 정책 오류 (fail-close)
+
+### 입력
+- 파싱 불가 SQL 또는 정책 엔진 오류
+
+### 사전 조건
+- 세션 핸드셰이크 완료
+
+### 주요 컴포넌트
+- `parser/sql_parser`, `policy/policy_engine`, `logger`, `stats`
+
+### 출력/결과
+- 무조건 차단 (fail-close 원칙)
+- 클라이언트에 ERR 패킷 반환
+
+#### 단계
+1. `SqlParser::parse()` 실패 → `std::unexpected(ParseError)` 반환.
+2. 세션이 `PolicyEngine::evaluate_error()`를 호출 → 반드시 `kBlock` 반환.
+3. ERR 패킷 전송, `log_block()`, `stats.on_query(blocked=true)`.
+
+#### 관측성 포인트
+- 로그: `BlockLog` (reason에 파서 오류 메시지 포함)
+- 통계: `blocked_queries++`
+
+#### 문서화해야 하는 한계/주의점
+- fail-open 동작은 아키텍처 원칙상 금지
+- `InjectionDetector` 유효 패턴 없음 → 생성자에서 `fail_close_active_=true` 설정, `check()` 전체 차단
+
+---
+
+## 시나리오 4: COM_QUERY 외 커맨드 패스스루
+
+### 입력
+- `COM_QUIT`, `COM_PING`, `COM_INIT_DB` 등 비-쿼리 커맨드
+
+### 출력/결과
+- 정책 검사 없이 MySQL 서버로 투명 릴레이
+
+#### 단계
+1. `extract_command()`가 `CommandType::kComQuery` 이외의 타입 반환.
+2. 세션이 파서/정책 단계를 건너뛰고 패킷을 업스트림으로 전달.
+3. 서버 응답을 클라이언트로 전달.
+
+#### 관측성 포인트
+- 로그: 커맨드 타입에 따라 선택적 기록
+- 통계: `total_queries` 미증가 (쿼리 아님)
+
+---
+
+## 시나리오 5: 세션 종료 / 에러 종료
+
+### 입력
+- 클라이언트 `COM_QUIT`, 소켓 EOF, 타임아웃
+
+### 출력/결과
+- 세션 `kClosed` 상태 전환
+- 서버 측 소켓 정리
+
+#### 단계
+1. `COM_QUIT` 수신 또는 읽기 오류 감지.
+2. 업스트림 소켓 닫기.
+3. `log_connection(event="disconnect")`, `stats.on_connection_close()`.
+4. 세션 객체 소멸 (`shared_ptr` 참조 해제).
 
 ## 변경 체크리스트 (문서 유지보수용)
 - 데이터 흐름 단계가 실제 구현과 일치하는가?
