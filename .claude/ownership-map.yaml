@@ -1,0 +1,254 @@
+version: 1
+last_updated: "2026-02-24"
+purpose:
+  - "경로별 서브에이전트 소유권을 정의한다."
+  - "문서 영향 후보와 승인 게이트를 공통 규칙으로 제공한다."
+  - "사람/AI/자동화 스크립트가 동일한 기준을 참조하게 한다."
+
+defaults:
+  owner: "architect"
+  doc_impact:
+    required: false
+    candidates: []
+  approval:
+    architect_required: false
+    reason: ""
+
+agents:
+  architect:
+    role: "설계/인터페이스 확정 및 작업 조율"
+    primary_paths: []
+    notes:
+      - "구현 코드 직접 수정 금지"
+      - "C++↔Go 경계 변경 승인 주체"
+
+  network-engineer:
+    role: "C++ 네트워크/프록시 구현"
+    primary_paths:
+      - "src/protocol/**"
+      - "src/proxy/**"
+      - "src/health/**"
+    doc_edit_scope:
+      - "docs/architecture.md"
+      - "docs/data-flow.md"
+      - "docs/sequences.md"
+      - "docs/interface-reference.md"
+      - "README.md"
+
+  security-engineer:
+    role: "SQL 파서/정책 엔진 구현"
+    primary_paths:
+      - "src/parser/**"
+      - "src/policy/**"
+      - "config/policy.yaml"
+    doc_edit_scope:
+      - "docs/policy-engine.md"
+      - "docs/data-flow.md"
+      - "docs/interface-reference.md"
+      - "docs/threat-model.md"
+      - "README.md"
+
+  infra-engineer:
+    role: "로깅/통계/배포/CI"
+    primary_paths:
+      - "src/logger/**"
+      - "src/stats/**"
+      - "deploy/**"
+      - ".github/workflows/**"
+      - "docker-compose.yaml"
+      - ".devcontainer/**"
+    doc_edit_scope:
+      - "docs/observability.md"
+      - "docs/failure-modes.md"
+      - "docs/runbook.md"
+      - "docs/uds-protocol.md"
+      - "docs/interface-reference.md"
+      - "README.md"
+
+  go-engineer:
+    role: "Go 컨트롤플레인/CLI/대시보드"
+    primary_paths:
+      - "tools/**"
+    doc_edit_scope:
+      - "docs/runbook.md"
+      - "docs/uds-protocol.md"
+      - "docs/observability.md"
+      - "docs/interface-reference.md"
+      - "README.md"
+
+  qa-engineer:
+    role: "테스트/퍼징/통합/벤치마크"
+    primary_paths:
+      - "tests/**"
+      - "benchmarks/**"
+    doc_edit_scope:
+      - "docs/testing-strategy.md"
+      - "README.md"
+      - "docs/observability.md"
+
+  technical-writer:
+    role: "ADR/기술 문서 작성 및 정합성 검토"
+    primary_paths:
+      - "docs/**"
+      - "README.md"
+    doc_edit_scope:
+      - "docs/**"
+      - "README.md"
+
+path_rules:
+  - id: network-path
+    match:
+      - "src/protocol/**"
+      - "src/proxy/**"
+      - "src/health/**"
+    owner: "network-engineer"
+    co_owners:
+      - "qa-engineer"
+      - "technical-writer"
+    doc_impact:
+      required: true
+      candidates:
+        - "docs/architecture.md"
+        - "docs/data-flow.md"
+        - "docs/sequences.md"
+        - "docs/interface-reference.md"
+    approval:
+      architect_required_on_change_types:
+        - "interface"
+      reason: "프록시/프로토콜 public 인터페이스 및 흐름 변경"
+
+  - id: security-path
+    match:
+      - "src/parser/**"
+      - "src/policy/**"
+      - "config/policy.yaml"
+    owner: "security-engineer"
+    co_owners:
+      - "qa-engineer"
+      - "technical-writer"
+    doc_impact:
+      required: true
+      candidates:
+        - "docs/policy-engine.md"
+        - "docs/data-flow.md"
+        - "docs/interface-reference.md"
+        - "docs/threat-model.md"
+    approval:
+      architect_required_on_change_types:
+        - "interface"
+      reason: "정책/파서 계약 및 fail-close 의미 변경"
+
+  - id: infra-observability-path
+    match:
+      - "src/logger/**"
+      - "src/stats/**"
+    owner: "infra-engineer"
+    co_owners:
+      - "go-engineer"
+      - "technical-writer"
+    doc_impact:
+      required: true
+      candidates:
+        - "docs/observability.md"
+        - "docs/failure-modes.md"
+        - "docs/uds-protocol.md"
+        - "docs/interface-reference.md"
+    approval:
+      architect_required_on_change_types:
+        - "interface"
+      reason: "UDS/통계/로그 계약이 C++↔Go 경계를 침범할 수 있음"
+
+  - id: go-tools-path
+    match:
+      - "tools/**"
+    owner: "go-engineer"
+    co_owners:
+      - "infra-engineer"
+      - "technical-writer"
+    doc_impact:
+      required: true
+      candidates:
+        - "README.md"
+        - "docs/runbook.md"
+        - "docs/uds-protocol.md"
+        - "docs/observability.md"
+        - "docs/interface-reference.md"
+    approval:
+      architect_required_on_change_types:
+        - "interface"
+      reason: "UDS command/JSON field/CLI contract 변경 가능성"
+
+  - id: deploy-ci-path
+    match:
+      - "deploy/**"
+      - ".github/workflows/**"
+      - "docker-compose.yaml"
+      - ".devcontainer/**"
+    owner: "infra-engineer"
+    co_owners:
+      - "technical-writer"
+    doc_impact:
+      required: true
+      candidates:
+        - "docs/runbook.md"
+        - "docs/failure-modes.md"
+        - "README.md"
+    approval:
+      architect_required_on_change_types: []
+      reason: ""
+
+  - id: qa-path
+    match:
+      - "tests/**"
+      - "benchmarks/**"
+    owner: "qa-engineer"
+    co_owners:
+      - "technical-writer"
+    doc_impact:
+      required: false
+      candidates:
+        - "docs/testing-strategy.md"
+        - "README.md"
+    approval:
+      architect_required_on_change_types: []
+      reason: ""
+
+  - id: docs-path
+    match:
+      - "docs/**"
+      - "README.md"
+    owner: "technical-writer"
+    co_owners: []
+    doc_impact:
+      required: false
+      candidates: []
+    approval:
+      architect_required_on_change_types:
+        - "adr"
+      reason: "ADR/설계 문서의 결정 내용 변경은 architect 확인 필요"
+
+shared_boundaries:
+  - id: cxx-go-uds-boundary
+    components:
+      - "src/stats/**"
+      - "tools/**"
+      - "docs/uds-protocol.md"
+    owners:
+      - "infra-engineer"
+      - "go-engineer"
+      - "architect"
+    rules:
+      - "UDS protocol/JSON 필드/command 의미 변경은 architect 승인 필수"
+      - "변경 시 docs/uds-protocol.md 업데이트 검토"
+      - "가능하면 contract test(추후 도입) 갱신"
+
+doc_impact_exceptions:
+  commit_trailers:
+    - key: "Docs-Impact"
+      required_value: "none"
+    - key: "Docs-Impact-Reason"
+      required_non_empty: true
+  allowed_when:
+    - "동작/인터페이스/운영 영향이 없는 internal-refactor"
+    - "문서 자체만 변경"
+    - "테스트 데이터/픽스처 변경으로 문서 영향이 없는 경우"
