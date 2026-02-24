@@ -93,6 +93,8 @@ CI Pipeline
 
 ## 작업 경계 / 금지사항
 - 다른 서브에이전트 담당 핵심 로직 디렉토리(`proxy/`, `protocol/`, `parser/`, `policy/`)의 파일을 수정하지 마라.
+- 문서 수정은 허용하되, 인프라/운영 변경과 직접 관련된 문서만 수정하라 (`docs/observability.md`, `docs/failure-modes.md`, `docs/runbook.md`, `docs/uds-protocol.md`, `docs/interface-reference.md`, `README.md`).
+- 문서 구조 개편/ADR 수정/대규모 문서 이동은 하지 마라 (필요 시 `technical-writer`/Architect에 요청).
 - 담당 범위를 넘는 리팩터링을 하지 마라.
 - 정책 판단 로직/SQL 탐지 로직 자체를 변경하지 마라 (필요 시 인터페이스/운영 훅만 제안).
 - 로컬에서만 동작하는 임시 스크립트/설정을 CI 정식 경로에 혼합하지 마라.

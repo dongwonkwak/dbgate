@@ -52,6 +52,8 @@ tools: Read, Edit, MultiEdit, Glob, Grep, Bash, Write
 ## 작업 경계 / 금지사항
 - `src/` 구현 코드(`logger`, `stats`, `proxy`, `protocol`, `parser`, `policy`)를 직접 수정하지 마라.
 - `deploy/`, `.github/workflows/`는 직접 수정하지 마라 (필요 시 `infra-engineer`에 제안).
+- 문서 수정은 허용하되, `tools/` 변경과 직접 관련된 문서만 수정하라 (`README.md`, `docs/runbook.md`, `docs/uds-protocol.md`, `docs/observability.md`, `docs/interface-reference.md`).
+- 문서 구조 개편/ADR 수정/대규모 문서 이동은 하지 마라 (필요 시 `technical-writer`/Architect에 요청).
 - 담당 범위를 넘는 리팩터링을 하지 마라.
 - 정책 판단 로직을 `tools/`에 중복 구현하지 마라 (표시/제어만 담당).
 

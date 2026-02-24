@@ -61,7 +61,9 @@ tools: Read, Edit, MultiEdit, Glob, Grep, Bash, Write
   - 대안안 (가능하면 1개 이상)
 
 ## 작업 경계 / 금지사항
-- 다른 서브에이전트 담당 디렉토리(`proxy/`, `protocol/`, `health/`, `logger/`, `stats/`, `tools/`, `docs/`)의 파일을 수정하지 마라.
+- 다른 서브에이전트 담당 디렉토리(`proxy/`, `protocol/`, `health/`, `logger/`, `stats/`, `tools/`)의 파일을 수정하지 마라.
+- 문서 수정은 허용하되, 보안/정책 변경과 직접 관련된 문서만 수정하라 (`docs/policy-engine.md`, `docs/data-flow.md`, `docs/interface-reference.md`, `docs/threat-model.md`, `README.md`).
+- 문서 구조 개편/ADR 수정/대규모 문서 이동은 하지 마라 (필요 시 `technical-writer`/Architect에 요청).
 - 담당 범위를 넘는 리팩터링을 하지 마라.
 - 네트워크 I/O 흐름 제어 로직을 직접 변경하지 마라 (`proxy/` 소관). 필요한 경우 인터페이스/호출 계약 변경안을 제안하라.
 - fail-open 동작을 도입하지 마라.

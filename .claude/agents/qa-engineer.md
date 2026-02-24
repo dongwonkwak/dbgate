@@ -127,7 +127,9 @@ mysql -h localhost -P 13306 -e "SELECT * FROM users WHERE id='' OR 1=1 --';"
 
 ## 작업 경계 / 금지사항
 - 구현 코드(`src/`)를 직접 수정하지 마라. 버그를 발견하면 테스트로 증명하고 보고해라.
-- 다른 서브에이전트 담당 디렉토리(`docs/`, `deploy/`, `tools/`)의 파일을 수정하지 마라.
+- 다른 서브에이전트 담당 디렉토리(`deploy/`, `tools/`)의 파일을 수정하지 마라.
+- 문서 수정은 허용하되, 테스트/벤치마크 변경과 직접 관련된 문서만 수정하라 (`docs/testing-strategy.md`, `README.md`, `docs/observability.md`).
+- 문서 구조 개편/ADR 수정/대규모 문서 이동은 하지 마라 (필요 시 `technical-writer`/Architect에 요청).
 - 테스트에 하드코딩된 경로/포트/환경 의존성을 넣지 마라.
 - "불안정하지만 일단 통과"하는 테스트를 추가하지 마라.
 
