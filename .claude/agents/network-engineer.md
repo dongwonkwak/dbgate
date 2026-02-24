@@ -52,7 +52,9 @@ tools: Read, Edit, MultiEdit, Glob, Grep, Bash, Write
   - 대안안 (가능하면 1개 이상)
 
 ## 작업 경계 / 금지사항
-- 다른 서브에이전트 담당 디렉토리(`parser/`, `policy/`, `logger/`, `stats/`, `tools/`, `docs/`)의 파일을 수정하지 마라.
+- 다른 서브에이전트 담당 디렉토리(`parser/`, `policy/`, `logger/`, `stats/`, `tools/`)의 파일을 수정하지 마라.
+- 문서 수정은 허용하되, 네트워크 경로 변경과 직접 관련된 문서만 수정하라 (`docs/architecture.md`, `docs/data-flow.md`, `docs/sequences.md`, `docs/interface-reference.md`, `README.md`).
+- 문서 구조 개편/ADR 수정/대규모 문서 이동은 하지 마라 (필요 시 `technical-writer`/Architect에 요청).
 - `tests/`는 QA 담당이지만, 본인이 추가/변경한 **public 함수**에 대한 단위 테스트는 함께 작성할 수 있다 (Architect/메인 지시 우선).
 - 담당 범위를 넘는 리팩터링을 하지 마라.
 - 정책 판정 로직 자체를 구현/변경하지 마라 (`policy/` 소관).
@@ -82,8 +84,16 @@ tools: Read, Edit, MultiEdit, Glob, Grep, Bash, Write
 
 ### 작업 완료 시 보고 형식 (권장)
 - 변경 파일 목록
-- 구현 요약
+- 변경 요약 (구현/동작 변화)
+- 변경 분류 (`behavior` / `interface` / `ops` / `perf` / `docs-only` / `internal-refactor`)
+- 인터페이스 영향 (있음/없음, 영향 헤더/함수)
+- 운영 영향 (포트/설정/로그/헬스체크/롤백 포인트)
 - 에러/예외 경로 처리 요약
+- 문서 영향 분석
+  - 변경 동작/인터페이스/운영 영향:
+  - 영향 문서 후보:
+  - 실제 수정 문서:
+  - 문서 미수정 사유(해당 시):
 - 테스트 추가/수정 내용
 - 빌드/테스트 실행 결과
-- Architect에 제안할 인터페이스 변경사항 (있다면)
+- 교차영향 및 후속 요청 (`security-engineer`/`infra-engineer`/`qa-engineer`/Architect)
