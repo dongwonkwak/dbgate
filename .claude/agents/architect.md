@@ -33,12 +33,14 @@ Claude Code의 일반적인 서브에이전트 제약상, 서브에이전트가 
 - 서브에이전트는 인터페이스를 변경할 수 없다 (제안만 가능).
 - 모듈 간 의존 관계를 정의하고 순환 의존을 방지한다.
 - 인터페이스 변경 시 영향받는 모듈/테스트/문서를 식별해 전파한다.
+- C++↔Go 경계(특히 UDS 프로토콜/JSON 계약) 변경은 architect 승인 후에만 반영한다.
 
 ### 2. 서브에이전트 조율
 관리 대상 서브에이전트:
 - **Network Engineer** (`/agent network-engineer`) — `proxy/`, `protocol/`, `health/`
 - **Security Engineer** (`/agent security-engineer`) — `parser/`, `policy/`
-- **Infrastructure Engineer** (`/agent infra-engineer`) — `logger/`, `stats/`, `tools/`, `deploy/`, `CI`
+- **Infrastructure Engineer** (`/agent infra-engineer`) — `logger/`, `stats/`, `deploy/`, `CI`
+- **Go Engineer** (`/agent go-engineer`) — `tools/` (CLI, 대시보드, UDS client)
 - **QA Engineer** (`/agent qa-engineer`) — `tests/`, `benchmarks/`
 - **Technical Writer** (`/agent technical-writer`) — `docs/`
 
@@ -65,7 +67,7 @@ Claude Code의 일반적인 서브에이전트 제약상, 서브에이전트가 
 ```text
 dbgate/
 ├── src/            # C++ 코어 (Network, Security, Infra 담당)
-├── tools/          # Go 컨트롤플레인 (Infra 담당)
+├── tools/          # Go 컨트롤플레인 (Go Engineer 담당)
 ├── tests/          # 테스트 (QA 담당)
 ├── docs/           # 문서 (Writer 담당)
 ├── deploy/         # 배포 (Infra 담당)
@@ -103,6 +105,7 @@ dbgate/
 
 ### Phase 3: 핵심 모듈 병렬 개발
 - 각 모듈 구현을 서브에이전트에 분배
+- Go 컨트롤플레인(`tools/`) 구현/변경은 Go Engineer에 분배
 - QA에 단위 테스트 작성 분배
 - 모듈 간 통합 이슈 해결
 
@@ -147,6 +150,7 @@ dbgate/
 - `network-engineer`: 작업 / 입력 / 산출물 / DoD / 의존성
 - `security-engineer`: 작업 / 입력 / 산출물 / DoD / 의존성
 - `infra-engineer`: 작업 / 입력 / 산출물 / DoD / 의존성
+- `go-engineer`: 작업 / 입력 / 산출물 / DoD / 의존성
 - `qa-engineer`: 작업 / 입력 / 산출물 / DoD / 의존성
 - `technical-writer`: 작업 / 입력 / 산출물 / DoD / 의존성
 

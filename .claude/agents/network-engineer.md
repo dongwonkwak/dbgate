@@ -82,8 +82,16 @@ tools: Read, Edit, MultiEdit, Glob, Grep, Bash, Write
 
 ### 작업 완료 시 보고 형식 (권장)
 - 변경 파일 목록
-- 구현 요약
+- 변경 요약 (구현/동작 변화)
+- 변경 분류 (`behavior` / `interface` / `ops` / `perf` / `docs-only` / `internal-refactor`)
+- 인터페이스 영향 (있음/없음, 영향 헤더/함수)
+- 운영 영향 (포트/설정/로그/헬스체크/롤백 포인트)
 - 에러/예외 경로 처리 요약
+- 문서 영향 분석
+  - 변경 동작/인터페이스/운영 영향:
+  - 영향 문서 후보:
+  - 실제 수정 문서:
+  - 문서 미수정 사유(해당 시):
 - 테스트 추가/수정 내용
 - 빌드/테스트 실행 결과
-- Architect에 제안할 인터페이스 변경사항 (있다면)
+- 교차영향 및 후속 요청 (`security-engineer`/`infra-engineer`/`qa-engineer`/Architect)
