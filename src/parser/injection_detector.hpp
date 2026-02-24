@@ -60,20 +60,29 @@ struct InjectionResult {
 //     레이턴시를 증가시킨다.
 //   - 입력 길이 제한은 호출자(proxy 레이어)가 사전에 적용해야 한다.
 //
-//   [우회 주의]
-//   - 패턴 목록이 비어 있으면 모든 SQL 이 detected=false 로 통과한다.
-//     빈 패턴 목록을 허용하지 않으려면 config 검증에서 걸러야 한다.
+//   [Fail-close 보장]
+//   - 유효한 패턴이 0개(빈 목록 또는 모두 잘못된 정규식)이면 fail_close_active_
+//     플래그가 설정된다. 이후 check() 호출 시 항상 detected=true 를 반환하여
+//     모든 SQL 을 차단한다 (fail-close).
+//   - 생성자 시점에 spdlog::error 레벨로 경보를 남긴다.
 // ---------------------------------------------------------------------------
 class InjectionDetector {
 public:
     // 생성자: 패턴 목록을 받아 std::regex 로 컴파일한다.
     // patterns: 정규식 문자열 목록 (config/policy.yaml 에서 로드)
     //   - 각 패턴은 POSIX ERE 또는 ECMAScript regex 문법을 사용한다.
-    //   - 잘못된 패턴은 생성자에서 로깅 후 건너뛴다 (fail-open 방지:
+    //   - 잘못된 패턴은 생성자에서 로깅 후 건너뜀 (fail-open 방지:
     //     유효한 나머지 패턴은 계속 적용됨).
+    //   - 유효 패턴이 하나도 없으면 fail_close_active_ 가 true 로 설정된다.
     explicit InjectionDetector(std::vector<std::string> patterns);
 
-    ~InjectionDetector() = default;
+    // 소멸자는 cpp에서 정의 (CompiledPattern의 완전한 타입 정의가 필요하기 때문).
+    // 동작: default 소멸자와 동일.
+    // [설계 이유] struct CompiledPattern 전방 선언 + vector<CompiledPattern>
+    //   조합에서 ~InjectionDetector()=default를 헤더에서 정의하면 소멸자 인스턴스화
+    //   시점에 CompiledPattern이 incomplete type이어서 컴파일 에러 발생.
+    //   소멸자를 cpp에서 정의하면 CompiledPattern의 완전한 정의 이후에 인스턴스화된다.
+    ~InjectionDetector();
 
     // 복사 금지 (컴파일된 regex 재사용 비용 방지), 이동 허용
     InjectionDetector(const InjectionDetector&)            = delete;
@@ -84,6 +93,10 @@ public:
     // check
     //   sql: 원문 SQL 또는 전처리된 SQL
     //   반환: InjectionResult
+    //
+    // [Fail-close 동작]
+    // - fail_close_active_ == true 이면 즉시 {detected=true, reason="no valid patterns loaded"} 반환.
+    //   유효한 패턴이 없는 상태에서 SQL 을 통과시키면 탐지 우회가 되므로 차단이 안전하다.
     //
     // [오탐 주의]
     // - UNION 을 포함하는 합법적 쿼리(예: 페이징용 UNION ALL)에서
@@ -97,4 +110,8 @@ private:
     // 구현 파일에서 std::regex 를 포함하므로 헤더에서는 전방 선언만 사용.
     struct CompiledPattern;
     std::vector<CompiledPattern> compiled_patterns_;
+
+    // fail-close 플래그: 유효한 패턴이 하나도 없을 때 true.
+    // check() 에서 즉시 detected=true 를 반환하여 모든 SQL 을 차단한다.
+    bool fail_close_active_{false};
 };
