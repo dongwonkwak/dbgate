@@ -9,12 +9,13 @@ Usage:
 Exit codes:
   0: pass
   1: doc impact missing
-  2: usage/input error
+  2: usage/input/parsing error
 EOF
 }
 
 BASE_REF=""
 HEAD_REF=""
+OWNERSHIP_MAP=".claude/ownership-map.yaml"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -46,6 +47,11 @@ if [[ -z "$BASE_REF" || -z "$HEAD_REF" ]]; then
   exit 2
 fi
 
+if [[ ! -f "$OWNERSHIP_MAP" ]]; then
+  echo "Ownership map not found: $OWNERSHIP_MAP" >&2
+  exit 2
+fi
+
 if ! git rev-parse --verify "$BASE_REF" >/dev/null 2>&1; then
   echo "Invalid base ref: $BASE_REF" >&2
   exit 2
@@ -56,267 +62,147 @@ if ! git rev-parse --verify "$HEAD_REF" >/dev/null 2>&1; then
   exit 2
 fi
 
-append_unique_line() {
-  # $1: current lines (possibly empty), $2: new value
-  local current="$1"
-  local value="$2"
-  if [[ -z "$value" ]]; then
-    printf '%s' "$current"
-    return
-  fi
-  if [[ -z "$current" ]]; then
-    printf '%s' "$value"
-    return
-  fi
-  if printf '%s\n' "$current" | grep -Fx -- "$value" >/dev/null 2>&1; then
-    printf '%s' "$current"
-  else
-    printf '%s\n%s' "$current" "$value"
-  fi
-}
+RANGE_SPEC="${BASE_REF}..${HEAD_REF}"
+CHANGED_FILES="$(git diff --name-only "$RANGE_SPEC")"
+COMMIT_MESSAGES="$(git log --format=%B "$RANGE_SPEC" || true)"
 
-is_doc_path() {
-  case "$1" in
-    docs/*|README.md) return 0 ;;
-    *) return 1 ;;
-  esac
-}
-
-matches_group() {
-  local group="$1"
-  local path="$2"
-  case "$group" in
-    network)
-      case "$path" in src/protocol/*|src/proxy/*|src/health/*) return 0 ;; esac
-      ;;
-    security)
-      case "$path" in src/parser/*|src/policy/*|config/policy.yaml) return 0 ;; esac
-      ;;
-    infra_obs)
-      case "$path" in src/logger/*|src/stats/*) return 0 ;; esac
-      ;;
-    go_tools)
-      case "$path" in tools/*) return 0 ;; esac
-      ;;
-    deploy_ci)
-      case "$path" in deploy/*|.github/workflows/*|docker-compose.yaml|.devcontainer/*) return 0 ;; esac
-      ;;
-    qa)
-      case "$path" in tests/*|benchmarks/*) return 0 ;; esac
-      ;;
-  esac
-  return 1
-}
-
-group_required() {
-  case "$1" in
-    qa) echo "false" ;;
-    *) echo "true" ;;
-  esac
-}
-
-group_candidates() {
-  case "$1" in
-    network)
-      cat <<'EOF'
-docs/architecture.md
-docs/data-flow.md
-docs/sequences.md
-docs/interface-reference.md
-EOF
-      ;;
-    security)
-      cat <<'EOF'
-docs/policy-engine.md
-docs/data-flow.md
-docs/interface-reference.md
-docs/threat-model.md
-EOF
-      ;;
-    infra_obs)
-      cat <<'EOF'
-docs/observability.md
-docs/failure-modes.md
-docs/uds-protocol.md
-docs/interface-reference.md
-EOF
-      ;;
-    go_tools)
-      cat <<'EOF'
-README.md
-docs/runbook.md
-docs/uds-protocol.md
-docs/observability.md
-docs/interface-reference.md
-EOF
-      ;;
-    deploy_ci)
-      cat <<'EOF'
-docs/runbook.md
-docs/failure-modes.md
-README.md
-EOF
-      ;;
-    qa)
-      cat <<'EOF'
-docs/testing-strategy.md
-README.md
-EOF
-      ;;
-    *)
-      ;;
-  esac
-}
-
-group_label() {
-  case "$1" in
-    network) echo "network (src/protocol|proxy|health)" ;;
-    security) echo "security (src/parser|policy|config/policy.yaml)" ;;
-    infra_obs) echo "infra-observability (src/logger|stats)" ;;
-    go_tools) echo "go-tools (tools/)" ;;
-    deploy_ci) echo "deploy-ci (deploy|workflows|docker-compose|devcontainer)" ;;
-    qa) echo "qa (tests|benchmarks)" ;;
-    *) echo "$1" ;;
-  esac
-}
-
-group_has_doc_match() {
-  local group="$1"
-  local changed_docs="$2"
-  local c
-  while IFS= read -r c; do
-    [[ -n "$c" ]] || continue
-    if printf '%s\n' "$changed_docs" | grep -Fx -- "$c" >/dev/null 2>&1; then
-      return 0
-    fi
-  done < <(group_candidates "$group")
-  return 1
-}
-
-range_spec="${BASE_REF}..${HEAD_REF}"
-
-changed_files="$(git diff --name-only "$range_spec")"
-
-if [[ -z "$changed_files" ]]; then
-  echo "No changed files in range: $range_spec"
+if [[ -z "$CHANGED_FILES" ]]; then
+  echo "No changed files in range: $RANGE_SPEC"
   exit 0
 fi
 
-all_changed=""
-changed_docs=""
-changed_non_docs=""
-
-while IFS= read -r path; do
-  [[ -n "$path" ]] || continue
-  all_changed="$(append_unique_line "$all_changed" "$path")"
-  if is_doc_path "$path"; then
-    changed_docs="$(append_unique_line "$changed_docs" "$path")"
-  else
-    changed_non_docs="$(append_unique_line "$changed_non_docs" "$path")"
-  fi
-done < <(printf '%s\n' "$changed_files")
-
-if [[ -z "$changed_non_docs" ]]; then
-  echo "PASS: docs-only change (no non-doc files changed)."
-  if [[ -n "$changed_docs" ]]; then
-    echo "Changed docs:"
-    printf '  - %s\n' $changed_docs
-  fi
-  exit 0
+if ! command -v ruby >/dev/null 2>&1; then
+  echo "ruby is required to parse $OWNERSHIP_MAP" >&2
+  exit 2
 fi
 
-groups=("network" "security" "infra_obs" "go_tools" "deploy_ci" "qa")
-triggered_groups=""
-required_triggered_groups=""
+export DOC_IMPACT_RANGE_SPEC="$RANGE_SPEC"
+export DOC_IMPACT_CHANGED_FILES="$CHANGED_FILES"
+export DOC_IMPACT_COMMIT_MESSAGES="$COMMIT_MESSAGES"
+export DOC_IMPACT_OWNERSHIP_MAP="$OWNERSHIP_MAP"
 
-for group in "${groups[@]}"; do
-  while IFS= read -r path; do
-    [[ -n "$path" ]] || continue
-    if matches_group "$group" "$path"; then
-      triggered_groups="$(append_unique_line "$triggered_groups" "$group")"
-      if [[ "$(group_required "$group")" == "true" ]]; then
-        required_triggered_groups="$(append_unique_line "$required_triggered_groups" "$group")"
-      fi
-      break
-    fi
-  done < <(printf '%s\n' "$changed_non_docs")
-done
+ruby <<'RUBY'
+require "yaml"
 
-if [[ -z "$required_triggered_groups" ]]; then
-  echo "PASS: no doc-impact-required path groups matched."
-  echo "Changed non-doc files:"
-  printf '  - %s\n' $changed_non_docs
-  exit 0
-fi
+def env!(key)
+  v = ENV[key]
+  raise "missing env #{key}" if v.nil?
+  v
+end
 
-missing_groups=""
-for group in $(printf '%s\n' "$required_triggered_groups"); do
-  if ! group_has_doc_match "$group" "$changed_docs"; then
-    missing_groups="$(append_unique_line "$missing_groups" "$group")"
-  fi
-done
+def is_doc_path?(path)
+  path == "README.md" || path.start_with?("docs/")
+end
 
-if [[ -n "$missing_groups" ]]; then
-  commit_messages="$(git log --format=%B "$range_spec" || true)"
-  if printf '%s\n' "$commit_messages" | grep -Eiq '^Docs-Impact:[[:space:]]*none[[:space:]]*$' \
-    && printf '%s\n' "$commit_messages" | grep -Eiq '^Docs-Impact-Reason:[[:space:]]*.+$'; then
-    echo "PASS: doc-impact exception trailer found in commit messages."
-    echo
-    echo "Missing doc groups (ignored by trailer):"
-    while IFS= read -r group; do
-      [[ -n "$group" ]] || continue
-      echo "  - $(group_label "$group")"
-    done < <(printf '%s\n' "$missing_groups")
+def trailer_exception?(commit_messages)
+  has_flag = commit_messages.match?(/^Docs-Impact:\s*none\s*$/i)
+  has_reason = commit_messages.match?(/^Docs-Impact-Reason:\s*.+$/i)
+  has_flag && has_reason
+end
+
+def rule_matches_path?(rule, path)
+  Array(rule["match"]).any? do |glob|
+    File.fnmatch?(glob, path, File::FNM_PATHNAME)
+  end
+end
+
+def rule_label(rule)
+  id = rule["id"] || "(unnamed)"
+  patterns = Array(rule["match"])
+  return id if patterns.empty?
+  "#{id} (#{patterns.join(', ')})"
+end
+
+begin
+  range_spec = env!("DOC_IMPACT_RANGE_SPEC")
+  changed_files = env!("DOC_IMPACT_CHANGED_FILES").split("\n").reject(&:empty?).uniq
+  commit_messages = env!("DOC_IMPACT_COMMIT_MESSAGES")
+  ownership_map_path = env!("DOC_IMPACT_OWNERSHIP_MAP")
+
+  map = YAML.load_file(ownership_map_path)
+  path_rules = Array(map["path_rules"])
+
+  changed_docs = changed_files.select { |p| is_doc_path?(p) }
+  changed_non_docs = changed_files.reject { |p| is_doc_path?(p) }
+
+  if changed_non_docs.empty?
+    puts "PASS: docs-only change (no non-doc files changed)."
+    unless changed_docs.empty?
+      puts "Changed docs:"
+      changed_docs.each { |p| puts "  - #{p}" }
+    end
     exit 0
-  fi
-fi
+  end
 
-echo "Doc impact check summary"
-echo "Range: $range_spec"
-echo
-echo "Changed non-doc files:"
-while IFS= read -r path; do
-  [[ -n "$path" ]] || continue
-  echo "  - $path"
-done < <(printf '%s\n' "$changed_non_docs")
+  triggered_rules = path_rules.select do |rule|
+    changed_non_docs.any? { |path| rule_matches_path?(rule, path) }
+  end
 
-echo
-echo "Changed docs:"
-if [[ -n "$changed_docs" ]]; then
-  while IFS= read -r path; do
-    [[ -n "$path" ]] || continue
-    echo "  - $path"
-  done < <(printf '%s\n' "$changed_docs")
-else
-  echo "  (none)"
-fi
+  required_rules = triggered_rules.select do |rule|
+    rule.dig("doc_impact", "required") == true
+  end
 
-echo
-echo "Triggered groups:"
-while IFS= read -r group; do
-  [[ -n "$group" ]] || continue
-  echo "  - $(group_label "$group")"
-  echo "    candidates:"
-  while IFS= read -r c; do
-    [[ -n "$c" ]] || continue
-    echo "      - $c"
-  done < <(group_candidates "$group")
-done < <(printf '%s\n' "$triggered_groups")
+  if required_rules.empty?
+    puts "PASS: no doc-impact-required path groups matched."
+    puts "Changed non-doc files:"
+    changed_non_docs.each { |p| puts "  - #{p}" }
+    exit 0
+  end
 
-if [[ -z "$missing_groups" ]]; then
-  echo
-  echo "PASS: each required triggered group has at least one matching doc update."
-  exit 0
-fi
+  missing_rules = required_rules.select do |rule|
+    candidates = Array(rule.dig("doc_impact", "candidates"))
+    candidates.none? { |c| changed_docs.include?(c) }
+  end
 
-echo
-echo "FAIL: missing doc updates for required groups:"
-while IFS= read -r group; do
-  [[ -n "$group" ]] || continue
-  echo "  - $(group_label "$group")"
-done < <(printf '%s\n' "$missing_groups")
-echo
-echo "If this is an exception, add commit trailers:"
-echo "  Docs-Impact: none"
-echo "  Docs-Impact-Reason: <specific reason>"
-exit 1
+  if !missing_rules.empty? && trailer_exception?(commit_messages)
+    puts "PASS: doc-impact exception trailer found in commit messages."
+    puts
+    puts "Missing doc groups (ignored by trailer):"
+    missing_rules.each { |rule| puts "  - #{rule_label(rule)}" }
+    exit 0
+  end
+
+  puts "Doc impact check summary"
+  puts "Range: #{range_spec}"
+  puts
+  puts "Changed non-doc files:"
+  changed_non_docs.each { |p| puts "  - #{p}" }
+  puts
+  puts "Changed docs:"
+  if changed_docs.empty?
+    puts "  (none)"
+  else
+    changed_docs.each { |p| puts "  - #{p}" }
+  end
+  puts
+  puts "Triggered groups:"
+  triggered_rules.each do |rule|
+    puts "  - #{rule_label(rule)}"
+    puts "    candidates:"
+    Array(rule.dig("doc_impact", "candidates")).each do |c|
+      puts "      - #{c}"
+    end
+  end
+
+  if missing_rules.empty?
+    puts
+    puts "PASS: each required triggered group has at least one matching doc update."
+    exit 0
+  end
+
+  puts
+  puts "FAIL: missing doc updates for required groups:"
+  missing_rules.each { |rule| puts "  - #{rule_label(rule)}" }
+  puts
+  puts "If this is an exception, add commit trailers:"
+  puts "  Docs-Impact: none"
+  puts "  Docs-Impact-Reason: <specific reason>"
+  exit 1
+rescue Psych::SyntaxError => e
+  warn "Failed to parse ownership map YAML: #{e.message}"
+  exit 2
+rescue => e
+  warn "Doc impact check internal error: #{e.class}: #{e.message}"
+  exit 2
+end
+RUBY
