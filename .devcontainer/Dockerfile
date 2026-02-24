@@ -56,6 +56,7 @@ RUN set -eux; \
     dnsutils \
     aggregate \
     jq \
+    ruby \
     # Locale
     locales \
     nano \
@@ -163,6 +164,7 @@ RUN set -eux; \
 # -----------------------------
 ENV VCPKG_ROOT=/opt/vcpkg \
     VCPKG_DEFAULT_TRIPLET=x64-linux
+ENV CMAKE_TOOLCHAIN_FILE=${VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake
 RUN set -eux; \
   git clone https://github.com/microsoft/vcpkg.git "${VCPKG_ROOT}"; \
   "${VCPKG_ROOT}/bootstrap-vcpkg.sh" -disableMetrics; \

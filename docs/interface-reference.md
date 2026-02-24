@@ -147,15 +147,98 @@ public:
 };
 ```
 
-**동작**:
-1. 클라이언트로부터 패킷 수신
-2. MySQL 서버로 투명 전달
-3. 서버 응답을 클라이언트로 투명 전달
-4. 성공 시 SessionContext 갱신
+**동작** (8-state 상태 머신):
+
+#### 1단계: Initial Handshake (서버 → 클라이언트)
+- 상태: `kWaitServerGreeting`
+- 패킷 수신 (seq=0, type=0x0A)
+- 클라이언트로 투명 전달 → 다음 상태: `kWaitClientResponse`
+- 액션: `kRelayToClient`
+
+#### 2단계: Handshake Response (클라이언트 → 서버)
+- 상태: `kWaitClientResponse`
+- 패킷 수신 (seq=1)
+- 페이로드에서 username, database 필드 추출:
+  - **Capability flags 읽기**: offset 0-3, 4byte LE
+  - **Username**: offset 32 이후의 null-terminated string
+  - **Auth Response 건너뜀**:
+    - `CLIENT_PLUGIN_AUTH_LENENC (0x00200000)`: length-encoded (1/2/3바이트)
+      - 0xFE/0xFF는 비정상 → ParseError
+    - `CLIENT_SECURE_CONNECTION (0x00008000)`: 1바이트 length + 데이터
+    - 없음: null-terminated
+    - **모든 경우 남은 payload 검증**: auth_len > remaining → ParseError
+  - **Database**: `CLIENT_CONNECT_WITH_DB (0x00000008)` 플래그 확인 후 추출
+    - 플래그 설정 시 반드시 null-terminated string 필요 → 없으면 ParseError
+    - 플래그 미설정 시 빈 문자열
+- 서버로 투명 전달 → 다음 상태: `kWaitServerAuth`
+- 액션: `kRelayToServer`
+
+#### 3단계: Server Auth Response (서버 → 클라이언트)
+- 상태: `kWaitServerAuth`
+- 패킷 수신 (seq=2)
+- 응답 타입 판단 (`classify_auth_response`):
+
+| 응답 타입 | 패킷 첫바이트 | 조건 | 다음 상태 | 액션 |
+|----------|-------------|-----|---------|------|
+| **OK** | 0x00 | — | `kDone` | `kComplete` |
+| **Error** | 0xFF | — | `kFailed` | `kTerminate` |
+| **EOF** | 0xFE | payload < 9 | `kFailed` | `kTerminate` |
+| **AuthSwitch** | 0xFE | payload >= 9 | `kWaitClientAuthSwitch` | `kRelayToClient` |
+| **AuthMoreData** | 0x01 | — | `kWaitClientMoreData` | `kRelayToClient` |
+| **Unknown** | 기타 | — | `kFailed` | `kTerminateNoRelay` |
+
+#### AuthSwitch 라운드트립
+- 상태: `kWaitClientAuthSwitch`
+- 클라이언트 응답 → 서버 전달 → 다음 상태: `kWaitServerAuthSwitch`
+- 액션: `kRelayToServer`
+
+- 상태: `kWaitServerAuthSwitch`
+- 서버 응답 분류:
+  - **OK (0x00)**: 완료 → `kDone`, `kComplete`
+  - **Error/EOF (0xFF/0xFE<9)**: 실패 → `kFailed`, `kTerminate`
+  - **AuthMoreData (0x01)**: 라운드트립 체인 진입 (round_trips >= kMaxRoundTrips? → ParseError)
+    - → `kWaitClientMoreData`, `kRelayToClient`, `round_trips++`
+  - **AuthSwitch (0xFE≥9) 중첩**: ParseError (fail-close)
+  - **Unknown**: → `kFailed`, `kTerminateNoRelay`
+
+#### AuthMoreData 라운드트립 체인
+- 상태: `kWaitClientMoreData`
+- 클라이언트 응답 → 서버 전달 → 다음 상태: `kWaitServerMoreData`
+- 액션: `kRelayToServer`
+
+- 상태: `kWaitServerMoreData`
+- 서버 응답 분류:
+  - **OK (0x00)**: 완료 → `kDone`, `kComplete`
+  - **Error/EOF (0xFF/0xFE<9)**: 실패 → `kFailed`, `kTerminate`
+  - **AuthMoreData (0x01)**: 라운드트립 반복 (round_trips >= kMaxRoundTrips? → ParseError)
+    - → `kWaitClientMoreData`, `kRelayToClient`, `round_trips++`
+  - **AuthSwitch (0xFE≥9)**: ParseError (fail-close, AuthMoreData 중 AuthSwitch 금지)
+  - **Unknown**: → `kFailed`, `kTerminateNoRelay`
+
+#### 4단계: Completion (성공 시)
+- 액션: `kComplete` 수행 시
+- SessionContext 갱신:
+  - `ctx.db_user` = extracted username
+  - `ctx.db_name` = extracted database
+  - `ctx.handshake_done = true`
+- COM_QUERY 처리 루프 진입
 
 **설계 원칙**:
-- auth plugin 메커니즘에 개입 없음
+- auth plugin 메커니즘에 개입 없음 (모든 플러그인 자동 지원)
 - 핸드셰이크 패킷은 변조 없이 투명 릴레이
+- 최소 파싱: Handshake Response의 기본 필드만 추출
+- **AuthSwitch/AuthMoreData 대응**: 추가 라운드트립 자동 처리
+- **최대 라운드트립 10회 제한** (kMaxRoundTrips=10): 무한 루프 방지
+- **Unknown 패킷**: ERR 전달 없이 즉시 세션 종료 (fail-close)
+- **AuthSwitch 중첩/순서 위반**: ParseError로 fail-close
+
+**에러 처리** (fail-close):
+- 패킷 읽기/쓰기 실패 → ParseError 반환 (세션 종료)
+- 서버 ERR (0xFF) 또는 EOF (0xFE, payload<9) → 클라이언트로 전달 후 실패 반환
+- Unknown 패킷 (0x00/0xFF/0xFE/0x01 이외) → `kTerminateNoRelay`: ERR 전달 없이 즉시 종료
+- 라운드트립 10회 초과 → ParseError (세션 종료)
+- Handshake Response 필드 오류 (최소 길이, null terminator, payload 초과) → ParseError
+- 호출자는 반환값 확인 후 세션 종료
 
 ---
 
