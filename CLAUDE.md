@@ -54,7 +54,8 @@ MySQL 클라이언트와 서버 사이에 위치하여 SQL을 파싱하고 정�
 | architect | 설계/조율 (plan mode) | - | ❌ |
 | network-engineer | 프록시/프로토콜/헬스체크 | proxy/, protocol/, health/ | ✅ |
 | security-engineer | SQL 파서/정책 엔진 | parser/, policy/ | ✅ |
-| infra-engineer | 로거/통계/Go/CI/배포 | logger/, stats/, tools/, deploy/, .github/ | ✅ |
+| infra-engineer | 로거/통계/CI/배포 | logger/, stats/, deploy/, .github/ | ✅ |
+| go-engineer | Go 컨트롤플레인/CLI/대시보드 | tools/ | ✅ |
 | qa-engineer | 테스트/벤치마크 | tests/, benchmarks/ | ✅ |
 | technical-writer | 문서 | docs/ | ✅ |
 

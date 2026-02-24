@@ -64,7 +64,6 @@ fi
 
 RANGE_SPEC="${BASE_REF}..${HEAD_REF}"
 CHANGED_FILES="$(git diff --name-only "$RANGE_SPEC")"
-COMMIT_MESSAGES="$(git log --format=%B "$RANGE_SPEC" || true)"
 
 if [[ -z "$CHANGED_FILES" ]]; then
   echo "No changed files in range: $RANGE_SPEC"
@@ -78,11 +77,11 @@ fi
 
 export DOC_IMPACT_RANGE_SPEC="$RANGE_SPEC"
 export DOC_IMPACT_CHANGED_FILES="$CHANGED_FILES"
-export DOC_IMPACT_COMMIT_MESSAGES="$COMMIT_MESSAGES"
 export DOC_IMPACT_OWNERSHIP_MAP="$OWNERSHIP_MAP"
 
 ruby <<'RUBY'
 require "yaml"
+require "open3"
 
 def env!(key)
   v = ENV[key]
@@ -94,15 +93,29 @@ def is_doc_path?(path)
   path == "README.md" || path.start_with?("docs/")
 end
 
-def trailer_exception?(commit_messages)
-  has_flag = commit_messages.match?(/^Docs-Impact:\s*none\s*$/i)
-  has_reason = commit_messages.match?(/^Docs-Impact-Reason:\s*.+$/i)
-  has_flag && has_reason
+def trailer_exception?(range_spec)
+  out, status = Open3.capture2("git", "log", "--format=%x1e%B%x1f", range_spec)
+  return false unless status.success?
+
+  out
+    .split("\x1f")
+    .map { |msg| msg.delete_prefix("\x1e").strip }
+    .reject(&:empty?)
+    .any? do |msg|
+      msg.match?(/^Docs-Impact:\s*none\s*$/i) &&
+        msg.match?(/^Docs-Impact-Reason:\s*.+$/i)
+    end
 end
 
 def rule_matches_path?(rule, path)
   Array(rule["match"]).any? do |glob|
-    File.fnmatch?(glob, path, File::FNM_PATHNAME)
+    if glob.end_with?("/**")
+      # Treat trailing '/**' as recursive prefix match regardless of Ruby fnmatch quirks.
+      prefix = glob.delete_suffix("/**") + "/"
+      path.start_with?(prefix)
+    else
+      File.fnmatch?(glob, path, File::FNM_PATHNAME)
+    end
   end
 end
 
@@ -116,7 +129,6 @@ end
 begin
   range_spec = env!("DOC_IMPACT_RANGE_SPEC")
   changed_files = env!("DOC_IMPACT_CHANGED_FILES").split("\n").reject(&:empty?).uniq
-  commit_messages = env!("DOC_IMPACT_COMMIT_MESSAGES")
   ownership_map_path = env!("DOC_IMPACT_OWNERSHIP_MAP")
 
   map = YAML.load_file(ownership_map_path)
@@ -154,7 +166,7 @@ begin
     candidates.none? { |c| changed_docs.include?(c) }
   end
 
-  if !missing_rules.empty? && trailer_exception?(commit_messages)
+  if !missing_rules.empty? && trailer_exception?(range_spec)
     puts "PASS: doc-impact exception trailer found in commit messages."
     puts
     puts "Missing doc groups (ignored by trailer):"

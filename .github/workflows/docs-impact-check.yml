@@ -15,8 +15,17 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Setup Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.2"
+
       - name: Fetch PR base branch
-        run: git fetch origin "${{ github.base_ref }}" --depth=1
+        run: git fetch origin "$BASE_REF" --depth=1
+        env:
+          BASE_REF: ${{ github.base_ref }}
 
       - name: Run doc impact check
-        run: ./scripts/check-doc-impact.sh --base "origin/${{ github.base_ref }}" --head HEAD
+        run: ./scripts/check-doc-impact.sh --base "origin/$BASE_REF" --head HEAD
+        env:
+          BASE_REF: ${{ github.base_ref }}
