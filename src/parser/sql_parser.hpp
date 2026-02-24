@@ -54,12 +54,19 @@ enum class SqlCommand : std::uint8_t {
 // ParsedQuery
 //   파싱 성공 시 반환되는 SQL 분석 결과.
 //   raw_sql 은 원문 그대로 보존하며, 로깅/감사 목적으로만 사용한다.
+//
+// [보안 주의 — has_multi_statement]
+//   문자열 리터럴/주석 외부에 세미콜론이 발견되면 parse()가 ParseError
+//   (kInvalidSql)를 반환하므로, 이 플래그가 true 인 ParsedQuery 는
+//   정상 경로에서 절대 반환되지 않는다.
+//   호출자는 parse() 실패 시 반드시 fail-close(차단)를 적용해야 한다.
 // ---------------------------------------------------------------------------
 struct ParsedQuery {
     SqlCommand               command{SqlCommand::kUnknown};
     std::vector<std::string> tables{};           // FROM/INTO/UPDATE/JOIN 뒤 테이블명
     std::string              raw_sql{};          // 원문 SQL (로깅용, 변형 없음)
     bool                     has_where_clause{}; // DELETE 무조건 삭제 탐지용
+    bool                     has_multi_statement{false}; // 멀티 스테이트먼트 감지 (차단 플래그)
 };
 
 // ---------------------------------------------------------------------------

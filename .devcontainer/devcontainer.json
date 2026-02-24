@@ -1,6 +1,8 @@
 {
   "name": "dbgate-dev",
-  "dockerComposeFile": ["../docker-compose.yaml"],
+  "dockerComposeFile": [
+    "../docker-compose.yaml"
+  ],
   "service": "dev",
   "workspaceFolder": "/workspace",
   "remoteUser": "root",
@@ -44,7 +46,11 @@
       ]
     }
   },
-  "forwardPorts": [13306, 3306, 8080],
+  "forwardPorts": [
+    13306,
+    3306,
+    8080
+  ],
   "portsAttributes": {
     "8080": {
       "label": "App",
@@ -64,7 +70,8 @@
   "waitFor": "postStartCommand",
   "mounts": [
     "source=${localEnv:HOME}/.codex,target=/root/.codex,type=bind,consistency=cached",
-    "source=${localEnv:HOME}/.claude,target=/root/.claude,type=bind,consistency=cached"
+    "source=${localEnv:HOME}/.claude,target=/root/.claude,type=bind,consistency=cached",
+    "source=${localEnv:HOME}/.config/gh,target=/root/.config/gh,type=bind"
   ],
   "containerEnv": {
     "CLAUDE_CONFIG_DIR": "/root/.claude",

@@ -415,13 +415,26 @@ public:
 **특징**:
 - Regex 컴파일이 생성자에서 발생 (재사용 권장)
 - O(P × N) 복잡도 (P = 패턴, N = SQL 길이)
-- 패턴 목록이 비어있으면 모든 SQL이 통과 (설정 검증 필요)
+- 잘못된 정규식 패턴은 경고 로그 후 건너뜀 (나머지 패턴은 계속 적용)
+- **패턴 목록이 비어있거나 모든 패턴이 유효하지 않으면 fail-close — 모든 SQL이 차단됨**
+
+**기본 탐지 패턴 (10가지)**:
+1. `UNION\s+SELECT` — UNION 기반 인젝션
+2. `'\s*OR\s+['"\d]` — tautology (OR 기반 Boolean blind)
+3. `SLEEP\s*\(` — time-based blind
+4. `BENCHMARK\s*\(` — time-based blind
+5. `LOAD_FILE\s*\(` — 파일 읽기
+6. `INTO\s+OUTFILE` — 파일 쓰기
+7. `INTO\s+DUMPFILE` — 파일 덤프
+8. `;\s*(DROP|DELETE|UPDATE|INSERT|ALTER|CREATE)` — piggyback 공격
+9. `--\s*$` — 주석 꼬리 무력화
+10. `/\*.*\*/` — 인라인 주석 우회
 
 **한계**:
-- 주석 분할: `UN/**/ION` 미탐지
-- 대소문자 변형: case-insensitive로 완화 (개선 여지)
-- 인코딩 우회: URL/hex 미지원
-- 오탐: ORM 생성 쿼리에서 UNION false positive
+- 주석 분할: `UN/**/ION` 미탐지 (전처리 단계 없음)
+- 인코딩 우회: URL 인코딩, hex 리터럴 미지원
+- 오탐: ORM 생성 쿼리에서 UNION false positive 가능
+- OR 조건: `OR true` 등 다른 형태 미탐지 (패턴 2는 따옴표/숫자 시작으로 제한)
 
 ---
 
