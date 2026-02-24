@@ -56,6 +56,7 @@ RUN set -eux; \
     dnsutils \
     aggregate \
     jq \
+    ruby \
     # Locale
     locales \
     nano \
