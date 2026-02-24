@@ -1,0 +1,22 @@
+name: Docs Impact Check
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+jobs:
+  doc-impact:
+    name: Check document impact coverage
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fetch PR base branch
+        run: git fetch origin "${{ github.base_ref }}" --depth=1
+
+      - name: Run doc impact check
+        run: ./scripts/check-doc-impact.sh --base "origin/${{ github.base_ref }}" --head HEAD
