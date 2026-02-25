@@ -319,6 +319,14 @@ bool has_where_keyword(const std::string& normalized_sql) {
 //   주석 제거 후에는 주석 내 세미콜론도 사라지므로 false negative 위험이 있어
 //   원문 스캔 방식을 채택한다.
 //
+// [Trailing 세미콜론 처리 — DON-39]
+//   MySQL 클라이언트는 "SELECT 1;" 처럼 단일 구문 끝에 세미콜론을 붙인다.
+//   세미콜론 뒤에 non-whitespace 문자가 없으면 trailing 세미콜론으로 판단하여
+//   허용한다(false 반환). 이렇게 해야 정상 쿼리가 차단되는 false positive를 방지.
+//
+//   허용 예시: "SELECT 1;"  / "INSERT INTO t VALUES(1);"  / "SELECT 1;  \n"
+//   차단 예시: "SELECT 1; DROP TABLE users"  / "SELECT 1; ;"
+//
 // [한계 / 알려진 우회 가능성]
 // - 중첩 주석 미지원 (MySQL은 중첩 블록 주석을 허용하지 않으므로 실제 영향 미미).
 // - 백슬래시 이스케이프 처리 불완전: '\'' 같은 이스케이프 시퀀스는
@@ -328,6 +336,9 @@ bool has_where_keyword(const std::string& normalized_sql) {
 //
 // [오탐/미탐 트레이드오프]
 // - 보수적(차단 우선): 파싱 불확실 시 세미콜론이 있다고 판정한다.
+// - trailing 세미콜론 허용으로 false positive 감소, 그러나
+//   "SELECT 1; --comment" 처럼 세미콜론 뒤 주석만 있는 경우에도 허용된다
+//   (주석 내용은 무해하므로 실질적 보안 영향 없음).
 // ---------------------------------------------------------------------------
 bool has_semicolon_outside_string_or_comment(std::string_view sql) {
     // 상태 머신으로 문자열/주석 영역을 추적
@@ -362,7 +373,20 @@ bool has_semicolon_outside_string_or_comment(std::string_view sql) {
                 } else if (c == '#') {
                     state = State::kHashComment;
                 } else if (c == ';') {
-                    // 문자열/주석 밖 세미콜론 발견 → 멀티 스테이트먼트
+                    // 세미콜론 발견 — trailing 세미콜론 여부를 확인한다.
+                    // 세미콜론 뒤에 whitespace(공백/탭/개행)만 남아 있으면
+                    // 단일 구문의 trailing 세미콜론으로 판단하여 허용한다.
+                    // 뒤에 non-whitespace 문자가 하나라도 있으면 멀티 스테이트먼트.
+                    const std::string_view tail = sql.substr(i + 1);
+                    const bool only_whitespace = std::all_of(
+                        tail.begin(), tail.end(),
+                        [](unsigned char ch) { return std::isspace(ch) != 0; }
+                    );
+                    if (only_whitespace) {
+                        // trailing 세미콜론: 단일 구문으로 허용
+                        return false;
+                    }
+                    // 세미콜론 뒤에 추가 내용 있음 → 멀티 스테이트먼트
                     return true;
                 }
                 break;
@@ -431,11 +455,14 @@ SqlParser::parse(std::string_view sql) const {
 
     // 2. 멀티 스테이트먼트 감지 (주석 제거 전 원문에서 수행)
     //
-    // [보안 원칙] 문자열/주석 외부에 세미콜론이 있으면 fail-close(ParseError 반환).
+    // [보안 원칙] 문자열/주석 외부에 세미콜론이 있고, 세미콜론 뒤에
+    // non-whitespace 문자가 있으면 fail-close(ParseError 반환).
     // 멀티 스테이트먼트 SQL은 piggyback 공격의 주요 벡터이므로 파싱 단계에서 차단.
     //
-    // [오탐 가능성] 세미콜론으로 끝나는 단일 구문 (예: "SELECT 1;")도 탐지됨.
-    //   → 보수적 설계. 단일 구문 끝 세미콜론은 사전 전처리로 제거 권고.
+    // [DON-39] trailing 세미콜론 허용: "SELECT 1;" 처럼 세미콜론 뒤에
+    // 공백/개행만 있는 경우는 단일 구문으로 판단하여 통과시킨다.
+    // MySQL 클라이언트 대부분이 trailing 세미콜론을 붙이므로 이를 허용하지 않으면
+    // 운영 환경에서 정상 쿼리가 차단되는 false positive 가 발생한다.
     if (has_semicolon_outside_string_or_comment(sql)) {
         spdlog::warn("sql_parser: multi-statement detected (semicolon outside string/comment), "
                      "fail-close applied. sql_prefix='{}'",
