@@ -155,20 +155,31 @@ auto write_packet_raw(boost::asio::ip::tcp::socket& sock, const MysqlPacket& pkt
 // relay_server_response
 //   MySQL 서버 응답(OK / ERR / Result Set)이 완료될 때까지 읽어 클라이언트에 릴레이.
 //
-//   Result Set 완료 감지:
-//     - 첫 패킷 0xFF → ERR, 즉시 반환
-//     - 첫 패킷 0x00 / seq_id 역전 → OK, 즉시 반환
-//     - 0xFE + payload < 9 → EOF 패킷 → Result Set 또는 필드 목록 종료
-//     - seq_id가 이전보다 작아지는 경우(역전) → 새 응답 시작이므로 완료
+//   상태 머신 기반 구현:
+//   1. 첫 패킷 분석:
+//      - 0xFF → ERR, 즉시 종료
+//      - 0x00 → OK (비-결과셋), 즉시 종료
+//      - 0xFE && payload < 9 → EOF (비정상), 즉시 종료
+//      - 0x01~0xFC → column_count (Result Set 진입)
 //
-//   간단한 구현 전략:
-//     seq_id 단조 증가를 기준으로 역전 감지.
-//     EOF 패킷(0xFE, payload < 9) 2회 감지 → Result Set 완료 (필드 EOF + 행 EOF).
-//     단, CLIENT_DEPRECATE_EOF 사용 시 OK 패킷으로 대체되므로 OK 감지도 처리.
+//   2. Result Set 상태 머신:
+//      - kColumnDefs: column_count개 definition 읽기
+//      - kRows: row 데이터 읽기 (0x00~0xFB 시작 가능)
+//      - 종료: EOF (0xFE, payload < 9) 또는 OK (CLIENT_DEPRECATE_EOF)
+//
+//   핵심: Result Set 내에서 row가 0x00으로 시작할 수 있으므로,
+//         상태 추적을 통해 column EOF 이후의 0x00은 row data로 취급.
 // ---------------------------------------------------------------------------
 auto Session::relay_server_response(std::uint8_t request_seq_id)
     -> boost::asio::awaitable<std::expected<void, ParseError>>
 {
+    enum class ResponseState {
+        kFirst,       // 첫 패킷 분석 중
+        kColumnDefs,  // column definition 읽는 중
+        kRows,        // row 데이터 읽는 중
+        kDone,        // 응답 완료
+    };
+
     // 첫 패킷으로 응답 유형 판별
     auto first_pkt_result = co_await read_one_packet(server_socket_);
     if (!first_pkt_result) {
@@ -196,24 +207,36 @@ auto Session::relay_server_response(std::uint8_t request_seq_id)
         co_return std::expected<void, ParseError>{};
     }
 
-    // OK 패킷 (0x00, payload < 9 즉 EOF 아님) → 즉시 완료
-    // CLIENT_DEPRECATE_EOF 환경에서 OK로 Result Set 종료 가능
+    // OK 패킷 (0x00) → 즉시 완료
+    // 비-결과셋 응답 (COM_QUERY 아님, 또는 이미 결과셋 관련 패킷 아님)
+    // 주의: COM_STMT_PREPARE 응답도 0x00으로 시작하지만,
+    //       그 경우 payload >= 11이고 뒤따르는 정의 패킷들이 있음.
+    //       프록시 범위 내에서는 구분 불가하므로,
+    //       relay() 로직에서 이미 COM_STMT_PREPARE 처리를 고려해야 함.
     if (first_byte == 0x00) {
         co_return std::expected<void, ParseError>{};
     }
 
-    // EOF 패킷 (0xFE, payload.size() < 9) → 즉시 완료
+    // EOF 패킷 (0xFE, payload.size() < 9) → 즉시 완료 (비정상)
     if (first_byte == 0xFE && first_payload.size() < 9) {
         co_return std::expected<void, ParseError>{};
     }
 
-    // Result Set: 첫 바이트가 column count (>0)
-    // 열 정의 패킷들 → 필드 EOF → 행 데이터 패킷들 → 행 EOF(또는 OK)
-    // seq_id 역전 방지를 위해 이전 seq_id 추적
-    std::uint8_t prev_seq_id = first_pkt.sequence_id();
-    int eof_count = 0;  // EOF 패킷 카운터 (2개면 Result Set 완료)
+    // Result Set: 첫 바이트가 column count (0x01~0xFC)
+    // column_count >= 1이면 반드시 column definition들, 필드 EOF, row 데이터, 행 EOF가 뒤따름
+    if (first_byte < 0x01 || first_byte > 0xFC) {
+        // 예상 범위 밖 → 비정상
+        spdlog::warn("[session {}] unexpected first byte in response: 0x{:02x}",
+                     session_id_, first_byte);
+        co_return std::expected<void, ParseError>{};
+    }
 
-    while (true) {
+    const std::uint8_t column_count = first_byte;
+    std::uint8_t column_defs_read = 0;
+    ResponseState state = ResponseState::kColumnDefs;
+    std::uint8_t prev_seq_id = first_pkt.sequence_id();
+
+    while (state != ResponseState::kDone) {
         auto pkt_result = co_await read_one_packet(server_socket_);
         if (!pkt_result) {
             co_return std::unexpected(pkt_result.error());
@@ -229,40 +252,81 @@ auto Session::relay_server_response(std::uint8_t request_seq_id)
         }
 
         if (payload.empty()) {
+            // 비어있는 payload → 비정상, 중단
             break;
         }
 
         const std::uint8_t byte0 = payload[0];
 
-        // ERR 패킷 → 즉시 종료
+        // ERR 패킷은 모든 상태에서 즉시 종료
         if (byte0 == 0xFF) {
-            break;
+            state = ResponseState::kDone;
+            continue;
         }
 
-        // OK 패킷 (CLIENT_DEPRECATE_EOF 모드) → 즉시 종료
-        // 주의: 결과셋 행의 첫 컬럼이 빈 문자열이면 0x00으로 시작할 수 있음
-        // OK 패킷은 최소 5바이트: header(0x00) + affected_rows + last_insert_id + status_flags(2)
-        if (byte0 == 0x00 && payload.size() >= 5) {
-            break;
-        }
-
-        // EOF 패킷
-        if (byte0 == 0xFE && payload.size() < 9) {
-            ++eof_count;
-            if (eof_count >= 2) {
-                // 필드 EOF + 행 EOF → Result Set 완료
-                break;
-            }
-        }
-
-        // seq_id 역전 감지 (새 커맨드 응답 시작 — 비정상, 안전하게 중단)
+        // seq_id 역전 감지 (새 커맨드 응답 시작)
         if (pkt.sequence_id() < prev_seq_id && prev_seq_id != 0xFF) {
             spdlog::warn("[session {}] seq_id reversed ({} -> {}), stopping relay",
                          session_id_, prev_seq_id, pkt.sequence_id());
-            break;
+            state = ResponseState::kDone;
+            continue;
         }
-
         prev_seq_id = pkt.sequence_id();
+
+        // 상태별 처리
+        switch (state) {
+            case ResponseState::kColumnDefs: {
+                // Column definition 읽는 중
+                if (byte0 == 0xFE && payload.size() < 9) {
+                    // Column EOF → row 데이터 준비
+                    state = ResponseState::kRows;
+                } else if (byte0 == 0xFF) {
+                    // Error 패킷 (이미 처리됨)
+                    state = ResponseState::kDone;
+                } else {
+                    // Column definition 패킷
+                    ++column_defs_read;
+                    if (column_defs_read > column_count + 1) {
+                        // 정상 개수보다 많음 → 비정상
+                        spdlog::warn("[session {}] too many column definitions: {} > {}",
+                                     session_id_, column_defs_read, column_count);
+                        state = ResponseState::kDone;
+                    }
+                }
+                break;
+            }
+
+            case ResponseState::kRows: {
+                // Row 데이터 읽는 중
+                // row는 0x00~0xFB로 시작할 수 있음
+                // MySQL 텍스트 프로토콜:
+                //   - row 패킷: column_value들의 시퀀스 (lenenc-encoded)
+                //   - EOF 패킷: header=0xFE, payload < 9
+                //   - OK 패킷: header=0x00 (CLIENT_DEPRECATE_EOF 모드)
+                //
+                // 문제: row의 첫 컬럼이 빈 문자열(0x00)이고 다음 컬럼들이 있으면,
+                //       [0x00, ...] 형태로 OK와 유사할 수 있음.
+                //
+                // 해결: EOF(0xFE, size < 9) 또는 ERR(0xFF)만 종료 조건으로 취급.
+                //       이는 프로토콜 스펙에 의해 결과셋이 정확히 종료되는 구간을 보장함.
+                if (byte0 == 0xFE && payload.size() < 9) {
+                    // Row EOF 패킷 → 결과셋 완료
+                    state = ResponseState::kDone;
+                } else if (byte0 == 0xFF) {
+                    // Error 패킷 (이미 처리됨, 중복 방지)
+                    state = ResponseState::kDone;
+                } else {
+                    // Row data (0x00~0xFB로 시작하는 column values)
+                    // 계속 읽음
+                }
+                break;
+            }
+
+            case ResponseState::kDone:
+            case ResponseState::kFirst:
+                // 이미 완료되었으므로 루프 탈출
+                break;
+        }
     }
 
     co_return std::expected<void, ParseError>{};
