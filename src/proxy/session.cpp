@@ -790,6 +790,42 @@ auto Session::run() -> boost::asio::awaitable<void>
         }
 
         // ---------------------------------------------------------------
+        // Prepared Statement 계열 (보안 fail-close)
+        //   현재 정책 엔진은 COM_QUERY만 검사한다.
+        //   COM_STMT_PREPARE/EXECUTE/RESET을 투명 릴레이하면 정책 우회 경로가 된다.
+        //   statement 추적 기반 정책 적용 전까지는 명시적으로 거부한다.
+        // ---------------------------------------------------------------
+        if (cmd.command_type == CommandType::kComStmtPrepare ||
+            cmd.command_type == CommandType::kComStmtExecute ||
+            cmd.command_type == CommandType::kComStmtReset)
+        {
+            spdlog::warn("[session {}] blocking unsupported prepared-statement command: 0x{:02x}",
+                         session_id_, static_cast<std::uint8_t>(cmd.command_type));
+
+            const auto err_pkt = MysqlPacket::make_error(
+                1235,  // ER_NOT_SUPPORTED_YET
+                "Prepared statements are not supported by proxy policy enforcement",
+                static_cast<std::uint8_t>(cmd.sequence_id + 1)
+            );
+
+            boost::system::error_code wr_ec;
+            const auto err_bytes = err_pkt.serialize();
+            co_await boost::asio::async_write(
+                client_socket_,
+                boost::asio::buffer(err_bytes),
+                boost::asio::redirect_error(boost::asio::use_awaitable, wr_ec)
+            );
+
+            if (wr_ec) {
+                spdlog::warn("[session {}] failed to send prepared-statement rejection: {}",
+                             session_id_, wr_ec.message());
+                break;
+            }
+
+            continue;
+        }
+
+        // ---------------------------------------------------------------
         // 기타 커맨드: 서버로 투명 릴레이 + 응답 클라이언트에 릴레이
         // ---------------------------------------------------------------
         {
