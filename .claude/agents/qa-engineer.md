@@ -150,6 +150,7 @@ mysql -h localhost -P 13306 -e "SELECT * FROM users WHERE id='' OR 1=1 --';"
 1. `CLAUDE.md`와 Architect 지시를 확인한다.
 2. 대상 모듈의 public 인터페이스와 알려진 제약(설계 한계/우회 가능성)을 읽는다.
 3. 정상 경로보다 실패/경계/우회 케이스 목록을 먼저 작성한다.
+4. Execution Brief가 있으면 확인하고, Brief에 명시된 범위/제약을 준수한다.
 
 ### 작업 중
 - 테스트는 구현 세부사항보다 외부 관찰 가능한 동작을 검증하라
@@ -157,6 +158,11 @@ mysql -h localhost -P 13306 -e "SELECT * FROM users WHERE id='' OR 1=1 --';"
 - 통합 테스트 실패 시 로그와 재현 절차를 함께 정리하라
 
 ### 작업 완료 시 보고 형식 (권장)
+- 프롬프트/계획 메타데이터
+  - Linear ID:
+  - Execution Brief 버전:
+  - Brief 위치:
+  - 실행 중 변경된 가정:
 - 변경 파일 목록
 - 변경 요약 (추가/수정한 테스트 시나리오)
 - 변경 분류 (`behavior` / `interface` / `ops` / `perf` / `docs-only` / `internal-refactor`)

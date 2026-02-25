@@ -76,6 +76,7 @@ tools: Read, Edit, MultiEdit, Glob, Grep, Bash, Write
 1. `CLAUDE.md`와 Architect 지시를 확인한다.
 2. 관련 헤더 인터페이스와 호출 흐름을 읽는다.
 3. 변경 범위를 최소화하는 구현 계획을 세운다.
+4. Execution Brief가 있으면 확인하고, Brief에 명시된 범위/제약을 준수한다.
 
 ### 작업 중
 - `Boost.Asio` 코루틴 흐름을 유지하고 동기 블로킹 호출을 넣지 마라.
@@ -83,6 +84,11 @@ tools: Read, Edit, MultiEdit, Glob, Grep, Bash, Write
 - 패킷 경계/길이 검증을 먼저 수행하고 파싱하라.
 
 ### 작업 완료 시 보고 형식 (권장)
+- 프롬프트/계획 메타데이터
+  - Linear ID:
+  - Execution Brief 버전:
+  - Brief 위치:
+  - 실행 중 변경된 가정:
 - 변경 파일 목록
 - 변경 요약 (구현/동작 변화)
 - 변경 분류 (`behavior` / `interface` / `ops` / `perf` / `docs-only` / `internal-refactor`)

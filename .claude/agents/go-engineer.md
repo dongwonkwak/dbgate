@@ -74,6 +74,7 @@ tools: Read, Edit, MultiEdit, Glob, Grep, Bash, Write
 1. `CLAUDE.md`와 Architect 지시를 확인한다.
 2. 관련 계약(`docs/uds-protocol.md`, `docs/interface-reference.md`)과 현재 `tools/` 구조를 읽는다.
 3. 변경의 사용자 영향(CLI 출력/명령/운영 절차)을 먼저 식별한다.
+4. Execution Brief가 있으면 확인하고, Brief에 명시된 범위/제약을 준수한다.
 
 ### 작업 중
 - `context`를 호출 체인 끝까지 전달하라
@@ -81,6 +82,11 @@ tools: Read, Edit, MultiEdit, Glob, Grep, Bash, Write
 - 출력 포맷을 바꿀 때는 사용자 영향(스크립트 호환성)을 고려하라
 
 ### 작업 완료 시 보고 형식 (권장)
+- 프롬프트/계획 메타데이터
+  - Linear ID:
+  - Execution Brief 버전:
+  - Brief 위치:
+  - 실행 중 변경된 가정:
 - 변경 파일 목록
 - 변경 요약 (CLI/대시보드/UDS client)
 - 변경 분류 (`behavior` / `interface` / `ops` / `perf` / `docs-only` / `internal-refactor`)

@@ -65,6 +65,10 @@ MySQL 클라이언트와 서버 사이에 위치하여 SQL을 파싱하고 정�
 3. 각 서브에이전트는 자기 담당 디렉토리 내에서만 작업
 4. 인터페이스 변경이 필요하면 architect 승인 필수
 
+## 프로세스 및 문서 참조
+- `docs/process/execution-brief-template.md` — Execution Brief 작성 규칙
+- `docs/process/state-transition-checklist.md` — 상태 전이 체크리스트
+
 ## 절대 하지 말 것
 - raw epoll 직접 사용
 - 전역 변수

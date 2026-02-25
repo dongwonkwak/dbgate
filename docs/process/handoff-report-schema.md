@@ -12,6 +12,15 @@
 - `qa-engineer`
 - `technical-writer` (문서 전용 변형 포함)
 
+## 0) 프롬프트/계획 메타데이터 (필수)
+- `Linear ID`: 이슈 식별자 (예: DON-28)
+- `Execution Brief 버전`: 실행에 사용한 Brief 버전 (예: v1, v2)
+- `Brief 위치`: Linear 코멘트 타임스탬프 또는 링크
+- `실행 중 변경된 가정`: Brief 작성 시점과 달라진 사항. 없으면 `없음`.
+
+이 필드는 실행 결과(handoff)와 실행 입력(brief)을 연결하여,
+실패/재작업 원인이 코드인지 프롬프트인지 구분할 수 있게 한다.
+
 ## 공통 필드 (필수)
 
 ### 1) 변경 파일 목록
@@ -82,6 +91,11 @@
 ## 예시 (구현 에이전트)
 
 ```md
+- 프롬프트/계획 메타데이터
+  - Linear ID: DON-28
+  - Execution Brief 버전: v1
+  - Brief 위치: DON-28 코멘트 (2026-02-25T06:30:00Z)
+  - 실행 중 변경된 가정: Health Check 경로를 /healthz로 확정 (Brief에서는 미정)
 - 변경 파일 목록
   - src/proxy/session.cpp
   - tests/test_proxy_session.cpp
@@ -139,3 +153,4 @@
 1. 완료 보고는 자유 서술이 아니라 위 필드 순서를 따른다.
 2. `문서 영향 분석`은 생략하지 않는다.
 3. `internal-refactor`라도 문서 미수정 사유를 적는다.
+4. `프롬프트/계획 메타데이터`는 생략하지 않는다. Execution Brief가 없는 경우 `Brief 없음 (구두 지시)` 등으로 명시한다.
