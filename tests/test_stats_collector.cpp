@@ -199,16 +199,25 @@ TEST(StatsCollector, Snapshot_CapturedAt_IsSet) {
 
 // ---------------------------------------------------------------------------
 // Snapshot_Qps_PositiveAfterQuery
-//   쿼리를 실행한 후 qps 가 0 보다 커야 한다.
-//   (elapsed_sec > 0 이고 window_queries > 0 이면 qps > 0)
+//   충분한 시간이 경과한 후 쿼리를 실행하면 qps 가 0 보다 커야 한다.
+//
+//   [구현 주의사항]
+//   window_start_ 는 StatsCollector 생성자에서 설정되고 snapshot() 에서
+//   now - window_start 로 elapsed 를 계산한다.
+//   생성 직후 즉시 snapshot() 을 호출하면 system_clock 의 정밀도 한계로
+//   elapsed == 0 이 될 수 있으므로 (qps == 0.0), 최소 1ms 대기 후 검증한다.
 // ---------------------------------------------------------------------------
 TEST(StatsCollector, Snapshot_Qps_PositiveAfterQuery) {
     StatsCollector stats;
+
+    // 최소 1ms 대기: system_clock 한 tick 이상의 시간이 지나도록 보장
+    std::this_thread::sleep_for(std::chrono::milliseconds{1});
+
     stats.on_query(false);
 
     const auto snap = stats.snapshot();
     EXPECT_GT(snap.qps, 0.0)
-        << "qps should be > 0 after at least one query";
+        << "qps should be > 0 after at least one query with elapsed > 0";
 }
 
 // ---------------------------------------------------------------------------
