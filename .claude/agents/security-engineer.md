@@ -106,11 +106,21 @@ tools: Read, Edit, MultiEdit, Glob, Grep, Bash, Write
 - 운영 영향 (정책 기본값/Fail-close/로그/롤백 포인트)
 - 오탐/미탐 트레이드오프
 - 알려진 한계/우회 가능성
-- 문서 영향 분석
-  - 변경 동작/인터페이스/운영 영향:
-  - 영향 문서 후보:
-  - 실제 수정 문서:
-  - 문서 미수정 사유(해당 시):
+- Doc Impact 조치 (필수)
+  담당 경로(`src/parser/`, `src/policy/`, `config/policy.yaml`) 수정 시 아래 중 하나를 반드시 수행한다.
+  CLAUDE.md "Doc Impact 규칙" 참조.
+
+  **후보 문서**:
+  - `docs/policy-engine.md`
+  - `docs/data-flow.md`
+  - `docs/interface-reference.md`
+  - `docs/threat-model.md`
+
+  **옵션 A**: 위 후보 중 실제로 영향받는 파일 1개 이상을 수정/작성한다.
+  **옵션 B**: 허용 사유에 해당하면 마지막 커밋에 트레일러를 추가한다.
+
+  완료 후 기재:
+  - 실제 조치: [ ] 옵션 A (수정 파일: ) / [ ] 옵션 B (사유: )
 - 테스트 추가/수정 내용
 - 빌드/테스트 실행 결과
 - 교차영향 및 후속 요청 (`network-engineer`/`infra-engineer`/`qa-engineer`/Architect)

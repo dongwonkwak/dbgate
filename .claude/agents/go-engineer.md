@@ -87,10 +87,21 @@ tools: Read, Edit, MultiEdit, Glob, Grep, Bash, Write
 - 인터페이스 영향 (UDS 커맨드/JSON 필드/CLI 명령/출력 호환성)
 - 사용자 영향 (출력/명령/호환성)
 - 운영 영향 (runbook/배포/장애 대응 절차 영향)
-- 문서 영향 분석
-  - 변경 동작/인터페이스/운영 영향:
-  - 영향 문서 후보:
-  - 실제 수정 문서:
-  - 문서 미수정 사유(해당 시):
+- Doc Impact 조치 (필수)
+  담당 경로(`tools/`) 수정 시 아래 중 하나를 반드시 수행한다.
+  CLAUDE.md "Doc Impact 규칙" 참조.
+
+  **후보 문서**:
+  - `README.md`
+  - `docs/runbook.md`
+  - `docs/uds-protocol.md`
+  - `docs/observability.md`
+  - `docs/interface-reference.md`
+
+  **옵션 A**: 위 후보 중 실제로 영향받는 파일 1개 이상을 수정/작성한다.
+  **옵션 B**: 허용 사유에 해당하면 마지막 커밋에 트레일러를 추가한다.
+
+  완료 후 기재:
+  - 실제 조치: [ ] 옵션 A (수정 파일: ) / [ ] 옵션 B (사유: )
 - 테스트/린트 실행 결과
 - 교차영향 및 후속 요청 (`infra-engineer`/`qa-engineer`/`technical-writer`/Architect)

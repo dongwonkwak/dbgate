@@ -50,3 +50,4 @@ leak-*
 corpus/
 
 .claude/settings.local.json
+.claude/agent-memory/
