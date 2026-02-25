@@ -18,8 +18,8 @@ tools: Read, Edit, MultiEdit, Glob, Grep, Bash, Write
 - `src/health/` — Health Check 엔드포인트
 
 ## 기술 스택
-- C++20, GCC 14
-- Boost.Asio (C++20 코루틴, `co_await`)
+- C++23, GCC 14
+- Boost.Asio (C++23 코루틴, `co_await`)
 - Boost.Asio SSL (클라이언트↔프록시, 프록시↔MySQL)
 
 ## 코딩 규칙

@@ -21,7 +21,7 @@ tools: Read, Edit, MultiEdit, Glob, Grep, Bash, Write
 ## 기술 스택
 
 ### C++ (logger, stats)
-- C++20, GCC 14
+- C++23, GCC 14
 - `spdlog` (구조화 JSON 로그)
 - Unix Domain Socket (Go 연동)
 

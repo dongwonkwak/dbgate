@@ -4,24 +4,23 @@
 #include "protocol/mysql_packet.hpp"
 #include "protocol/handshake.hpp"
 #include "protocol/command.hpp"
+#include "parser/sql_parser.hpp"
+#include "parser/injection_detector.hpp"
+#include "parser/procedure_detector.hpp"
+#include "policy/policy_engine.hpp"
+#include "logger/structured_logger.hpp"
+#include "stats/stats_collector.hpp"
 
 #include <boost/asio/awaitable.hpp>
 #include <boost/asio/ip/tcp.hpp>
 #include <boost/asio/strand.hpp>
 #include <boost/asio/io_context.hpp>
 
+#include <atomic>
 #include <cstdint>
 #include <memory>
 #include <string>
-
-// ---------------------------------------------------------------------------
-// Forward declarations
-//   policy / logger / stats 헤더는 해당 모듈 담당자가 확정한다.
-//   Session 은 포인터/레퍼런스로만 보유하므로 전방 선언으로 충분하다.
-// ---------------------------------------------------------------------------
-class PolicyEngine;
-class StructuredLogger;
-class StatsCollector;
+#include <vector>
 
 // ---------------------------------------------------------------------------
 // SessionState
@@ -87,6 +86,12 @@ public:
     // -----------------------------------------------------------------------
     auto run() -> boost::asio::awaitable<void>;
 
+    // 세션 코루틴/종료 작업을 직렬화할 executor(strand) 반환.
+    [[nodiscard]] auto executor() const -> boost::asio::any_io_executor
+    {
+        return strand_;
+    }
+
     // -----------------------------------------------------------------------
     // close
     //   세션을 정상 종료한다. 현재 처리 중인 쿼리가 완료된 후 종료된다.
@@ -115,4 +120,17 @@ private:
 
     // strand: 모든 비동기 핸들러를 직렬화하여 스레드 안전성을 보장한다.
     boost::asio::strand<boost::asio::any_io_executor> strand_;
+
+    // parser 멤버 (stateless이므로 재사용)
+    SqlParser          sql_parser_{};
+    InjectionDetector  injection_detector_;
+    ProcedureDetector  proc_detector_{};
+
+    // close() 중복 호출 방지용 atomic 플래그
+    std::atomic<bool>  closing_{false};
+
+    // relay_server_response 헬퍼
+    //   MySQL 서버 응답(Result Set / OK / ERR)이 완료될 때까지 읽어 클라이언트에 릴레이.
+    auto relay_server_response(CommandType request_type, std::uint8_t request_seq_id)
+        -> boost::asio::awaitable<std::expected<void, ParseError>>;
 };

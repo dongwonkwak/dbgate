@@ -95,7 +95,7 @@ Meaning:   JSON body는 29 바이트
     "blocked_queries": 15,
     "qps": 25.5,
     "block_rate": 0.012,
-    "captured_at": "2026-02-22T10:30:45.123Z"
+    "captured_at_ms": 1740218645123
   }
 }
 ```
@@ -264,7 +264,7 @@ Meaning:   JSON body는 29 바이트
   "blocked_queries": 15,
   "qps": 25.5,
   "block_rate": 0.012,
-  "captured_at": "2026-02-22T10:30:45.123Z"
+  "captured_at_ms": 1740218645123
 }
 ```
 
@@ -278,7 +278,7 @@ Meaning:   JSON body는 29 바이트
 | `blocked_queries` | uint64 | 정책에 의해 차단된 쿼리 수 |
 | `qps` | double | 1초 슬라이딩 윈도우 기반 초당 쿼리 수 |
 | `block_rate` | double | 차단 비율 (0.0 ~ 1.0), `blocked_queries / total_queries` |
-| `captured_at` | string | 스냅샷 생성 시각 (ISO 8601) |
+| `captured_at_ms` | int64 | 스냅샷 생성 시각 (Unix epoch 밀리초) |
 
 ### 계산식
 
@@ -507,12 +507,15 @@ Go CLI                              C++ UdsServer
 
 ### 동시성
 
-**현재** (Phase 2):
-- 단일 스레드 처리 (stub)
+**현재** (Phase 2, DON-28 구현):
+- Boost.Asio co_await 기반 비동기 accept 루프
+- 각 클라이언트는 co_spawn으로 독립 코루틴 처리
+- accept 루프와 클라이언트 처리 코루틴이 분리되어 있어 한 클라이언트 오류가 다른 클라이언트에 영향 없음
 
-**Phase 3**:
-- Asio 코루틴 기반 동시 클라이언트 처리
-- 각 클라이언트는 독립 코루틴
+**Phase 3 확장 예정**:
+- sessions 커맨드 구현 (현재 501 placeholder)
+- policy_reload 커맨드 구현 (현재 501 placeholder)
+- 클라이언트 타임아웃 처리
 
 ---
 
@@ -647,4 +650,5 @@ func TestStatsCommand(t *testing.T) {
 
 | 버전 | 날짜 | 변경 사항 |
 |------|------|----------|
-| 1.0 | 2026-02-22 | 초안 작성 (Phase 2) |
+| 1.0 | 2026-02-22 | 초안 작성 (Phase 2 인터페이스 정의) |
+| 1.1 | 2026-02-25 | DON-28: UdsServer 구현 완료. `captured_at` → `captured_at_ms` (Unix epoch ms). 동시성 섹션 업데이트. |

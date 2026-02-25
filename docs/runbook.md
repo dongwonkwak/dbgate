@@ -81,13 +81,64 @@
 - 검증:
   - 정상 쿼리/차단 쿼리 시나리오 재실행
 
-## 운영 커맨드 표 (TODO)
-| 목적 | 명령 | 기대 결과 | 비고 |
-|---|---|---|---|
-| 상태 확인 | TODO | 상태 출력 | |
-| 통계 조회 | TODO | QPS/차단율 | |
-| 세션 조회 | TODO | 활성 세션 목록 | |
-| 정책 리로드 | TODO | 성공/실패 응답 | |
+## 운영 커맨드 표
+
+### 빌드
+
+| 목적 | 명령 | 비고 |
+|---|---|---|
+| 기본 빌드 | `cmake --preset default && cmake --build build/default` | Release |
+| 디버그 빌드 | `cmake --preset debug && cmake --build build/debug` | |
+| ASan 빌드 | `cmake --preset asan && cmake --build build/asan` | 메모리 오류 탐지 |
+| TSan 빌드 | `cmake --preset tsan && cmake --build build/tsan` | 데이터레이스 탐지 |
+| 테스트 실행 | `cmake --build build/default --target test` | 전체 단위 테스트 322개 |
+
+### 환경변수 기반 설정 (Docker/로컬)
+
+| 환경변수 | 기본값 | 설명 |
+|---|---|---|
+| `PROXY_LISTEN_ADDR` | `0.0.0.0` | 프록시 리슨 주소 |
+| `PROXY_LISTEN_PORT` | `13306` | 프록시 리슨 포트 |
+| `MYSQL_HOST` | `127.0.0.1` | 업스트림 MySQL 호스트 |
+| `MYSQL_PORT` | `3306` | 업스트림 MySQL 포트 |
+| `POLICY_PATH` | `config/policy.yaml` | 정책 파일 경로 |
+| `UDS_SOCKET_PATH` | `/tmp/dbgate.sock` | Go 운영도구 UDS 소켓 경로 |
+| `LOG_PATH` | `/tmp/dbgate.log` | 로그 파일 경로 |
+| `LOG_LEVEL` | `info` | 로그 레벨 (trace/debug/info/warn/error) |
+| `HEALTH_CHECK_PORT` | `8080` | 헬스체크 HTTP 포트 |
+| `MAX_CONNECTIONS` | `1000` | 최대 동시 연결 수 |
+| `CONNECTION_TIMEOUT_SEC` | `30` | 세션 유휴 타임아웃(초) |
+
+### UDS 통계 조회 (수동)
+
+```bash
+# stats 커맨드: 4바이트 LE 헤더 + JSON 요청
+REQUEST='{"command":"stats","version":1}'
+LEN=$(printf '%s' "$REQUEST" | wc -c)
+HEADER=$(python3 -c "import struct,sys; sys.stdout.buffer.write(struct.pack('<I', $LEN))")
+(printf '%b' "$HEADER"; printf '%s' "$REQUEST") | nc -U /tmp/dbgate.sock | tail -c +5
+```
+
+기대 응답 예:
+```json
+{"ok":true,"payload":{"total_connections":42,"active_sessions":3,"total_queries":1250,"blocked_queries":15,"qps":25.5000,"block_rate":0.0120,"captured_at_ms":1740218645123}}
+```
+
+### 정책 핫 리로드 (SIGHUP)
+
+```bash
+# dbgate 프로세스 PID 확인 후 SIGHUP 전송
+kill -HUP $(pgrep dbgate)
+# 로그에서 확인: [proxy] policy reloaded successfully
+```
+
+### 시그널 기반 제어
+
+| 시그널 | 동작 |
+|---|---|
+| `SIGTERM` | Graceful Shutdown (활성 세션 완료 후 종료) |
+| `SIGINT` | Graceful Shutdown |
+| `SIGHUP` | 정책 파일 핫 리로드 (기존 정책 유지하며 재로드) |
 
 ## 변경 체크리스트 (문서 유지보수용)
 - CLI 명령/옵션이 실제 `tools/` 구현과 일치하는가?
