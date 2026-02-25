@@ -72,7 +72,7 @@ Accepted
 ### ADR별 핵심 논점
 - **001-boost-asio-over-raw-epoll**: Boost.Asio vs raw epoll. 양방향 릴레이 구현 깔끔함, strand로 스레드 안전, SSL 내장, 보일러플레이트 감소.
 - **002-handshake-passthrough**: 핸드셰이크 직접 처리 vs 패스스루. auth plugin 호환성, 구현 복잡도 회피. 단점으로 프록시가 인증 정보를 모름.
-- **003-gcc-over-clang**: GCC 14 vs Clang. Boost.Asio C++20 코루틴 안정성, Linux 환경 표준. Clang 호환은 유지.
+- **003-gcc-over-clang**: GCC 14 vs Clang. Boost.Asio C++23 코루틴 안정성, Linux 환경 표준. Clang 호환은 유지.
 - **004-yaml-policy-format**: YAML vs JSON vs TOML vs DSL. 사람이 읽기 쉬움, yaml-cpp 라이브러리 존재, 주석 지원.
 - **005-cpp-go-language-split**: 단일 언어 vs C++/Go 분리. 데이터패스는 C++ 성능, 컨트롤플레인은 Go 생산성. UDS로 저오버헤드 통신.
 - **006-sql-parser-scope**: 풀 파서 vs 키워드+정규식. 구현 복잡도 대비 효과, 한계를 Limitations에 명시.

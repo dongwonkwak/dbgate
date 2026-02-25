@@ -17,7 +17,7 @@ tools: Read, Edit, MultiEdit, Glob, Grep, Bash, Write
 - `src/policy/` — 정책 엔진, YAML 로딩, 룰 매칭, Hot Reload
 
 ## 기술 스택
-- C++20, GCC 14
+- C++23, GCC 14
 - `yaml-cpp` (정책 파일 파싱)
 - `std::regex` (패턴 매칭)
 
