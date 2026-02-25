@@ -51,6 +51,8 @@ set(DBGATE_SOURCES
     src/policy/policy_loader.cpp
     # logger — DON-23 Phase 2 stub
     src/logger/structured_logger.cpp
+    # stats — DON-28
+    src/stats/uds_server.cpp
 )
 
 # ─── Main executable ───────────────────────────────────────────────────────
@@ -79,6 +81,10 @@ add_executable(dbgate_tests
     tests/test_sql_parser.cpp
     tests/test_injection_detector.cpp
     tests/test_policy_engine.cpp
+    tests/test_stats_collector.cpp
+    tests/test_uds_server.cpp
+    tests/test_proxy_pipeline.cpp
+    tests/test_proxy_server.cpp
     src/logger/structured_logger.cpp
     src/protocol/mysql_packet.cpp
     src/protocol/command.cpp
@@ -88,6 +94,10 @@ add_executable(dbgate_tests
     src/parser/procedure_detector.cpp
     src/policy/policy_loader.cpp
     src/policy/policy_engine.cpp
+    src/stats/uds_server.cpp
+    src/health/health_check.cpp
+    src/proxy/session.cpp
+    src/proxy/proxy_server.cpp
 )
 
 target_include_directories(dbgate_tests PRIVATE

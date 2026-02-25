@@ -339,6 +339,20 @@ try {
 }
 ```
 
+## 모듈 구현 상태 (DON-28 기준)
+
+| 모듈 | 상태 | 구현 범위 |
+|------|------|----------|
+| `common/` | ✓ 완료 | 공통 타입, enum, 구조체 정의 |
+| `protocol/` | ✓ 완료 | MySQL 패킷 파싱, 핸드셰이크 패스스루 |
+| `parser/` | ✓ 완료 | SQL 파싱, Injection 탐지, 프로시저 탐지 |
+| `policy/` | ✓ 완료 | 정책 엔진, YAML 로더, Hot Reload |
+| `logger/` | ✓ 완료 | 구조화 JSON 로깅 |
+| `stats/` | ✓ 완료 | Atomic 통계 수집, UDS 서버 (JSON API) |
+| `health/` | ✓ 완료 | HTTP /health 엔드포인트 (read-only stats) |
+| `proxy/` | ✓ 완료 | 전체 통합: ProxyServer + Session (MySQL 프로토콜 파이프라인) |
+| `main.cpp` | ✓ 완료 | 환경변수 기반 설정, signal 핸들링, graceful shutdown |
+
 ## 각 모듈의 책임
 
 ### common/types.hpp
@@ -391,31 +405,134 @@ try {
   - JSON 스키마 일관성 유지
 
 ### stats 모듈
-- **책임**: 실시간 통계 수집 및 UDS 노출
+- **책임**: 실시간 통계 수집 및 UDS 기반 조회 API
 - **구성**:
   - `stats_collector.hpp`: Atomic 기반 통계 (mutex 없음)
-  - `uds_server.hpp`: Unix Domain Socket 서버
+  - `uds_server.hpp`: Unix Domain Socket 서버 (JSON 프레임 기반)
 - **특징**:
   - 고성능 (lock-free atomic)
   - 데이터패스 오버헤드 최소화
   - Go CLI와 저레이턴시 통신
+  - 지원 커맨드: `stats`, `sessions`, `policy_reload`
+  - 프로토콜: 4byte LE 길이 + JSON 페이로드
 
 ### health 모듈
-- **책임**: HTTP 헬스체크 엔드포인트
+- **책임**: HTTP 헬스체크 엔드포인트 + stats 조회
+- **구성**:
+  - `health_check.hpp`: HTTP/1.0 기반 `/health` 엔드포인트
 - **특징**:
   - 로드밸런서(HAProxy) 연동
   - 과부하/연결실패 시 unhealthy 전환
   - 200 OK vs 503 Service Unavailable 응답
+  - StatsCollector의 snapshot() 조회 (read-only)
 
 ### proxy 모듈
 - **책임**: 전체 시스템 통합 및 세션 관리
 - **구성**:
-  - `proxy_server.hpp`: TCP 서버 (accept 루프)
-  - `session.hpp`: 1:1 클라이언트-서버 릴레이
+  - `proxy_server.hpp`: TCP 서버 (accept 루프 + graceful shutdown + SIGHUP 정책 hot reload)
+  - `session.hpp`: 1:1 클라이언트-서버 릴레이 (완전 MySQL 프로토콜 파이프라인)
 - **특징**:
   - **모든 모듈을 의존** (통합점)
   - Boost.Asio strand로 스레드 안전성 보장
-  - Graceful Shutdown 지원
+  - Graceful Shutdown 지원 (SIGTERM/SIGINT)
+  - Hot Reload 지원 (SIGHUP 시 정책 재로드)
+
+## Query Processing Pipeline
+
+Session::run()이 구현하는 SQL 처리 파이프라인은 다음과 같습니다:
+
+```
+1. 클라이언트 패킷 읽기 (co_await client_socket_.async_read_some)
+   │
+2. MySQL 프로토콜 파싱 (CommandType 판별)
+   │
+   ├─ COM_QUERY가 아니면 → 단계 9 (패스스루)
+   │
+   ▼ COM_QUERY인 경우
+
+3. SQL 문자열 추출 (extract_command 또는 mysql_packet.payload)
+   │
+4. SqlParser::parse() → ParsedQuery 또는 fail-close
+   │
+5. InjectionDetector::check() → 인젝션 패턴 탐지 (병렬 가능)
+   │
+6. ProcedureDetector::detect() → 프로시저/동적 SQL 탐지 (병렬 가능)
+   │
+7. PolicyEngine::evaluate() → PolicyAction::kAllow/kBlock/kLog
+   │
+   ├─ kAllow → 단계 9 (MySQL 서버로 릴레이)
+   │
+   └─ kBlock/kLog → 차단 또는 로그 기록
+      ├─ kBlock: Error Packet 생성 → 클라이언트 전송
+      └─ kLog: MySQL 서버로 릴레이 + 감사 로그 기록
+
+8. 모든 경로: 응답 처리 및 로깅
+   ├─ StructuredLogger::log_query() (JSON 로그)
+   └─ StatsCollector::on_query(blocked) (원자적 카운터)
+
+9. MySQL 응답 릴레이 (seq_id 역전 감지)
+   │
+10. 루프 반복 또는 세션 종료
+```
+
+**주요 구현 포인트:**
+
+- **ParsingError 처리**: SQL 파서가 실패하면 PolicyEngine::evaluate_error() 호출 → 반드시 kBlock 반환 (fail-close)
+- **응답 릴레이**: MySQL 응답 패킷의 sequence_id가 역전되지 않도록 주의 (여러 패킷 응답 시)
+- **비동기**: 모든 I/O는 `co_await` + strand으로 관리 (스레드 안전성)
+- **통계 갱신**: 모든 쿼리 처리 후 StatsCollector::on_query() 호출 (blocked 여부 기록)
+
+## Graceful Shutdown 플로우
+
+ProxyServer가 SIGTERM/SIGINT를 수신했을 때:
+
+```
+SIGTERM/SIGINT
+   │
+   ▼
+ProxyServer::stop() 호출
+   │
+   ├─ stopping_ = true (accept 루프 조기 종료)
+   │
+   ├─ acceptor.close() (새 연결 거부)
+   │
+   ├─ sessions[*].close() (진행 중인 세션 정상 종료)
+   │  └─ 각 세션은 현재 쿼리 완료 후 종료
+   │
+   └─ session count == 0 → io_context.stop()
+      └─ 모든 코루틴 종료 → main 반환
+```
+
+**특징:**
+- 새 연결은 즉시 거부
+- 진행 중인 쿼리는 완료 대기 (timeout 있음, 구현 시 정의)
+- 정책/로그 등 external state는 정상 저장
+
+## Hot Reload 플로우
+
+ProxyServer가 SIGHUP을 수신했을 때:
+
+```
+SIGHUP
+   │
+   ▼
+signal_set 핸들러
+   │
+   ├─ PolicyLoader::load(config_path)
+   │  └─ YAML 파일 재파싱
+   │
+   ├─ 성공 → policy_engine_.reload(new_config)
+   │  └─ std::atomic<shared_ptr> 원자적 교체
+   │     ├─ 이미 진행 중인 evaluate()는 이전 config 사용
+   │     └─ 새로운 evaluate() 호출은 new_config 사용
+   │
+   └─ 실패 → 기존 정책 유지 + 경고 로그 (fail-close 원칙)
+```
+
+**특징:**
+- 무중단 정책 변경 (running 쿼리에 영향 없음)
+- 로드 실패 시 기존 정책 유지 (fail-open 방지)
+- 선택 사항: inotify로 정책 파일 변경 감지 시 자동 reload
 
 ## 스레드 안전성 설계
 
@@ -494,6 +611,156 @@ void UdsServer::handle_client() {
 **특징:**
 - 통계 수집(데이터패스)과 조회(제어패스) 완전 분리
 - 뮤텍스/락 없음
+
+## Proxy Layer 상세 다이어그램
+
+### Session 연결 수명 관리
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  ProxyServer::accept() (TCP Acceptor)                       │
+│                                                             │
+│  while (!stopping_) {                                       │
+│    co_await acceptor.async_accept(client_socket)           │
+│    co_spawn(strand, Session::run())  ← 각 세션 코루틴 생성   │
+│    active_sessions++                                       │
+│  }                                                          │
+└──────────┬──────────────────────────────────────────────────┘
+           │
+    ┌──────▼──────────────────────┐
+    │  Session::run()  (코루틴)     │
+    │                             │
+    │  ┌─ Handshake Phase         │
+    │  │  HandshakeRelay          │
+    │  │  client ←→ server        │
+    │  │  (투명 릴레이)             │
+    │  │                          │
+    │  ├─ Query Processing Loop   │
+    │  │  1. async_read_some()    │
+    │  │  2. parse(COM_QUERY?)    │
+    │  │  3. policy_engine()      │
+    │  │  4. relay or block       │
+    │  │  5. log + stats          │
+    │  │                          │
+    │  └─ Cleanup                 │
+    │     server_socket.close()   │
+    │     active_sessions--       │
+    │                             │
+    └─────────────────────────────┘
+           │
+    ┌──────▼──────────────────────┐
+    │  MySQL Server (Port 3306)    │
+    │  (Relay destination)         │
+    │                             │
+    └──────────────────────────────┘
+```
+
+### Query Processing 상세 흐름
+
+```
+Session::run() 루프 내부:
+
+1. co_await client_socket_.async_read_some(buffer)
+   → MySQL 패킷 읽기 (4byte seq_id + payload)
+
+2. auto [cmd_type, sql] = extract_command(buffer)
+
+   ├─ if (cmd_type != COM_QUERY)
+   │  └─ co_await relay_packet(server_socket, buffer)
+   │     (PING, INIT_DB, QUIT 등 정책 검사 없이 릴레이)
+   │
+   └─ if (cmd_type == COM_QUERY)
+      └─ SQL 파싱 및 정책 평가 구간 시작
+
+3. auto parsed = sql_parser_.parse(sql)
+   │
+   ├─ if (!parsed)  // ParseError
+   │  └─ auto result = policy_engine_.evaluate_error()
+   │     → 반드시 PolicyAction::kBlock 반환
+   │     → Error Packet 생성 및 전송
+   │     → BlockLog 기록 + stats.on_query(true)
+   │
+   └─ if (parsed.ok())  // ParsedQuery 획득
+
+4. auto injection_result = injection_detector_.check(sql)
+   (병렬 가능: parsed 완료 후 독립적으로 진행)
+   → InjectionResult{detected, matched_pattern, ...}
+
+5. auto procedure_result = procedure_detector_.detect(parsed)
+   (병렬 가능: parsed 완료 후 독립적으로 진행)
+   → ProcedureInfo{is_dynamic_sql, ...}
+
+6. auto policy_result = policy_engine_.evaluate(
+     parsed.value(),
+     ctx_,
+     injection_result,
+     procedure_result
+   )
+   → PolicyResult{action=ALLOW/BLOCK/LOG, matched_rule, reason}
+
+7. 정책 결과에 따른 분기:
+
+   ├─ if (policy_result.action == PolicyAction::kAllow)
+   │  ├─ co_await async_write(server_socket, buffer, ...)
+   │  │  (MySQL 서버로 쿼리 전달)
+   │  │
+   │  └─ co_await relay_response(client_socket, server_socket)
+   │     (서버 응답을 클라이언트로 릴레이)
+   │     ├─ sequence_id 역전 감지
+   │     └─ EOF 패킷 까지 모두 릴레이
+   │
+   ├─ if (policy_result.action == PolicyAction::kBlock)
+   │  ├─ auto err_pkt = make_error_packet(
+   │  │    error_code=1045,
+   │  │    message="Query blocked by policy: " + reason
+   │  │  )
+   │  ├─ co_await async_write(client_socket, err_pkt, ...)
+   │  └─ stats.on_query(blocked=true)
+   │
+   └─ if (policy_result.action == PolicyAction::kLog)
+      ├─ co_await async_write(server_socket, buffer, ...)
+      ├─ co_await relay_response(client_socket, server_socket)
+      └─ 감사 로그 추가 기록
+
+8. 모든 경로 (ALLOW/BLOCK/LOG):
+   ├─ logger_.log_query(QueryLog{
+   │    session_id, db_user, client_ip,
+   │    raw_sql, command_type, tables,
+   │    action, matched_rule, duration_us
+   │  })
+   │
+   └─ stats_.on_query(blocked=policy_result.action==BLOCK)
+      (원자적 카운터 갱신)
+
+9. 루프 반복 또는 종료
+   └─ if (COM_QUIT 또는 소켓 에러)
+      └─ Session::close() → 단계 10
+```
+
+### MySQL 응답 릴레이 알고리즘 (relay_response)
+
+```
+co_await relay_response(client_socket, server_socket):
+
+  expected_seq_id = request_seq_id + 1
+
+  while (true) {
+    auto [pkt, seq] = co_await read_mysql_packet(server_socket)
+
+    // Sequence ID 역전 감지
+    if (seq < expected_seq_id) {
+      log_warning("Seq ID mismatch: expected {}, got {}",
+                  expected_seq_id, seq)
+      // 선택: 에러 반환 또는 경고만 기록
+    }
+
+    co_await async_write(client_socket, pkt, ...)
+    expected_seq_id = seq + 1
+
+    // EOF 패킷 감지 (ResultSet 종료)
+    if (pkt.is_eof()) break
+  }
+```
 
 ## 배포 아키텍처
 
@@ -644,6 +911,112 @@ Client Response: ✗ 차단 오류
 - Prometheus 메트릭 Export
 - PostgreSQL 프로토콜 지원
 
+## 구현 참고 (DON-28)
+
+### 주요 코드 위치
+
+**ProxyServer 및 Session 통합:**
+- `src/proxy/proxy_server.hpp/cpp`: TCP 서버, accept 루프, signal 핸들링
+- `src/proxy/session.hpp/cpp`: Session::run() 코루틴, 쿼리 처리 파이프라인
+- `src/main.cpp`: 환경변수 설정, io_context 구성, signal_set 등록
+
+**MySQL 프로토콜 처리:**
+- `src/protocol/mysql_packet.hpp/cpp`: 패킷 파싱 및 직렬화
+- `src/protocol/handshake.hpp/cpp`: 핸드셰이크 투명 릴레이
+- `src/protocol/command.hpp/cpp`: CommandType 추출, COM_QUERY 여부 판별
+
+**쿼리 처리 및 정책:**
+- `src/parser/sql_parser.hpp/cpp`: SQL 파싱, ParsedQuery 생성
+- `src/parser/injection_detector.hpp/cpp`: 정규식 기반 패턴 탐지
+- `src/parser/procedure_detector.hpp/cpp`: 프로시저 탐지
+- `src/policy/policy_engine.hpp/cpp`: 정책 평가, evaluate() 메서드
+- `src/policy/policy_loader.hpp/cpp`: YAML 로더, reload() 메서드
+
+**로깅 및 모니터링:**
+- `src/logger/structured_logger.hpp/cpp`: spdlog 래퍼, log_query() 메서드
+- `src/stats/stats_collector.hpp/cpp`: Atomic 통계, on_query() 메서드
+- `src/stats/uds_server.hpp/cpp`: Unix Domain Socket 서버, handle_client()
+
+**헬스 체크:**
+- `src/health/health_check.hpp/cpp`: HTTP /health 엔드포인트, run() 코루틴
+
+### 구현 팁
+
+1. **Session::run() 구조**: 핸드셰이크 완료 후 while 루프에서 패킷 읽기 → 정책 평가 → 릴레이 반복
+2. **Strand 사용**: Session 단위 모든 작업이 strand 위에서 직렬화 (멀티스레드 안전)
+3. **Fail-Close**: SQL 파싱 실패 시 PolicyEngine::evaluate_error() 호출 필수
+4. **Signal Handling**: ProxyServer가 signal_set 등록, graceful shutdown 구현
+5. **Hot Reload**: SIGHUP 수신 시 PolicyLoader::load() → PolicyEngine::reload() 호출
+
+## 통합 구현 요약 (DON-28)
+
+이 섹션은 Session::run(), ProxyServer::run() 등 핵심 코루틴의 구조와 설계 원칙을 정리합니다.
+
+### Session::run() 코루틴의 역할
+
+Session 인스턴스 하나는 클라이언트 연결 하나에 해당하며, Session::run() 코루틴이 다음을 수행합니다:
+
+1. **핸드셰이크 (HandshakeRelay)**: 클라이언트 ↔ 서버 간 MySQL 핸드셰이크 패킷을 투명 릴레이
+2. **Query Processing Loop**:
+   - 클라이언트로부터 MySQL 패킷 읽기 (co_await async_read_some)
+   - CommandType 판별 (COM_QUERY vs 기타)
+   - COM_QUERY인 경우 SQL 파싱 및 정책 평가
+   - 정책 결과에 따라 릴레이/차단
+   - 응답을 클라이언트로 릴레이
+   - 로깅 및 통계 갱신
+3. **정리 (Cleanup)**: 세션 종료 시 소켓 정상 종료
+
+### ProxyServer의 역할
+
+ProxyServer 인스턴스는 다음을 관리합니다:
+
+1. **TCP Accept 루프**: 클라이언트 연결을 수용하고 각 연결마다 Session 코루틴 생성
+2. **Signal Handling**: SIGTERM/SIGINT → graceful shutdown, SIGHUP → hot reload
+3. **Session 관리**: active session count, graceful shutdown 시 모든 세션 종료 대기
+
+### Fail-Close 원칙 구현
+
+- **SQL 파싱 실패**: PolicyEngine::evaluate_error() 호출 → 반드시 PolicyAction::kBlock 반환
+- **정책 엔진 오류**: 설정 로드 실패 등 → 기본값 kBlock
+- **무매칭**: 명시적 allow 규칙이 없으면 default deny (kBlock)
+
+### Strand를 이용한 스레드 안전성
+
+- Session 단위 코루틴이 모두 동일 strand 위에서 실행
+- 수동 락/뮤텍스 불필요
+- 다중 세션은 병렬 실행 (각각 다른 strand 사용 가능)
+
+### Lock-Free 통계 수집
+
+- StatsCollector::on_query()는 std::atomic만 사용 (contention 제로)
+- HealthCheck::run(), UdsServer::run()은 snapshot()을 호출하여 현재 통계 조회 (read-only)
+
+### Hot Reload 메커니즘
+
+```
+SIGHUP 신호
+  → signal_set 핸들러
+    → PolicyLoader::load(config_path)
+      → 성공: PolicyEngine::reload(new_config)
+      → 실패: 로그 기록, 기존 정책 유지 (fail-close)
+```
+
+- std::atomic<shared_ptr<PolicyConfig>>로 원자적 교체
+- 진행 중인 evaluate()는 영향 없음 (이전 config 사용)
+- 새로운 요청부터 새 정책 적용
+
+### Graceful Shutdown 시나리오
+
+```
+SIGTERM/SIGINT 신호
+  → signal_set 핸들러
+    → ProxyServer::stop()
+      → stopping_ = true
+      → acceptor.close() (새 연결 거부)
+      → sessions[*].close() (기존 세션 정상 종료 대기)
+      → io_context.stop()
+```
+
 ## 참고 문서
 
 - ADR-001: Boost.Asio vs raw epoll
@@ -651,3 +1024,5 @@ Client Response: ✗ 차단 오류
 - ADR-004: YAML 정책 형식
 - ADR-005: C++/Go 언어 분리
 - ADR-006: SQL 파서 범위
+- `docs/data-flow.md`: 시나리오별 상세 흐름
+- `docs/uds-protocol.md`: Go CLI ↔ C++ 통신 프로토콜

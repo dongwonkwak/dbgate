@@ -1,10 +1,22 @@
 #pragma once
 
+#include "policy/policy_engine.hpp"
+#include "policy/policy_loader.hpp"
+#include "logger/structured_logger.hpp"
+#include "stats/stats_collector.hpp"
+#include "stats/uds_server.hpp"
+#include "health/health_check.hpp"
+#include "proxy/session.hpp"
+
 #include <boost/asio/awaitable.hpp>
 #include <boost/asio/io_context.hpp>
+#include <boost/asio/ip/tcp.hpp>
 
+#include <atomic>
 #include <cstdint>
+#include <memory>
 #include <string>
+#include <unordered_map>
 
 // ---------------------------------------------------------------------------
 // ProxyConfig
@@ -88,4 +100,20 @@ public:
 private:
     ProxyConfig config_;
     bool        stopping_{false};
+
+    std::shared_ptr<PolicyEngine>    policy_engine_{};
+    std::shared_ptr<StructuredLogger> logger_{};
+    std::shared_ptr<StatsCollector>  stats_{};
+    std::unique_ptr<UdsServer>       uds_server_{};
+    std::unique_ptr<HealthCheck>     health_check_{};
+
+    std::atomic<std::uint64_t>       next_session_id_{1};
+    std::unordered_map<std::uint64_t, std::shared_ptr<Session>> sessions_{};
+
+    boost::asio::io_context*         io_ctx_{nullptr};
+
+    // policy_reload: SIGHUP 핸들러에서 호출
+    //   PolicyLoader::load() → 성공 시 policy_engine_->reload()
+    //   실패 시 기존 정책 유지 + 경고 로그
+    void policy_reload();
 };
