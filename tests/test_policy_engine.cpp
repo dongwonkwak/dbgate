@@ -711,6 +711,134 @@ TEST(PolicyEngine, SchemaAccess_Disabled_Allows) {
 }
 
 // ===========================================================================
+// Step 11: 스키마 접근 차단 — schema.table 형태 우회 방지 (P1-1)
+//
+// [배경]
+// SQL 파서가 "schema.table" 형태를 그대로 추출하는 경우
+// (예: "SELECT * FROM information_schema.tables" → tables = {"information_schema.tables"})
+// 이전 구현은 정확히 "information_schema" 와만 비교하여 우회가 가능했다.
+// 수정 후: '.' 기준으로 앞부분(schema prefix) 을 추출하여 비교한다.
+// ===========================================================================
+
+TEST(PolicyEngine, SchemaAccess_DotNotation_InformationSchema_Blocked) {
+    // 파서가 "information_schema.tables" 형태로 추출한 경우에도 차단되어야 한다.
+    // 이 케이스가 P1-1 우회 시나리오의 핵심이다.
+    auto cfg = make_basic_config();
+    cfg->access_control[0].allowed_tables = {"*"};
+    PolicyEngine engine(cfg);
+
+    const auto query = make_query(
+        SqlCommand::kSelect, {"information_schema.tables"},
+        "SELECT * FROM information_schema.tables"
+    );
+    const auto result = engine.evaluate(query, make_session());
+
+    EXPECT_EQ(result.action, PolicyAction::kBlock);
+    EXPECT_EQ(result.matched_rule, "schema-access");
+}
+
+TEST(PolicyEngine, SchemaAccess_DotNotation_Mysql_Blocked) {
+    // "mysql.user" 형태도 차단
+    auto cfg = make_basic_config();
+    cfg->access_control[0].allowed_tables = {"*"};
+    PolicyEngine engine(cfg);
+
+    const auto query = make_query(
+        SqlCommand::kSelect, {"mysql.user"},
+        "SELECT * FROM mysql.user"
+    );
+    const auto result = engine.evaluate(query, make_session());
+
+    EXPECT_EQ(result.action, PolicyAction::kBlock);
+    EXPECT_EQ(result.matched_rule, "schema-access");
+}
+
+TEST(PolicyEngine, SchemaAccess_DotNotation_PerformanceSchema_Blocked) {
+    // "performance_schema.events_statements_summary..." 형태도 차단
+    auto cfg = make_basic_config();
+    cfg->access_control[0].allowed_tables = {"*"};
+    PolicyEngine engine(cfg);
+
+    const auto query = make_query(
+        SqlCommand::kSelect,
+        {"performance_schema.events_statements_summary_global_by_event_name"},
+        "SELECT * FROM performance_schema.events_statements_summary_global_by_event_name"
+    );
+    const auto result = engine.evaluate(query, make_session());
+
+    EXPECT_EQ(result.action, PolicyAction::kBlock);
+    EXPECT_EQ(result.matched_rule, "schema-access");
+}
+
+TEST(PolicyEngine, SchemaAccess_DotNotation_Sys_Blocked) {
+    // "sys.schema_table_lock_waits" 형태도 차단
+    auto cfg = make_basic_config();
+    cfg->access_control[0].allowed_tables = {"*"};
+    PolicyEngine engine(cfg);
+
+    const auto query = make_query(
+        SqlCommand::kSelect,
+        {"sys.schema_table_lock_waits"},
+        "SELECT * FROM sys.schema_table_lock_waits"
+    );
+    const auto result = engine.evaluate(query, make_session());
+
+    EXPECT_EQ(result.action, PolicyAction::kBlock);
+    EXPECT_EQ(result.matched_rule, "schema-access");
+}
+
+TEST(PolicyEngine, SchemaAccess_DotNotation_CaseInsensitive_Blocked) {
+    // "INFORMATION_SCHEMA.TABLES" 대문자 형태도 차단 (대소문자 무관)
+    auto cfg = make_basic_config();
+    cfg->access_control[0].allowed_tables = {"*"};
+    PolicyEngine engine(cfg);
+
+    const auto query = make_query(
+        SqlCommand::kSelect, {"INFORMATION_SCHEMA.TABLES"},
+        "SELECT * FROM INFORMATION_SCHEMA.TABLES"
+    );
+    const auto result = engine.evaluate(query, make_session());
+
+    EXPECT_EQ(result.action, PolicyAction::kBlock);
+    EXPECT_EQ(result.matched_rule, "schema-access");
+}
+
+TEST(PolicyEngine, SchemaAccess_DotNotation_NormalTable_NotBlocked) {
+    // "mydb.users" 형태의 일반 테이블은 차단하지 않음 (false positive 방지)
+    // "mydb" 는 보호 대상 schema 이름이 아니다.
+    auto cfg = make_basic_config();
+    cfg->access_control[0].allowed_tables = {"*"};
+    PolicyEngine engine(cfg);
+
+    // raw_sql 에 UNION SELECT 패턴이 없으므로 block_patterns 도 통과한다.
+    const auto query = make_query(
+        SqlCommand::kSelect, {"mydb.users"},
+        "SELECT id FROM mydb.users"
+    );
+    const auto result = engine.evaluate(query, make_session());
+
+    // "mydb" 는 차단 대상 schema 가 아님 → 허용
+    EXPECT_EQ(result.action, PolicyAction::kAllow);
+}
+
+TEST(PolicyEngine, SchemaAccess_DotNotation_MultipleTablesOneMixed_Blocked) {
+    // 여러 테이블 중 하나가 schema.table 형태로 차단 대상인 경우
+    auto cfg = make_basic_config();
+    cfg->access_control[0].allowed_tables = {"*"};
+    PolicyEngine engine(cfg);
+
+    const auto query = make_query(
+        SqlCommand::kSelect,
+        {"users", "information_schema.tables"},
+        "SELECT u.id FROM users u JOIN information_schema.tables t ON ..."
+    );
+    const auto result = engine.evaluate(query, make_session());
+
+    EXPECT_EQ(result.action, PolicyAction::kBlock);
+    EXPECT_EQ(result.matched_rule, "schema-access");
+}
+
+// ===========================================================================
 // evaluate_error: Fail-close 보장
 // ===========================================================================
 

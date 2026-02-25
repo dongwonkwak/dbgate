@@ -23,8 +23,13 @@
 // CIDR 파싱 실패 시 false 반환 (fail-close: 알 수 없는 IP = 차단).
 //
 // [시간대 처리]
-// setenv/tzset 은 스레드 안전하지 않으므로 static mutex 로 보호한다.
-// DST 전환 경계에서 ±1시간 오차 가능성 있음 (알려진 한계).
+// C++20 std::chrono::locate_zone + zoned_time 을 사용하여 setenv/tzset 없이
+// 스레드 안전하게 시간대를 처리한다. IANA tz database 기반이므로 DST 도 정확하다.
+// locate_zone 실패(알 수 없는 timezone) 시 false 반환 (fail-close).
+//
+// [schema 접근 차단 우회 방지]
+// SQL 파서가 "schema.table" 형태로 테이블을 추출하는 경우에도
+// '.' 기준 prefix 분리로 schema 이름을 정확히 비교한다.
 //
 // [오탐/미탐 트레이드오프]
 // - access_control 의 user = "*" 와일드카드: 모든 사용자에 적용되므로
@@ -43,16 +48,15 @@
 #include <algorithm>
 #include <arpa/inet.h>      // inet_pton, AF_INET
 #include <cctype>
+#include <chrono>           // C++20 timezone
 #include <cstring>          // memset
-#include <ctime>            // localtime_r, tzset
+#include <ctime>            // localtime_r
 #include <memory>
-#include <mutex>
 #include <netinet/in.h>     // in_addr
 #include <optional>
 #include <regex>
 #include <string>
 #include <string_view>
-#include <cstdlib>          // setenv
 
 #include <spdlog/spdlog.h>
 
@@ -215,47 +219,60 @@ static std::optional<TimeRange> parse_time_range(const std::string& range_str) {
 // ---------------------------------------------------------------------------
 // 내부 헬퍼: 현재 시각이 TimeRange 내인지 확인 (timezone 적용)
 //
-// [스레드 안전성]
-// setenv/tzset 은 POSIX에서 스레드 안전성을 보장하지 않는다.
-// static mutex 로 보호하여 동시 호출 시 경쟁 조건을 방지한다.
-//
-// [DST 한계]
-// 서머타임 전환 경계에서 ±1시간 오차 가능성이 있다.
-// 정밀한 시간대 처리가 필요하면 ICU 라이브러리 사용을 권장한다.
+// [스레드 안전성 — C++20 chrono timezone 사용]
+// 이전 구현은 setenv("TZ", ...) + tzset() 으로 프로세스 전역 TZ 환경변수를
+// 변경하여 다른 스레드의 시간 계산(로그 타임스탬프 등)에 부작용을 일으켰다.
+// C++20 std::chrono::locate_zone + zoned_time 을 사용하면 TZ 환경변수를
+// 건드리지 않으므로 프로세스 전체에 부작용이 없고 스레드 안전하다.
 //
 // [오탐/미탐 트레이드오프]
-// - timezone 이 비어있거나 tzset 실패 시 UTC 로 fallback.
-// - UTC fallback 은 시간대 설정 오류 시 예기치 않은 차단/허용을 유발할 수 있다.
+// - tz_name 이 비어있으면 UTC("Etc/UTC") 로 fallback. fail-close 적용.
+// - std::chrono::locate_zone 이 알 수 없는 timezone 문자열을 받으면
+//   std::runtime_error 를 던진다. catch 후 false(차단) 반환 (fail-close).
+//
+// [DST 한계]
+// std::chrono::zoned_time 은 IANA tz database 기반이므로 DST 전환을
+// 정확하게 처리한다. 이전 setenv/tzset 구현보다 정확도가 높다.
+//
+// [알려진 한계]
+// - IANA tz database 가 시스템에 없으면 locate_zone 이 실패할 수 있다.
+//   (GCC 14 libstdc++ 는 /usr/share/zoneinfo 를 사용한다.)
+// - "Asia/Seoul" 처럼 표준 IANA 이름만 지원한다. "KST+9" 형태는 불가.
 // ---------------------------------------------------------------------------
 static bool is_within_time_range(const TimeRange& range, const std::string& tz_name) {
-    // mutex 로 setenv/tzset 보호
-    static std::mutex tz_mutex;
+    int now_hour = 0;
+    int now_min  = 0;
 
-    struct tm now_tm{};
-    {
-        const std::lock_guard<std::mutex> lock(tz_mutex);
-
-        // TZ 환경변수 설정 (빈 문자열이면 UTC 사용)
-        const bool has_tz = !tz_name.empty();
-        if (has_tz) {
-            if (setenv("TZ", tz_name.c_str(), 1) != 0) {
-                spdlog::warn("policy_engine: setenv(TZ, '{}') failed, using UTC", tz_name);
-            }
-        } else {
-            if (setenv("TZ", "UTC", 1) != 0) {
-                spdlog::warn("policy_engine: setenv(TZ, UTC) failed");
-            }
+    try {
+        // timezone 이름이 비어있으면 UTC 로 fallback (fail-close 보수적 선택)
+        const std::string effective_tz = tz_name.empty() ? "Etc/UTC" : tz_name;
+        if (tz_name.empty()) {
+            spdlog::warn("policy_engine: empty timezone, falling back to UTC (fail-close)");
         }
-        tzset();
 
-        const auto now = std::time(nullptr);
-        if (localtime_r(&now, &now_tm) == nullptr) {
-            spdlog::warn("policy_engine: localtime_r failed, denying access (fail-close)");
-            return false;  // fail-close: 시각 획득 실패 → 차단
-        }
+        // C++20 chrono: TZ 환경변수를 건드리지 않고 로컬 시각 획득
+        const auto* zone       = std::chrono::locate_zone(effective_tz);
+        const auto  now_sys    = std::chrono::system_clock::now();
+        const std::chrono::zoned_time zt{zone, now_sys};
+        const auto  local_time = zt.get_local_time();
+
+        // 일(day) 경계를 구한 뒤 시:분 추출
+        const auto dp  = std::chrono::floor<std::chrono::days>(local_time);
+        const std::chrono::hh_mm_ss hms{local_time - dp};
+
+        now_hour = static_cast<int>(hms.hours().count());
+        now_min  = static_cast<int>(hms.minutes().count());
+
+    } catch (const std::exception& e) {
+        // locate_zone 실패(알 수 없는 timezone 등) → fail-close: 차단
+        spdlog::warn(
+            "policy_engine: timezone '{}' lookup failed ({}), denying access (fail-close)",
+            tz_name, e.what()
+        );
+        return false;
     }
 
-    const int now_minutes   = now_tm.tm_hour * 60 + now_tm.tm_min;
+    const int now_minutes   = now_hour * 60 + now_min;
     const int start_minutes = range.start_h * 60 + range.start_m;
     const int end_minutes   = range.end_h   * 60 + range.end_m;
 
@@ -274,13 +291,15 @@ PolicyEngine::PolicyEngine(std::shared_ptr<PolicyConfig> config)
     : config_(std::move(config)) {
     // config_ 가 nullptr 이면 이후 모든 evaluate() 가 kBlock 을 반환한다.
     // fail-close 원칙에 의해 nullptr config 도 허용하되, 차단으로 처리.
-    if (!config_) {
+    // config_ 는 std::atomic<std::shared_ptr<PolicyConfig>> 이므로 load() 로 읽는다.
+    const auto loaded = config_.load(std::memory_order_relaxed);
+    if (!loaded) {
         spdlog::warn("policy_engine: constructed with nullptr config — all queries will be blocked (fail-close)");
     } else {
         spdlog::info("policy_engine: initialized with {} access rules, {} block statements, {} block patterns",
-                     config_->access_control.size(),
-                     config_->sql_rules.block_statements.size(),
-                     config_->sql_rules.block_patterns.size());
+                     loaded->access_control.size(),
+                     loaded->sql_rules.block_statements.size(),
+                     loaded->sql_rules.block_patterns.size());
     }
 }
 
@@ -295,13 +314,13 @@ PolicyResult PolicyEngine::evaluate(
     const SessionContext& session) const {
 
     // Step 1: config_ nullptr 체크
-    // 헤더의 config_ 타입이 std::shared_ptr<PolicyConfig> (atomic 아님) 이므로
-    // 복사 후 로컬 변수로 사용한다.
-    // reload() 는 멀티스레드 환경에서 경쟁 조건이 있을 수 있으나,
-    // 헤더 인터페이스 제약으로 config_mutex_ 없이 구현한다.
-    // [설계 한계] 헤더에 std::atomic<std::shared_ptr<PolicyConfig>> 가 없으므로
-    // 완전한 thread-safety 는 헤더 변경 후 도입 가능 (Architect 승인 필요).
-    const auto config = config_;
+    // config_ 는 std::atomic<std::shared_ptr<PolicyConfig>> (C++20) 이다.
+    // load() 로 로컬 shared_ptr 를 취득한다.
+    // reload() 가 store() 로 새 값으로 교체하더라도 이 로컬 복사본은
+    // 이전 config 객체의 수명을 유지한다 (shared_ptr 참조 카운트 보장).
+    // std::memory_order_acquire 를 사용하여 store 이전의 메모리 쓰기가
+    // 이 load 이후에 보이도록 보장한다.
+    const auto config = config_.load(std::memory_order_acquire);
     if (!config) {
         spdlog::error("policy_engine: config is null, blocking query (fail-close) session={}",
                       session.session_id);
@@ -593,16 +612,36 @@ PolicyResult PolicyEngine::evaluate(
     }
 
     // Step 11: 스키마 접근 차단 (INFORMATION_SCHEMA 등)
+    //
+    // [우회 방지]
+    // SQL 파서는 "schema.table" 형태를 그대로 추출할 수 있다.
+    // 예: "SELECT * FROM information_schema.tables" → tables = {"information_schema.tables"}
+    // 이 경우 정확히 "information_schema" 와 일치하지 않아 차단을 우회할 수 있다.
+    //
+    // 수정: 각 테이블 토큰에서 '.' 기준으로 앞부분(schema prefix)을 추출한 뒤
+    // schema_names 목록과 대소문자 무관 비교한다. '.' 가 없으면 전체 토큰을 비교한다.
+    //
+    // [알려진 한계]
+    // 파서가 테이블 토큰을 어떤 형태로 추출하는지에 의존한다.
+    // "db.schema.table" 3단계 형태나 백틱 이스케이프 등은 처리하지 않는다.
     if (config->data_protection.block_schema_access) {
         static const std::array<std::string_view, 4> schema_names = {
             "information_schema", "mysql", "performance_schema", "sys"
         };
         for (const auto& table : query.tables) {
+            // '.' 기준으로 schema prefix 분리
+            // "information_schema.tables" → schema_part = "information_schema"
+            // "information_schema"        → schema_part = "information_schema"
+            const auto dot_pos = table.find('.');
+            const std::string schema_part =
+                (dot_pos != std::string::npos) ? table.substr(0, dot_pos) : table;
+
             for (const auto& schema : schema_names) {
-                if (iequals(table, schema)) {
+                if (iequals(schema_part, schema)) {
                     spdlog::info(
-                        "policy_engine: schema access blocked for table '{}', session={}, user='{}'",
-                        table, session.session_id, session.db_user
+                        "policy_engine: schema access blocked for table '{}' "
+                        "(schema_part='{}'), session={}, user='{}'",
+                        table, schema_part, session.session_id, session.db_user
                     );
                     return PolicyResult{
                         PolicyAction::kBlock,
@@ -669,13 +708,10 @@ PolicyResult PolicyEngine::evaluate_error(
 // ---------------------------------------------------------------------------
 // PolicyEngine::reload 구현
 //
-// std::atomic_store 를 사용하여 현재 진행 중인 evaluate() 와
-// 경쟁 없이 config 를 교체한다.
-//
-// [C++ 표준 참고]
-// std::atomic_store(&shared_ptr, value) 는 C++11~C++20 에서 지원된다.
-// C++20 에서 deprecated 되었으나 대안인 std::atomic<shared_ptr<T>> 멤버 사용은
-// 헤더 변경이 필요하므로 현재 비멤버 함수를 사용한다.
+// config_ 는 std::atomic<std::shared_ptr<PolicyConfig>> (C++20) 이다.
+// store(memory_order_release) 로 진행 중인 evaluate() 와 경쟁 없이 교체한다.
+// evaluate() 의 load(memory_order_acquire) 와 acquire-release 쌍을 이루어
+// 새 config 에 대한 메모리 가시성을 보장한다.
 //
 // [new_config == nullptr 동작]
 // nullptr 로 교체하면 이후 모든 evaluate() 가 kBlock 을 반환한다 (fail-close).
@@ -688,9 +724,9 @@ void PolicyEngine::reload(std::shared_ptr<PolicyConfig> new_config) {
         spdlog::info("policy_engine: reloading config with {} access rules",
                      new_config->access_control.size());
     }
-    // 헤더의 config_ 타입이 std::shared_ptr<PolicyConfig> (atomic 아님).
-    // 단순 대입 수행. 완전한 thread-safety 를 위해서는 헤더에
-    // std::atomic<std::shared_ptr<PolicyConfig>> 가 필요하다 (Architect 승인 필요).
-    // [설계 한계] 현재 구현은 단일 스레드에서 reload() 를 호출하는 경우를 가정한다.
-    config_ = std::move(new_config);
+    // config_ 는 std::atomic<std::shared_ptr<PolicyConfig>> (C++20) 이다.
+    // store() 로 원자적으로 교체한다.
+    // std::memory_order_release 를 사용하여 이 store 이전의 메모리 쓰기가
+    // evaluate() 의 load(acquire) 이후에 보이도록 보장한다.
+    config_.store(std::move(new_config), std::memory_order_release);
 }

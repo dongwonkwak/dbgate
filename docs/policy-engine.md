@@ -130,11 +130,22 @@ access_control:
 
 ### 11단계: 스키마 접근 차단 (`block_schema_access`)
 
-`data_protection.block_schema_access = true`이면 아래 테이블 접근을 차단한다:
+`data_protection.block_schema_access = true`이면 아래 스키마 접근을 차단한다:
 - `information_schema`
 - `mysql`
 - `performance_schema`
 - `sys`
+
+**schema.table 형태 우회 방지**: SQL 파서가 `"information_schema.tables"` 형태로 테이블 토큰을 추출하는 경우에도 `.` 기준으로 앞부분(schema prefix)을 분리해 비교하므로 차단이 적용된다.
+
+예시:
+```sql
+-- 파서 추출: tables = {"information_schema.tables"}
+-- schema_part = "information_schema" → 차단
+SELECT * FROM information_schema.tables
+```
+
+> **알려진 한계**: 파서가 토큰을 어떤 형태로 추출하는지에 의존한다. `db.schema.table` 3단계 형태나 백틱 이스케이프(`\`information_schema\`.tables`)는 처리하지 않는다.
 
 ### 12단계: 명시적 허용
 
@@ -183,10 +194,9 @@ access_control:
 
 ## Hot Reload
 
-현재 구현은 `PolicyEngine::reload(new_config)` 호출 시 `config_` 멤버를 단순 대입으로 교체한다.
+`PolicyEngine::reload(new_config)` 호출 시 `config_` 멤버를 원자적으로 교체한다.
 
-**현재 한계**: `config_` 타입이 `std::shared_ptr<PolicyConfig>`(non-atomic)이므로 `reload()`와 `evaluate()`가 동시에 실행되면 경쟁 조건이 발생할 수 있다.
-완전한 thread-safety는 헤더에 `std::atomic<std::shared_ptr<PolicyConfig>>`를 도입해야 하며, 이는 Architect 승인이 필요하다.
+**thread-safety 보장**: `config_`는 `std::atomic<std::shared_ptr<PolicyConfig>>` (C++20)로 선언되어 있다. `reload()`는 `store(memory_order_release)`, `evaluate()`는 `load(memory_order_acquire)`를 사용하여 acquire-release 쌍으로 동기화된다. 진행 중인 `evaluate()`는 교체 이전의 config 포인터를 계속 안전하게 참조한다(shared_ptr 참조 카운트 보장).
 
 `new_config = nullptr`로 reload하면 이후 모든 `evaluate()`가 `kBlock`을 반환한다 (fail-close).
 
@@ -197,10 +207,12 @@ access_control:
 | 항목 | 설명 |
 |------|------|
 | IPv6 CIDR 미지원 | `ip_in_cidr()`는 IPv4 전용. IPv6 주소는 `false` 반환 (fail-close). |
-| DST 오차 | `setenv/tzset` 기반 시간대 처리. 서머타임 전환 경계에서 ±1시간 오차 가능. |
+| DST 오차 | `std::chrono::zoned_time` (IANA tz database) 기반 시간대 처리. DST 전환을 정확하게 처리한다. |
 | 테이블명 추출 불완전 | 복잡한 서브쿼리/CTE에서 파서가 내부 테이블명을 놓칠 수 있음. |
 | 주석 분할 미탐지 | `UN/**/ION` 형태는 `block_patterns`로 탐지 불가. |
-| Hot Reload thread-safety | 현재 단일 스레드 reload 가정. 멀티스레드 환경에서 개선 필요. |
+| Hot Reload thread-safety | `std::atomic<std::shared_ptr<PolicyConfig>>`로 thread-safe 교체 보장. |
+| 시간대 이름 형식 | IANA 표준 이름(`"Asia/Seoul"`)만 지원. `"KST+9"` 형태 불가. |
+| schema.table 3단계 형태 | `db.schema.table` 3단계 형태나 백틱 이스케이프는 처리하지 않음 (파서 한계). |
 | procedure_control 프로시저명 | `query.tables`의 첫 번째 요소에서 추출. 파서 한계에 따라 빈 문자열 가능. |
 
 ---

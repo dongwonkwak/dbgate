@@ -28,6 +28,7 @@
 // ❌ sql_parser.hpp → rule.hpp 금지
 // ---------------------------------------------------------------------------
 
+#include <atomic>
 #include <memory>
 #include <string>
 
@@ -119,6 +120,15 @@ public:
     void reload(std::shared_ptr<PolicyConfig> new_config);
 
 private:
-    // 구현 레이어에서 std::atomic<std::shared_ptr<PolicyConfig>> 사용 권장.
-    std::shared_ptr<PolicyConfig> config_;
+    // std::atomic<std::shared_ptr<PolicyConfig>> (C++20)
+    // reload() 와 evaluate() 가 동시에 실행되는 경우에도 data race 없이
+    // config 포인터를 원자적으로 교체/읽기할 수 있다.
+    //
+    // [설계 노트]
+    // - evaluate() 에서는 load() 로 로컬 shared_ptr 을 취득한다.
+    //   reload() 가 새 값으로 교체하더라도 로컬 복사본은 이전 config 의
+    //   수명을 유지한다 (shared_ptr 참조 카운트 보장).
+    // - reload() 에서는 store() 로 원자적 교체한다.
+    // - public API(함수 시그니처) 는 변경 없음. private 멤버만 변경.
+    std::atomic<std::shared_ptr<PolicyConfig>> config_;
 };
