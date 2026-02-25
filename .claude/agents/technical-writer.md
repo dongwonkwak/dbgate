@@ -150,6 +150,7 @@ technical-writer는 문서 자체가 산출물이므로 해당 규칙의 적용�
 1. `docs/project-spec-v3.md`, `CLAUDE.md`, Architect 지시를 확인한다.
 2. 문서 대상 기능의 현재 구현/인터페이스 상태를 읽고 사실관계를 정리한다.
 3. 대상 독자와 문서 목적(결정 기록/운영 가이드/소개문서)을 명확히 한다.
+4. Execution Brief가 있으면 확인하고, Brief에 명시된 범위/제약을 준수한다.
 
 ### 작업 중
 - 문서 구조를 먼저 잡고, 각 섹션에 필요한 근거를 채워라
@@ -157,6 +158,11 @@ technical-writer는 문서 자체가 산출물이므로 해당 규칙의 적용�
 - 명령어/경로/파일명은 실제 레포 기준으로 검증하라
 
 ### 작업 완료 시 보고 형식 (권장)
+- 프롬프트/계획 메타데이터
+  - Linear ID:
+  - Execution Brief 버전:
+  - Brief 위치:
+  - 실행 중 변경된 가정:
 - 변경 문서 목록
 - 변경 요약 (문서별 핵심 내용)
 - 변경 분류 (`behavior-doc` / `interface-doc` / `ops-doc` / `adr` / `readme` / `internal-doc`)

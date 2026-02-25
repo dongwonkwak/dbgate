@@ -12,6 +12,8 @@
 1. `docs/process/agent-workflow.md` — 전체 작업 흐름
 2. `docs/process/agent-catalog.md` — 에이전트 역할/소유권 요약
 3. `docs/process/handoff-report-schema.md` — 완료 보고 형식
+3.5. `docs/process/execution-brief-template.md` — Execution Brief 작성 규칙
+3.6. `docs/process/state-transition-checklist.md` — 상태 전이 체크리스트
 4. `.claude/agents/architect.md` — 설계/조율 규칙 원본
 5. 담당 작업에 맞는 `.claude/agents/<agent>.md`
 
@@ -20,6 +22,8 @@
 2. 구현/QA 에이전트는 코드 변경 시 테스트와 문서 영향 분석을 함께 수행한다.
 3. `technical-writer`는 문서 품질/정합성 게이트 역할을 수행한다.
 4. C++↔Go 경계(특히 UDS/JSON 계약) 변경은 `architect` 승인 후 반영한다.
+5. Execution Brief를 Linear 코멘트로 남기고, Handoff Report에서 Brief 버전을 참조한다.
+6. `In Progress → In Review` 전이 시 증거 체크리스트를 확인한다.
 
 ## 현재 에이전트 구성 (요약)
 - `architect`

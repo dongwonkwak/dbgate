@@ -29,12 +29,28 @@ flowchart TD
   - 변경 목표
   - 영향 파일/모듈 후보
   - 기존 인터페이스/스펙
+  - Linear 이슈 본문 최소 필드 (변경 유형별):
+
+| 변경 유형 | 최소 필드 |
+|---|---|
+| `behavior` | Goal, In Scope, Acceptance Criteria, Affected Modules |
+| `interface` | Goal, In Scope, Acceptance Criteria, Affected Modules, Risks |
+| `ops` | Goal, In Scope, Acceptance Criteria, Affected Modules, Risks |
+| `perf` | Goal, In Scope, Acceptance Criteria, Affected Modules, 측정 기준 |
+| `docs-only` | Goal, Scope, Done 기준 |
+| `internal-refactor` | Goal, Scope, 비영향 가정 |
 - 출력:
   - 작업 분배 (에이전트별)
   - 의존성/병렬화 계획
   - 인터페이스 변경 승인 여부
+  - Execution Brief 코멘트 (Linear 이슈에 `📋 Execution Brief v<N>` 형식으로 남김)
+    - 표준/경량은 변경 유형에 따라 결정
+    - 작성 규칙: `docs/process/execution-brief-template.md` 참조
 
 ### 2. 구현 (`network-engineer` / `security-engineer` / `infra-engineer` / `go-engineer`)
+- 입력:
+  - Linear ID + 최신 Execution Brief 버전
+  - `CLAUDE.md`, 담당 에이전트 프롬프트, 프로세스 문서
 - 수행:
   - 담당 경로 내 구현
   - 테스트/재현 절차 준비
@@ -43,6 +59,7 @@ flowchart TD
 - 주의:
   - 확정 인터페이스 임의 변경 금지
   - C++↔Go 계약 변경은 architect 승인 필요
+- 완료 보고 시 `프롬프트/계획 메타데이터` 필드를 반드시 포함 (handoff-report-schema.md 참조)
 
 ### 3. 테스트/검증 (`qa-engineer`)
 - 수행:
@@ -67,6 +84,17 @@ flowchart TD
   - 테스트 결과
   - 문서 영향 분석/문서 수정 여부
   - 교차영향 후속 작업 존재 여부
+
+### 6. 상태 전이 (반자동)
+- `In Progress → In Review` 전이 시 체크리스트 확인 필수
+- 체크리스트 항목:
+  1. Execution Brief 코멘트 존재 (📋)
+  2. Handoff Report 존재 (✅)
+  3. 테스트/검증 결과 존재
+  4. 문서 영향 분석 존재
+  5. (해당 시) Architect 승인 근거 존재
+- 상세: `docs/process/state-transition-checklist.md` 참조
+- 전이는 사람이 수행한다.
 
 ## 승인 게이트 (중요)
 
@@ -105,3 +133,5 @@ flowchart TD
 2. 담당 경로 밖 수정은 하지 않는다.
 3. 완료 보고에 반드시 `문서 영향 분석`을 포함한다.
 4. 경계 계약 변경은 스스로 확정하지 않는다.
+5. Execution Brief를 확인하고 Brief에 명시된 범위/제약을 준수한다.
+6. 완료 보고에 `프롬프트/계획 메타데이터`를 포함한다.

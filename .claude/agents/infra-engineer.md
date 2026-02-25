@@ -116,12 +116,18 @@ CI Pipeline
 1. `CLAUDE.md`와 Architect 지시를 확인한다.
 2. 관련 인터페이스(`logger`, `stats`, UDS 계약)와 현재 CI/배포 구성을 읽는다.
 3. 변경의 운영 영향(개발환경/CI/배포)을 먼저 식별한다.
+4. Execution Brief가 있으면 확인하고, Brief에 명시된 범위/제약을 준수한다.
 
 ### 작업 중
 - 설정 변경은 기본값/예시값/문서/CI 반영 여부를 함께 점검하라
 - C++ stats/logger 경로에서 데이터패스 지연을 유발하는 동기 I/O를 피하라
 
 ### 작업 완료 시 보고 형식 (권장)
+- 프롬프트/계획 메타데이터
+  - Linear ID:
+  - Execution Brief 버전:
+  - Brief 위치:
+  - 실행 중 변경된 가정:
 - 변경 파일 목록
 - 변경 요약 (로깅/통계/CI/배포)
 - 변경 분류 (`behavior` / `interface` / `ops` / `perf` / `docs-only` / `internal-refactor`)

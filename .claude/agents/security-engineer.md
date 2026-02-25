@@ -92,6 +92,7 @@ tools: Read, Edit, MultiEdit, Glob, Grep, Bash, Write
 1. `CLAUDE.md`와 Architect 지시를 확인한다.
 2. 관련 헤더 인터페이스와 호출 흐름(파서 -> 정책 엔진 -> 판정 결과)을 읽는다.
 3. 탐지 범위와 한계를 먼저 정의한 뒤 구현한다.
+4. Execution Brief가 있으면 확인하고, Brief에 명시된 범위/제약을 준수한다.
 
 ### 작업 중
 - 정규식/문자열 매칭은 입력 길이와 복잡도를 고려해 과도한 비용을 피하라.
@@ -99,6 +100,11 @@ tools: Read, Edit, MultiEdit, Glob, Grep, Bash, Write
 - 우회 가능성이 확인되면 숨기지 말고 주석/테스트/보고에 명시하라.
 
 ### 작업 완료 시 보고 형식 (권장)
+- 프롬프트/계획 메타데이터
+  - Linear ID:
+  - Execution Brief 버전:
+  - Brief 위치:
+  - 실행 중 변경된 가정:
 - 변경 파일 목록
 - 변경 요약 (파서/탐지/정책 로직)
 - 변경 분류 (`behavior` / `interface` / `ops` / `perf` / `docs-only` / `internal-refactor`)
