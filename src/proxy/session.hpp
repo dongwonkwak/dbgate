@@ -125,6 +125,6 @@ private:
 
     // relay_server_response 헬퍼
     //   MySQL 서버 응답(Result Set / OK / ERR)이 완료될 때까지 읽어 클라이언트에 릴레이.
-    auto relay_server_response(std::uint8_t request_seq_id)
+    auto relay_server_response(CommandType request_type, std::uint8_t request_seq_id)
         -> boost::asio::awaitable<std::expected<void, ParseError>>;
 };

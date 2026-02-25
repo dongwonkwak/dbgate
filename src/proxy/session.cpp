@@ -149,6 +149,148 @@ auto write_packet_raw(boost::asio::ip::tcp::socket& sock, const MysqlPacket& pkt
     co_return std::expected<void, ParseError>{};
 }
 
+auto parse_lenenc_integer(std::span<const std::uint8_t> payload,
+                          std::size_t&                  offset,
+                          std::uint64_t&                value) -> bool
+{
+    if (offset >= payload.size()) {
+        return false;
+    }
+
+    const std::uint8_t first = payload[offset++];
+    if (first < 0xFB) {
+        value = first;
+        return true;
+    }
+
+    if (first == 0xFC) {
+        if (offset + 2 > payload.size()) { return false; }
+        value = static_cast<std::uint64_t>(payload[offset])
+              | (static_cast<std::uint64_t>(payload[offset + 1]) << 8U);
+        offset += 2;
+        return true;
+    }
+
+    if (first == 0xFD) {
+        if (offset + 3 > payload.size()) { return false; }
+        value = static_cast<std::uint64_t>(payload[offset])
+              | (static_cast<std::uint64_t>(payload[offset + 1]) << 8U)
+              | (static_cast<std::uint64_t>(payload[offset + 2]) << 16U);
+        offset += 3;
+        return true;
+    }
+
+    if (first == 0xFE) {
+        if (offset + 8 > payload.size()) { return false; }
+        value = 0;
+        for (std::size_t i = 0; i < 8; ++i) {
+            value |= static_cast<std::uint64_t>(payload[offset + i]) << (8ULL * i);
+        }
+        offset += 8;
+        return true;
+    }
+
+    // 0xFB(NULL)는 lenenc integer가 아닌 row cell marker.
+    return false;
+}
+
+auto consume_lenenc_text_cell(std::span<const std::uint8_t> payload, std::size_t& offset) -> bool
+{
+    if (offset >= payload.size()) {
+        return false;
+    }
+
+    if (payload[offset] == 0xFB) {  // NULL
+        ++offset;
+        return true;
+    }
+
+    std::uint64_t len = 0;
+    if (!parse_lenenc_integer(payload, offset, len)) {
+        return false;
+    }
+    if (offset + len > payload.size()) {
+        return false;
+    }
+    offset += static_cast<std::size_t>(len);
+    return true;
+}
+
+auto is_text_row_packet(std::span<const std::uint8_t> payload, std::uint8_t column_count) -> bool
+{
+    std::size_t offset = 0;
+    for (std::uint8_t i = 0; i < column_count; ++i) {
+        if (!consume_lenenc_text_cell(payload, offset)) {
+            return false;
+        }
+    }
+    return offset == payload.size();
+}
+
+auto is_resultset_final_ok_packet(std::span<const std::uint8_t> payload) -> bool
+{
+    if (payload.empty() || payload[0] != 0x00) {
+        return false;
+    }
+
+    std::size_t offset = 1;
+    std::uint64_t ignored = 0;
+    if (!parse_lenenc_integer(payload, offset, ignored)) {
+        return false;
+    }
+    if (!parse_lenenc_integer(payload, offset, ignored)) {
+        return false;
+    }
+
+    // status_flags(2) + warnings(2) 는 최소 필수 필드
+    return offset + 4 <= payload.size();
+}
+
+auto is_metadata_terminator_packet(std::span<const std::uint8_t> payload) -> bool
+{
+    return (payload.size() >= 1 && payload[0] == 0xFE && payload.size() < 9)
+        || is_resultset_final_ok_packet(payload);
+}
+
+auto relay_stmt_prepare_section(boost::asio::ip::tcp::socket& server_socket,
+                                boost::asio::ip::tcp::socket& client_socket,
+                                std::uint16_t                 count,
+                                std::uint64_t                 session_id)
+    -> boost::asio::awaitable<std::expected<void, ParseError>>
+{
+    for (std::uint16_t i = 0; i < count; ++i) {
+        auto def_pkt_result = co_await read_one_packet(server_socket);
+        if (!def_pkt_result) {
+            co_return std::unexpected(def_pkt_result.error());
+        }
+
+        auto wr = co_await write_packet_raw(client_socket, *def_pkt_result);
+        if (!wr) {
+            co_return std::unexpected(wr.error());
+        }
+    }
+
+    auto term_pkt_result = co_await read_one_packet(server_socket);
+    if (!term_pkt_result) {
+        co_return std::unexpected(term_pkt_result.error());
+    }
+
+    auto wr = co_await write_packet_raw(client_socket, *term_pkt_result);
+    if (!wr) {
+        co_return std::unexpected(wr.error());
+    }
+
+    const auto payload = term_pkt_result->payload();
+    if (!is_metadata_terminator_packet(payload)) {
+        spdlog::warn("[session {}] unexpected COM_STMT_PREPARE terminator: 0x{:02x} (len={})",
+                     session_id,
+                     payload.empty() ? 0U : static_cast<unsigned>(payload[0]),
+                     payload.size());
+    }
+
+    co_return std::expected<void, ParseError>{};
+}
+
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -170,7 +312,7 @@ auto write_packet_raw(boost::asio::ip::tcp::socket& sock, const MysqlPacket& pkt
 //   핵심: Result Set 내에서 row가 0x00으로 시작할 수 있으므로,
 //         상태 추적을 통해 column EOF 이후의 0x00은 row data로 취급.
 // ---------------------------------------------------------------------------
-auto Session::relay_server_response(std::uint8_t request_seq_id)
+auto Session::relay_server_response(CommandType request_type, [[maybe_unused]] std::uint8_t request_seq_id)
     -> boost::asio::awaitable<std::expected<void, ParseError>>
 {
     enum class ResponseState {
@@ -207,13 +349,40 @@ auto Session::relay_server_response(std::uint8_t request_seq_id)
         co_return std::expected<void, ParseError>{};
     }
 
-    // OK 패킷 (0x00) → 즉시 완료
-    // 비-결과셋 응답 (COM_QUERY 아님, 또는 이미 결과셋 관련 패킷 아님)
-    // 주의: COM_STMT_PREPARE 응답도 0x00으로 시작하지만,
-    //       그 경우 payload >= 11이고 뒤따르는 정의 패킷들이 있음.
-    //       프록시 범위 내에서는 구분 불가하므로,
-    //       relay() 로직에서 이미 COM_STMT_PREPARE 처리를 고려해야 함.
+    // OK 패킷 (0x00)
+    // - 일반 커맨드 응답: 즉시 완료
+    // - COM_STMT_PREPARE : 첫 OK 뒤에 parameter/column metadata 패킷이 이어질 수 있음
     if (first_byte == 0x00) {
+        if (request_type == CommandType::kComStmtPrepare) {
+            if (first_payload.size() < 12) {
+                spdlog::warn("[session {}] short COM_STMT_PREPARE OK payload: {} bytes",
+                             session_id_, first_payload.size());
+                co_return std::expected<void, ParseError>{};
+            }
+
+            const std::uint16_t num_columns =
+                static_cast<std::uint16_t>(first_payload[5])
+                | (static_cast<std::uint16_t>(first_payload[6]) << 8U);
+            const std::uint16_t num_params =
+                static_cast<std::uint16_t>(first_payload[7])
+                | (static_cast<std::uint16_t>(first_payload[8]) << 8U);
+
+            if (num_params > 0) {
+                auto params_result = co_await relay_stmt_prepare_section(
+                    server_socket_, client_socket_, num_params, session_id_);
+                if (!params_result) {
+                    co_return std::unexpected(params_result.error());
+                }
+            }
+
+            if (num_columns > 0) {
+                auto columns_result = co_await relay_stmt_prepare_section(
+                    server_socket_, client_socket_, num_columns, session_id_);
+                if (!columns_result) {
+                    co_return std::unexpected(columns_result.error());
+                }
+            }
+        }
         co_return std::expected<void, ParseError>{};
     }
 
@@ -307,13 +476,20 @@ auto Session::relay_server_response(std::uint8_t request_seq_id)
                 // 문제: row의 첫 컬럼이 빈 문자열(0x00)이고 다음 컬럼들이 있으면,
                 //       [0x00, ...] 형태로 OK와 유사할 수 있음.
                 //
-                // 해결: EOF(0xFE, size < 9) 또는 ERR(0xFF)만 종료 조건으로 취급.
-                //       이는 프로토콜 스펙에 의해 결과셋이 정확히 종료되는 구간을 보장함.
+                // 해결:
+                //   1) 정상 row 패킷 형태면 row로 취급
+                //   2) EOF(0xFE, size < 9) 또는 최종 OK(0x00 + OK 형식)면 종료
                 if (byte0 == 0xFE && payload.size() < 9) {
                     // Row EOF 패킷 → 결과셋 완료
                     state = ResponseState::kDone;
                 } else if (byte0 == 0xFF) {
                     // Error 패킷 (이미 처리됨, 중복 방지)
+                    state = ResponseState::kDone;
+                } else if (request_type == CommandType::kComQuery
+                           && byte0 == 0x00
+                           && !is_text_row_packet(payload, column_count)
+                           && is_resultset_final_ok_packet(payload)) {
+                    // CLIENT_DEPRECATE_EOF 모드의 최종 OK 패킷
                     state = ResponseState::kDone;
                 } else {
                     // Row data (0x00~0xFB로 시작하는 column values)
@@ -579,7 +755,7 @@ auto Session::run() -> boost::asio::awaitable<void>
 
                 // 서버 응답 릴레이
                 auto relay_result =
-                    co_await relay_server_response(cmd.sequence_id);
+                    co_await relay_server_response(cmd.command_type, cmd.sequence_id);
                 if (!relay_result) {
                     spdlog::warn("[session {}] relay_server_response failed: {}",
                                  session_id_, relay_result.error().message);
@@ -625,7 +801,7 @@ auto Session::run() -> boost::asio::awaitable<void>
             }
 
             // COM_STMT_PREPARE 등 다중 패킷 응답도 정확히 릴레이
-            auto relay_result = co_await relay_server_response(cmd.sequence_id);
+            auto relay_result = co_await relay_server_response(cmd.command_type, cmd.sequence_id);
             if (!relay_result) {
                 spdlog::warn("[session {}] failed to relay server response: {}",
                              session_id_, relay_result.error().message);
@@ -673,9 +849,10 @@ void Session::close()
     if (closing_.compare_exchange_strong(expected, true,
                                          std::memory_order_acq_rel)) {
         spdlog::debug("[session {}] close() called", session_id_);
-        // 소켓 close를 통해 진행 중인 async_read를 중단시킨다.
+        // 양쪽 소켓 I/O를 취소해 진행 중인 async_read/relay 대기를 깨운다.
         boost::system::error_code ec;
         client_socket_.cancel(ec);
+        server_socket_.cancel(ec);
     }
 }
 
