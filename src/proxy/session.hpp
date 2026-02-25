@@ -86,6 +86,12 @@ public:
     // -----------------------------------------------------------------------
     auto run() -> boost::asio::awaitable<void>;
 
+    // 세션 코루틴/종료 작업을 직렬화할 executor(strand) 반환.
+    [[nodiscard]] auto executor() const -> boost::asio::any_io_executor
+    {
+        return strand_;
+    }
+
     // -----------------------------------------------------------------------
     // close
     //   세션을 정상 종료한다. 현재 처리 중인 쿼리가 완료된 후 종료된다.

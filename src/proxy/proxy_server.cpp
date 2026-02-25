@@ -281,7 +281,7 @@ void ProxyServer::run(boost::asio::io_context& io_ctx)
 
                 // 세션 코루틴 spawn — 완료 시 sessions_ 에서 제거
                 boost::asio::co_spawn(
-                    io_ctx,
+                    session->executor(),
                     session->run(),
                     [this, sid](std::exception_ptr eptr) {
                         if (eptr) {

@@ -3,6 +3,7 @@
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/connect.hpp>
 #include <boost/asio/detached.hpp>
+#include <boost/asio/post.hpp>
 #include <boost/asio/read.hpp>
 #include <boost/asio/redirect_error.hpp>
 #include <boost/asio/use_awaitable.hpp>
@@ -389,6 +390,19 @@ auto Session::relay_server_response(CommandType request_type, [[maybe_unused]] s
     // EOF 패킷 (0xFE, payload.size() < 9) → 즉시 완료 (비정상)
     if (first_byte == 0xFE && first_payload.size() < 9) {
         co_return std::expected<void, ParseError>{};
+    }
+
+    // LOCAL_INFILE 요청 (0xFB)
+    // 현재 프록시는 파일 업로드 서브-프로토콜(클라이언트 파일 스트림)을 지원하지 않으므로
+    // 결과셋 column_count로 오인하지 말고 명시적으로 중단한다.
+    if (first_byte == 0xFB) {
+        spdlog::warn("[session {}] unsupported LOCAL_INFILE response (0xFB) from server",
+                     session_id_);
+        co_return std::unexpected(ParseError{
+            ParseErrorCode::kUnsupportedCommand,
+            "LOCAL_INFILE response is not supported",
+            "server response first byte = 0xFB"
+        });
     }
 
     // Result Set: 첫 바이트가 column count (0x01~0xFC)
@@ -885,10 +899,16 @@ void Session::close()
     if (closing_.compare_exchange_strong(expected, true,
                                          std::memory_order_acq_rel)) {
         spdlog::debug("[session {}] close() called", session_id_);
-        // 양쪽 소켓 I/O를 취소해 진행 중인 async_read/relay 대기를 깨운다.
-        boost::system::error_code ec;
-        client_socket_.cancel(ec);
-        server_socket_.cancel(ec);
+        auto self = shared_from_this();
+        // 양쪽 소켓 I/O 취소도 strand에서 실행해 세션 상태/소켓 접근을 직렬화한다.
+        boost::asio::post(
+            strand_,
+            [self]() {
+                boost::system::error_code ec;
+                self->client_socket_.cancel(ec);
+                self->server_socket_.cancel(ec);
+            }
+        );
     }
 }
 
