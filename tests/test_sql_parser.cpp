@@ -498,14 +498,69 @@ TEST(SqlParser, SemicolonInsideLineCommentAllowed) {
     EXPECT_EQ(result->command, SqlCommand::kSelect);
 }
 
-TEST(SqlParser, TrailingSemicolonBlocked) {
-    // 보수적 설계: 단일 구문 끝 세미콜론도 차단
-    // [오탐 가능성 — 문서화됨] "SELECT 1;" 는 단일 구문이나 세미콜론으로 차단됨.
-    // 호출자가 사전에 trailing 세미콜론을 제거해야 한다.
+// ---------------------------------------------------------------------------
+// [DON-39] Trailing 세미콜론 허용 테스트
+//
+// MySQL 클라이언트 대부분이 단일 구문 끝에 세미콜론을 붙인다.
+// 세미콜론 뒤에 공백/개행만 있는 경우는 단일 구문으로 허용해야
+// 운영 환경에서 정상 쿼리가 차단되는 false positive 를 방지할 수 있다.
+//
+// [보안 원칙 유지] 세미콜론 뒤에 non-whitespace 문자가 있으면 여전히 차단.
+// ---------------------------------------------------------------------------
+
+TEST(SqlParser, TrailingSemicolonAllowed_Select) {
+    // "SELECT 1;" → trailing 세미콜론 허용 (DON-39)
     SqlParser parser;
     const auto result = parser.parse("SELECT 1;");
+    ASSERT_TRUE(result.has_value())
+        << "Trailing semicolon on a single statement should be allowed (DON-39)";
+    EXPECT_EQ(result->command, SqlCommand::kSelect);
+}
+
+TEST(SqlParser, TrailingSemicolonAllowed_Insert) {
+    // "INSERT INTO t VALUES(1);" → trailing 세미콜론 허용
+    SqlParser parser;
+    const auto result = parser.parse("INSERT INTO t VALUES(1);");
+    ASSERT_TRUE(result.has_value())
+        << "Trailing semicolon on INSERT should be allowed (DON-39)";
+    EXPECT_EQ(result->command, SqlCommand::kInsert);
+    EXPECT_TRUE(contains_table(result->tables, "t"));
+}
+
+TEST(SqlParser, TrailingSemicolonAllowed_TrailingSpaces) {
+    // "SELECT 1;  " → 세미콜론 뒤 공백만 → 허용
+    SqlParser parser;
+    const auto result = parser.parse("SELECT 1;  ");
+    ASSERT_TRUE(result.has_value())
+        << "Trailing semicolon followed by spaces only should be allowed (DON-39)";
+    EXPECT_EQ(result->command, SqlCommand::kSelect);
+}
+
+TEST(SqlParser, TrailingSemicolonAllowed_TrailingNewline) {
+    // "SELECT 1;\n" → 세미콜론 뒤 개행만 → 허용
+    SqlParser parser;
+    const auto result = parser.parse("SELECT 1;\n");
+    ASSERT_TRUE(result.has_value())
+        << "Trailing semicolon followed by newline only should be allowed (DON-39)";
+    EXPECT_EQ(result->command, SqlCommand::kSelect);
+}
+
+TEST(SqlParser, TrailingSemicolonAllowed_TrailingMixedWhitespace) {
+    // "SELECT 1;  \t\n  " → 세미콜론 뒤 공백·탭·개행 혼합 → 허용
+    SqlParser parser;
+    const auto result = parser.parse("SELECT 1;  \t\n  ");
+    ASSERT_TRUE(result.has_value())
+        << "Trailing semicolon followed by mixed whitespace only should be allowed (DON-39)";
+    EXPECT_EQ(result->command, SqlCommand::kSelect);
+}
+
+TEST(SqlParser, DoubleSemicolonBlocked) {
+    // "SELECT 1; ;" → 세미콜론 여러 개 → 차단 (멀티 스테이트먼트)
+    // 두 번째 ';'가 non-whitespace 이므로 첫 번째 ';' 뒤에 내용이 있다고 판단
+    SqlParser parser;
+    const auto result = parser.parse("SELECT 1; ;");
     ASSERT_FALSE(result.has_value())
-        << "Trailing semicolon should fail-close (conservative design)";
+        << "Double semicolon should be treated as multi-statement and blocked (DON-39)";
     EXPECT_EQ(result.error().code, ParseErrorCode::kInvalidSql);
 }
 

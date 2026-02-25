@@ -146,6 +146,9 @@
 #### 문서화해야 하는 한계/주의점
 - fail-open 동작은 아키텍처 원칙상 금지
 - `InjectionDetector` 유효 패턴 없음 → 생성자에서 `fail_close_active_=true` 설정, `check()` 전체 차단
+- [DON-39] trailing 세미콜론 처리: `SELECT 1;` 처럼 세미콜론 뒤에 공백/개행만 있는 경우는
+  단일 구문으로 허용(parse 성공). 멀티 스테이트먼트(`SELECT 1; DROP TABLE users` 등)는
+  세미콜론 뒤에 non-whitespace 문자가 있으므로 여전히 파싱 실패 → fail-close 경로로 처리.
 
 ---
 
