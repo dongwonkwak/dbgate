@@ -240,7 +240,9 @@ auto Session::relay_server_response(std::uint8_t request_seq_id)
         }
 
         // OK 패킷 (CLIENT_DEPRECATE_EOF 모드) → 즉시 종료
-        if (byte0 == 0x00 && pkt.sequence_id() > request_seq_id) {
+        // 주의: 결과셋 행의 첫 컬럼이 빈 문자열이면 0x00으로 시작할 수 있음
+        // OK 패킷은 최소 5바이트: header(0x00) + affected_rows + last_insert_id + status_flags(2)
+        if (byte0 == 0x00 && payload.size() >= 5) {
             break;
         }
 
@@ -558,18 +560,11 @@ auto Session::run() -> boost::asio::awaitable<void>
                 break;
             }
 
-            // COM_PING, COM_STATISTICS 등 간단한 응답 패킷 1개만 기대
-            auto resp_result = co_await read_one_packet(server_socket_);
-            if (!resp_result) {
-                spdlog::warn("[session {}] failed to read server response: {}",
-                             session_id_, resp_result.error().message);
-                break;
-            }
-
-            auto w = co_await write_packet_raw(client_socket_, *resp_result);
-            if (!w) {
+            // COM_STMT_PREPARE 등 다중 패킷 응답도 정확히 릴레이
+            auto relay_result = co_await relay_server_response(cmd.sequence_id);
+            if (!relay_result) {
                 spdlog::warn("[session {}] failed to relay server response: {}",
-                             session_id_, w.error().message);
+                             session_id_, relay_result.error().message);
                 break;
             }
         }

@@ -153,7 +153,7 @@ void ProxyServer::run(boost::asio::io_context& io_ctx)
         io_ctx, SIGTERM, SIGINT
     );
     signals_stop->async_wait(
-        [this](const boost::system::error_code& ec, int /*signum*/) {
+        [this, signals_stop](const boost::system::error_code& ec, int /*signum*/) {
             if (!ec) {
                 spdlog::info("[proxy] shutdown signal received");
                 stop();
@@ -163,18 +163,19 @@ void ProxyServer::run(boost::asio::io_context& io_ctx)
 
     auto signals_hup = std::make_shared<boost::asio::signal_set>(io_ctx, SIGHUP);
     // SIGHUP 핸들러: 수신 후 재등록하여 반복 감지
-    std::function<void()> setup_hup;
-    setup_hup = [this, &io_ctx, signals_hup, &setup_hup]() {
+    // shared_ptr로 감싸서 비동기 콜백에서의 수명 보장
+    auto setup_hup = std::make_shared<std::function<void()>>();
+    *setup_hup = [this, signals_hup, setup_hup]() {
         signals_hup->async_wait(
-            [this, &setup_hup](const boost::system::error_code& ec, int /*signum*/) {
+            [this, setup_hup](const boost::system::error_code& ec, int /*signum*/) {
                 if (!ec) {
                     policy_reload();
-                    setup_hup();  // 다시 대기
+                    (*setup_hup)();  // 다시 대기
                 }
             }
         );
     };
-    setup_hup();
+    (*setup_hup)();
 
     // -----------------------------------------------------------------------
     // 7. Accept 루프 (co_spawn)
@@ -246,10 +247,24 @@ void ProxyServer::run(boost::asio::io_context& io_ctx)
                     1, std::memory_order_relaxed
                 );
 
-                const auto server_ep = boost::asio::ip::tcp::endpoint{
-                    boost::asio::ip::make_address(config_.upstream_address),
-                    config_.upstream_port
-                };
+                // upstream 호스트명 해석 (숫자 IP도 지원)
+                boost::asio::ip::tcp::resolver resolver{io_ctx};
+                boost::system::error_code resolve_ec;
+                auto resolve_results = co_await resolver.async_resolve(
+                    config_.upstream_address,
+                    std::to_string(config_.upstream_port),
+                    boost::asio::redirect_error(boost::asio::use_awaitable, resolve_ec)
+                );
+
+                if (resolve_ec || resolve_results.empty()) {
+                    spdlog::error("[proxy] failed to resolve upstream {}: {}",
+                                  config_.upstream_address, resolve_ec.message());
+                    boost::system::error_code close_ec;
+                    client_sock.close(close_ec);
+                    continue;
+                }
+
+                const auto server_ep = *resolve_results.begin();
 
                 auto session = std::make_shared<Session>(
                     sid,

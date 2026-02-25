@@ -521,3 +521,27 @@ TEST_F(ProxyPipeline, PiggybackInjection_IsBlocked) {
         << "InjectionDetector is not reached: SqlParser blocks multi-statement first (fail-close). "
            "injection_detected=false is correct behavior.";
 }
+
+// ---------------------------------------------------------------------------
+// Bug 3 검증: 결과셋 릴레이 0x00 오판 수정
+//
+// 코드 검토: session.cpp:243 - OK 패킷 판별에 payload 길이 검증 추가
+//
+// [수정 내용]
+// 결과셋 릴레이 중 OK 패킷 판별 로직에서 단순 byte0 == 0x00만으로
+// OK 패킷을 판단하던 버그를 수정했습니다.
+//
+// [문제점]
+// MySQL 텍스트 프로토콜에서:
+//   - OK 패킷: 0x00으로 시작, 최소 5바이트
+//     (header + affected_rows + last_insert_id + status_flags(2))
+//   - 결과셋 행의 빈 컬럼: 0x00으로 인코딩될 수 있음 (length = 0)
+//
+// 수정 전: 빈 컬럼 포함 결과셋이 중간에 끊김
+// 수정 후: payload.size() >= 5 로 OK 패킷 판별, 결과셋 정상 릴레이
+//
+// [테스트 전략]
+// relay_server_response()는 네트워크 I/O 기반이므로,
+// e2e 통합 테스트(MySQL 실제 연결)에서 검증합니다.
+// 파이프라인 테스트는 SqlParser/PolicyEngine 검증에 중점을 둡니다.
+// ---------------------------------------------------------------------------
