@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# pre-push hook: push 전 doc impact 체크를 실행한다.
+# scripts/install-hooks.sh 로 설치한다.
+set -euo pipefail
+
+BASE_REF="origin/main"
+SCRIPT="scripts/check-doc-impact.sh"
+
+if [[ ! -f "$SCRIPT" ]]; then
+  exit 0
+fi
+
+# origin/main 이 fetch 되어 있지 않으면 체크 건너뜀
+if ! git rev-parse --verify "$BASE_REF" >/dev/null 2>&1; then
+  echo "[pre-push] $BASE_REF not found locally, skipping doc impact check."
+  exit 0
+fi
+
+echo "[pre-push] Running doc impact check against $BASE_REF..."
+if ! bash "$SCRIPT" --base "$BASE_REF" --head HEAD; then
+  echo ""
+  echo "[pre-push] Push 중단: doc impact 요건 미충족."
+  echo "           해당 docs 파일을 업데이트하거나 아래 트레일러를 마지막 커밋에 추가하세요:"
+  echo ""
+  echo "  Docs-Impact: none"
+  echo "  Docs-Impact-Reason: <구체적인 이유>"
+  exit 1
+fi
