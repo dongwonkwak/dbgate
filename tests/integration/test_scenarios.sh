@@ -89,7 +89,8 @@ echo ""
 echo "=== Phase 2 & 3: dbgate 프록시 경유 + 정책 차단 ==="
 
 if [ ! -x "$DBGATE_BIN" ]; then
-    echo "  ⚠️  $DBGATE_BIN 없음 — 프록시 단계 건너뜀"
+    echo "  ❌ $DBGATE_BIN 없음 — 프록시 바이너리 누락으로 통합 테스트 실패"
+    exit 1
 else
     # testuser 를 허용하는 테스트 전용 정책 (Phase 3에서 일부 패턴은 차단)
     cat > "$TEST_POLICY" <<'YAML'
