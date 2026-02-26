@@ -117,10 +117,12 @@ private:
 class StructuredLoggerTest : public ::testing::Test {
 protected:
     void SetUp() override {
-        log_dir_   = fs::temp_directory_path() / "dbgate_test_logs";
-        log_file_  = log_dir_ / "test.log";
+        const auto* info = ::testing::UnitTest::GetInstance()->current_test_info();
+        std::string unique_name =
+            std::string(info->test_suite_name()) + "_" + info->name();
+        log_dir_  = fs::temp_directory_path() / "dbgate_test_logs" / unique_name;
+        log_file_ = log_dir_ / "test.log";
         fs::create_directories(log_dir_);
-        fs::remove_all(log_file_.string());
     }
 
     void TearDown() override {
