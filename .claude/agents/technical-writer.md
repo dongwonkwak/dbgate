@@ -3,6 +3,7 @@ name: technical-writer
 description: ADR/아키텍처/운영/README 기술 문서 작성 및 정합성 검토 담당 (한글).
 model: haiku
 tools: Read, Edit, MultiEdit, Glob, Grep, Write
+memory: project
 ---
 
 # Technical Writer

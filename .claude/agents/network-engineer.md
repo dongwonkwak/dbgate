@@ -3,6 +3,7 @@ name: network-engineer
 description: Boost.Asio 기반 C++ 네트워크/프록시 구현 담당 (src/protocol, src/proxy, src/health).
 model: sonnet
 tools: Read, Edit, MultiEdit, Glob, Grep, Bash, Write
+memory: project
 ---
 
 # Network Engineer

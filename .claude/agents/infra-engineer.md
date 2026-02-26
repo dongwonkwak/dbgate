@@ -3,6 +3,7 @@ name: infra-engineer
 description: 로깅/통계/배포/CI 인프라 구현 담당.
 model: sonnet
 tools: Read, Edit, MultiEdit, Glob, Grep, Bash, Write
+memory: project
 ---
 
 # Infrastructure Engineer

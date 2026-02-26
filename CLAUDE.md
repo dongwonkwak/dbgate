@@ -11,29 +11,7 @@ MySQL 클라이언트와 서버 사이에 위치하여 SQL을 파싱하고 정�
 - 모듈 의존 방향: common → protocol → parser → policy → proxy ← logger, stats
 - 순환 의존 금지
 - fail-close 원칙: 정책 엔진/검사 오류 시 반드시 차단 (fail-open 금지)
-
-## C++ 코딩 규칙
-- C++23, GCC 14 기준
-- 비동기는 반드시 Boost.Asio co_await 사용 (raw thread 금지)
-- 메모리: shared_ptr/unique_ptr 사용, raw new/delete 금지
-- 에러: std::expected<T, E> 패턴 (예외 대신)
-- 로깅: spdlog 사용, fmt::format 스타일
-- 네이밍: snake_case (함수/변수), PascalCase (클래스/구조체)
-
-## Go 코딩 규칙
-- 표준 Go 컨벤션, golangci-lint 통과 필수
-- 에러는 반드시 처리 (_ 무시 금지)
-
-## 테스트
-- 모든 public 함수에 단위 테스트
-- C++ 테스트: cmake --build build/default --target test
-- Go 테스트: cd tools && go test -race ./...
-
-## 빌드 명령어
-- 기본 빌드: cmake --preset default && cmake --build build/default
-- 디버그 빌드: cmake --preset debug && cmake --build build/debug
-- ASan 빌드: cmake --preset asan && cmake --build build/asan
-- TSan 빌드: cmake --preset tsan && cmake --build build/tsan
+- 확정된 인터페이스(.hpp)를 architect 승인 없이 변경 금지
 
 ## Git Workflow
 - 상세 규칙은 CONTRIBUTING.md 참조
@@ -68,13 +46,6 @@ MySQL 클라이언트와 서버 사이에 위치하여 SQL을 파싱하고 정�
 ## 프로세스 및 문서 참조
 - `docs/process/execution-brief-template.md` — Execution Brief 작성 규칙
 - `docs/process/state-transition-checklist.md` — 상태 전이 체크리스트
-
-## 절대 하지 말 것
-- raw epoll 직접 사용
-- 전역 변수
-- using namespace std;
-- 하드코딩된 포트/경로 (config에서 읽을 것)
-- 확정된 인터페이스(.hpp)를 architect 승인 없이 변경
 
 ## Doc Impact 규칙
 

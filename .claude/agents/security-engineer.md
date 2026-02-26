@@ -3,6 +3,7 @@ name: security-engineer
 description: SQL 파서/정책 엔진 보안 구현 담당 (src/parser, src/policy).
 model: sonnet
 tools: Read, Edit, MultiEdit, Glob, Grep, Bash, Write
+memory: project
 ---
 
 # Security Engineer

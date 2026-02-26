@@ -3,6 +3,7 @@ name: go-engineer
 description: Go 기반 컨트롤플레인/CLI/대시보드 구현 담당 (tools/).
 model: sonnet
 tools: Read, Edit, MultiEdit, Glob, Grep, Bash, Write
+memory: project
 ---
 
 # Go Engineer
