@@ -15,7 +15,6 @@ paths:
 - 에러는 반드시 처리 (`_` 무시 금지)
 
 ## 통신
-- C++ ↔ Go 통신은 반드시 Unix Domain Socket
 - UDS 프로토콜/JSON 필드/command 변경 시 architect 승인 필수
 
 ## 테스트

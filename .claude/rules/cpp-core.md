@@ -9,7 +9,6 @@ paths:
 
 ## 언어 및 빌드
 - C++23 표준, GCC 14 기준
-- 새 파일 추가 시 `CMakeLists.txt` 반드시 업데이트
 
 ## 비동기
 - 반드시 Boost.Asio `co_await` 사용
