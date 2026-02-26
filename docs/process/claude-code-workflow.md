@@ -72,7 +72,7 @@ Claude Code (개발자 에이전트 플랫폼)의 5가지 핵심 기능을 프�
 
 ---
 
-## 2. 현재 프로젝트 적용 현황 (2026-02-25)
+## 2. 현재 프로젝트 적용 현황 (2026-02-26)
 
 | 기능 | 상태 | 시작 Phase |
 |------|------|-----------|
@@ -80,8 +80,8 @@ Claude Code (개발자 에이전트 플랫폼)의 5가지 핵심 기능을 프�
 | Linear MCP | ✅ 연결됨 | 초기 |
 | `.claude/rules/` 경로별 분리 | ✅ Phase 1 적용 | DON-41 |
 | Agent Memory 전체 활성화 | ✅ Phase 1 적용 | DON-41 |
-| Skills | 계획 중 | Phase 2 (DON-42) |
-| Hooks | 계획 중 | Phase 2 (DON-42) |
+| Skills (3개) | ✅ Phase 2 적용 | DON-42 |
+| Hooks (2개) | ✅ Phase 2 적용 | DON-42 |
 | GitHub MCP | 계획 중 | Phase 3 (DON-43) |
 
 ---
@@ -448,3 +448,4 @@ graph TD
 | 버전 | 날짜 | 변경사항 |
 |------|------|---------|
 | v1 | 2026-02-25 | 초판 작성 (Phase 1~3 계획, devcontainer 검증) |
+| v2 | 2026-02-26 | Phase 2 완료 (Skills 3개 + Hooks 2개 구축) |
