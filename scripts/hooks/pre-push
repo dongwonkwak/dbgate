@@ -1,23 +1,100 @@
 #!/usr/bin/env bash
-# pre-push hook: push 전 doc impact 체크를 실행한다.
+# pre-push hook: push 전 C++/Go 빌드·테스트, 통합 테스트, doc impact 체크를 실행한다.
 # scripts/install-hooks.sh 로 설치한다.
 set -euo pipefail
 
 BASE_REF="origin/main"
-SCRIPT="scripts/check-doc-impact.sh"
+DOC_SCRIPT="scripts/check-doc-impact.sh"
+INTEGRATION_SCRIPT="tests/integration/test_scenarios.sh"
 
-if [[ ! -f "$SCRIPT" ]]; then
+# origin/main 이 fetch 되어 있지 않으면 모든 체크 건너뜀
+if ! git rev-parse --verify "$BASE_REF" >/dev/null 2>&1; then
+  echo "[pre-push] $BASE_REF not found locally, skipping all checks."
   exit 0
 fi
 
-# origin/main 이 fetch 되어 있지 않으면 체크 건너뜀
-if ! git rev-parse --verify "$BASE_REF" >/dev/null 2>&1; then
-  echo "[pre-push] $BASE_REF not found locally, skipping doc impact check."
+CHANGED_FILES=$(git diff --name-only "$BASE_REF..HEAD" || true)
+
+if [[ -z "$CHANGED_FILES" ]]; then
+  echo "[pre-push] 변경 파일 없음, 모든 체크 skip."
+  exit 0
+fi
+
+# CHANGED_FILES 내 파일이 패턴 중 하나라도 일치하면 0 반환
+paths_changed() {
+  local pattern
+  for pattern in "$@"; do
+    if echo "$CHANGED_FILES" | grep -qE "$pattern"; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+# ① C++ 빌드 + 테스트 (ci.yml 트리거 경로 기준)
+if paths_changed '^src/' '^tests/' '^CMakeLists\.txt$' '^CMakePresets\.json$' '^vcpkg\.json$' '^\.clang-tidy$'; then
+  echo "[pre-push] C++ 변경 감지 — 빌드 + 테스트 실행..."
+  if ! cmake --preset default; then
+    echo "[pre-push] ❌ cmake configure 실패"
+    exit 1
+  fi
+  if ! cmake --build build/default -j"$(nproc)"; then
+    echo "[pre-push] ❌ cmake build 실패"
+    exit 1
+  fi
+  if ! ctest --test-dir build/default --output-on-failure -j"$(nproc)"; then
+    echo "[pre-push] ❌ ctest 실패"
+    exit 1
+  fi
+  echo "[pre-push] ✅ C++ 빌드 + 테스트 OK"
+else
+  echo "[pre-push] C++ 트리거 경로 변경 없음 — 빌드 skip"
+fi
+
+# ② Go 린트 + 테스트 (go.yml 트리거 경로 기준)
+if paths_changed '^tools/' '^\.golangci\.yml$'; then
+  echo "[pre-push] Go 변경 감지 — 린트 + 테스트 실행..."
+  if ! command -v golangci-lint >/dev/null 2>&1; then
+    echo "[pre-push] ⚠️  golangci-lint 미설치 — Go 린트 skip (CI가 최종 검증)"
+  elif ! (cd tools && golangci-lint run --timeout=5m); then
+    echo "[pre-push] ❌ golangci-lint 실패"
+    exit 1
+  else
+    echo "[pre-push] ✅ golangci-lint OK"
+  fi
+  if ! (cd tools && go test -race ./...); then
+    echo "[pre-push] ❌ go test 실패"
+    exit 1
+  fi
+  echo "[pre-push] ✅ Go 테스트 OK"
+else
+  echo "[pre-push] Go 트리거 경로 변경 없음 — Go 검사 skip"
+fi
+
+# ③ 통합 테스트 (integration.yml 트리거 경로 기준)
+if paths_changed '^src/' '^tests/integration/' '^config/' '^docker-compose\.yaml$'; then
+  if [[ ! -f "$INTEGRATION_SCRIPT" || ! -x "$INTEGRATION_SCRIPT" ]]; then
+    echo "[pre-push] ⚠️  $INTEGRATION_SCRIPT 없거나 실행 권한 없음 — 통합 테스트 skip"
+  else
+    echo "[pre-push] 통합 테스트 실행..."
+    if ! bash "$INTEGRATION_SCRIPT"; then
+      echo "[pre-push] ❌ 통합 테스트 실패"
+      echo "[pre-push]    우회: git push --no-verify"
+      exit 1
+    fi
+    echo "[pre-push] ✅ 통합 테스트 OK"
+  fi
+else
+  echo "[pre-push] 통합 테스트 트리거 경로 변경 없음 — skip"
+fi
+
+# ④ Doc Impact 체크 (기존 유지)
+if [[ ! -f "$DOC_SCRIPT" ]]; then
   exit 0
 fi
 
 echo "[pre-push] Running doc impact check against $BASE_REF..."
-if ! bash "$SCRIPT" --base "$BASE_REF" --head HEAD; then
+if ! bash "$DOC_SCRIPT" --base "$BASE_REF" --head HEAD; then
   echo ""
   echo "[pre-push] Push 중단: doc impact 요건 미충족."
   echo "           해당 docs 파일을 업데이트하거나 아래 트레일러를 마지막 커밋에 추가하세요:"

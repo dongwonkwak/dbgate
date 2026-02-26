@@ -1,0 +1,83 @@
+#!/usr/bin/env bash
+# pre-commit hook: staged 파일에 대해 C++/Go 포맷 검사를 수행한다.
+# scripts/install-hooks.sh 로 설치한다.
+set -euo pipefail
+
+STAGED=$(git diff --cached --name-only --diff-filter=ACMR 2>/dev/null || true)
+
+if [[ -z "$STAGED" ]]; then
+  exit 0
+fi
+
+HAS_ERROR=0
+
+# ① C++ 포맷 검사 (staged *.cpp, *.hpp)
+CPP_FILES=()
+while IFS= read -r f; do
+  [[ "$f" =~ \.(cpp|hpp)$ ]] && CPP_FILES+=("$f")
+done <<< "$STAGED"
+
+if [[ ${#CPP_FILES[@]} -gt 0 ]]; then
+  if ! command -v clang-format >/dev/null 2>&1; then
+    echo "[pre-commit] ⚠️  clang-format 미설치 — C++ 포맷 검사 skip (CI가 최종 검증)"
+  else
+    CPP_ERRORS=()
+    for f in "${CPP_FILES[@]}"; do
+      if ! clang-format --dry-run --Werror "$f" 2>/dev/null; then
+        CPP_ERRORS+=("$f")
+      fi
+    done
+    if [[ ${#CPP_ERRORS[@]} -gt 0 ]]; then
+      echo "[pre-commit] ❌ C++ 포맷 오류:"
+      for f in "${CPP_ERRORS[@]}"; do
+        echo "    $f"
+      done
+      echo "[pre-commit]    수정 명령: clang-format -i <파일>"
+      HAS_ERROR=1
+    else
+      echo "[pre-commit] ✅ C++ 포맷 OK"
+    fi
+  fi
+fi
+
+# ② Go 포맷 검사 (staged tools/**/*.go)
+GO_FILES=()
+while IFS= read -r f; do
+  [[ "$f" =~ ^tools/.*\.go$ ]] && GO_FILES+=("$f")
+done <<< "$STAGED"
+
+if [[ ${#GO_FILES[@]} -gt 0 ]]; then
+  if ! command -v gofmt >/dev/null 2>&1; then
+    echo "[pre-commit] ⚠️  gofmt 미설치 — Go 포맷 검사 skip"
+  else
+    GOFMT_ERRORS=$(gofmt -l "${GO_FILES[@]}" 2>/dev/null || true)
+    if [[ -n "$GOFMT_ERRORS" ]]; then
+      echo "[pre-commit] ❌ Go 포맷 오류:"
+      while IFS= read -r f; do
+        echo "    $f"
+      done <<< "$GOFMT_ERRORS"
+      echo "[pre-commit]    수정 명령: gofmt -w <파일>"
+      HAS_ERROR=1
+    else
+      echo "[pre-commit] ✅ Go 포맷 OK"
+    fi
+
+    if command -v goimports >/dev/null 2>&1; then
+      GOIMPORTS_ERRORS=$(goimports -l "${GO_FILES[@]}" 2>/dev/null || true)
+      if [[ -n "$GOIMPORTS_ERRORS" ]]; then
+        echo "[pre-commit] ❌ Go imports 정렬 오류:"
+        while IFS= read -r f; do
+          echo "    $f"
+        done <<< "$GOIMPORTS_ERRORS"
+        echo "[pre-commit]    수정 명령: goimports -w <파일>"
+        HAS_ERROR=1
+      else
+        echo "[pre-commit] ✅ Go imports OK"
+      fi
+    fi
+  fi
+fi
+
+if [[ $HAS_ERROR -ne 0 ]]; then
+  exit 1
+fi
