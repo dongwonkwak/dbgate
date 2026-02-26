@@ -39,7 +39,7 @@ static std::string escape_json_string(const std::string& str) {
     std::string result;
     result.reserve(str.size() + 16);
 
-    for (unsigned char ch : str) {
+    for (char ch : str) {
         switch (ch) {
             case '"':
                 result += "\\\"";
@@ -63,9 +63,9 @@ static std::string escape_json_string(const std::string& str) {
                 result += "\\t";
                 break;
             default:
-                if (ch < 0x20) {
+                if (static_cast<unsigned char>(ch) < 0x20) {
                     char buf[8]{};
-                    snprintf(buf, sizeof(buf), "\\u%04x", static_cast<unsigned int>(ch));
+                    snprintf(buf, sizeof(buf), "\\u%04x", static_cast<unsigned int>(static_cast<unsigned char>(ch)));
                     result += buf;
                 } else {
                     result += ch;

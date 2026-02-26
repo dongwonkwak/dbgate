@@ -43,7 +43,7 @@ namespace {
 std::string json_escape(std::string_view sv) {
     std::string out;
     out.reserve(sv.size() + 8);
-    for (unsigned char c : sv) {
+    for (char c : sv) {
         switch (c) {
             case '"':  out += "\\\""; break;
             case '\\': out += "\\\\"; break;
@@ -53,13 +53,13 @@ std::string json_escape(std::string_view sv) {
             case '\r': out += "\\r";  break;
             case '\t': out += "\\t";  break;
             default:
-                if (c < 0x20) {
+                if (static_cast<unsigned char>(c) < 0x20) {
                     char buf[8]{};
                     // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg)
-                    snprintf(buf, sizeof(buf), "\\u%04x", static_cast<unsigned>(c));
+                    snprintf(buf, sizeof(buf), "\\u%04x", static_cast<unsigned>(static_cast<unsigned char>(c)));
                     out += buf;
                 } else {
-                    out += static_cast<char>(c);
+                    out += c;
                 }
                 break;
         }
