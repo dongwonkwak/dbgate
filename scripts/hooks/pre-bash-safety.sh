@@ -12,10 +12,13 @@ if [ -z "$COMMAND" ]; then
   exit 0
 fi
 
-# 안전한 명령은 조기 통과 (heredoc/커밋 메시지 안의 텍스트 오탐 방지)
-# git commit, git log 등은 파괴적 명령이 아니므로 검사 제외
+# 안전한 단일 명령은 조기 통과 (heredoc/커밋 메시지 안의 텍스트 오탐 방지)
+# 따옴표 안의 내용을 제거한 뒤, 실제 체이닝(&&, ||, ;, |) 유무를 검사
 if echo "$COMMAND" | grep -qE '^\s*git\s+(commit|log|show|diff|status|add|push|pull|fetch|branch|checkout|merge|rebase|stash|tag|remote)\b'; then
-  exit 0
+  STRIPPED=$(echo "$COMMAND" | sed "s/'[^']*'//g; s/\"[^\"]*\"//g")
+  if ! echo "$STRIPPED" | grep -qE '&&|\|\||;|\|'; then
+    exit 0
+  fi
 fi
 
 # rm 계열: 위험 경로(/, .git)를 대상으로 하는 rm 명령은 플래그 무관하게 차단
