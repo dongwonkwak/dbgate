@@ -46,6 +46,8 @@ test_case pass "rm temp.txt"
 test_case pass "git status"
 test_case pass "git add ."
 test_case pass "cmake --build build/default"
+test_case pass "git commit -m 'rm -rf .git 차단 테스트'"
+test_case pass "git log --oneline -5"
 
 echo ""
 echo "결과: PASS=$PASS, FAIL=$FAIL"
