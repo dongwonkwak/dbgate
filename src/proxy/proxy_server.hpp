@@ -116,4 +116,8 @@ private:
     //   PolicyLoader::load() → 성공 시 policy_engine_->reload()
     //   실패 시 기존 정책 유지 + 경고 로그
     void policy_reload();
+
+    // accept_loop: TCP Accept 루프 코루틴
+    //   listen_ep : 리슨 엔드포인트 (값으로 받아 코루틴 프레임에 안전하게 보관)
+    boost::asio::awaitable<void> accept_loop(boost::asio::ip::tcp::endpoint listen_ep);
 };
