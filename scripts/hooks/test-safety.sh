@@ -41,6 +41,9 @@ test_case block "git clean -fd"
 test_case block "git status && rm -rf /"
 test_case block "git commit -m x; rm -rf /"
 test_case block "git checkout foo && rm -rf .git"
+test_case block "git status\nrm -rf /"
+test_case block 'git status $(rm -rf /)'
+test_case block 'git status `rm -rf /`'
 
 echo ""
 echo "=== 통과되어야 하는 명령 ==="
