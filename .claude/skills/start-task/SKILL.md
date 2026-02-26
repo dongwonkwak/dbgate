@@ -2,7 +2,7 @@
 name: start-task
 description: Linear 이슈 기반으로 브랜치 생성 및 작업 환경을 자동 준비
 argument-hint: DON-XX
-allowed-tools: Bash, Read, Glob, Grep
+allowed-tools: Bash, Read, Glob, Grep, mcp__*
 ---
 
 # 작업 환경 준비
