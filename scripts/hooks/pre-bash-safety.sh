@@ -12,9 +12,10 @@ if [ -z "$COMMAND" ]; then
   exit 0
 fi
 
-# rm -rf 계열: 옵션 변형(-fr, -rf --, --no-preserve-root 등), 경로 변형(/., .git/*) 모두 차단
-if echo "$COMMAND" | grep -qE 'rm\s+(-[a-zA-Z]*r[a-zA-Z]*f|-[a-zA-Z]*f[a-zA-Z]*r)\s+(--\s+)?(\/|\.git)'; then
-  echo "차단: 프로젝트/git 저장소 삭제 명령이 감지되었습니다 — $COMMAND" >&2
+# rm 계열: 위험 경로(/, .git)를 대상으로 하는 rm 명령은 플래그 무관하게 차단
+# rm -r -f /, rm --no-preserve-root -rf /, rm -rf -- / 등 모든 변형 포함
+if echo "$COMMAND" | grep -qE '\brm\s' && echo "$COMMAND" | grep -qE '(^|\s)(\/(\s|$|\.)|\.git)'; then
+  echo "차단: 위험 경로(/ 또는 .git)에 대한 rm 명령이 감지되었습니다 — $COMMAND" >&2
   exit 2
 fi
 
