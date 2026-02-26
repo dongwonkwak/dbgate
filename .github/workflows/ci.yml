@@ -117,13 +117,17 @@ jobs:
       - name: Run clang-tidy
         run: |
           set -o pipefail
-          # xargs/clang-tidy 종료코드를 파이프라인 실패로 전파 (pipefail)
-          # || 로 종료코드를 보존하여 tee 성공에 마스킹되지 않도록 명시적 검증
+          # 파일 단위로 실행해 종료코드 수집을 안정화하고,
+          # 단일 대형 프로세스에서 발생하는 리소스 스파이크를 줄인다.
           CLANG_TIDY_RESULT=0
-          find src/ -name '*.cpp' -print0 | \
-            xargs -0 -P$(nproc) clang-tidy -p build/debug 2>&1 | \
-            tee /tmp/clang-tidy-report.txt || CLANG_TIDY_RESULT=$?
-          # error: 수준 문제 시 실패 (xargs 종료코드 + grep 이중 검증)
+          : > /tmp/clang-tidy-report.txt
+          while IFS= read -r -d '' file; do
+            echo "==> clang-tidy ${file}" | tee -a /tmp/clang-tidy-report.txt
+            if ! clang-tidy -p build/debug "${file}" 2>&1 | tee -a /tmp/clang-tidy-report.txt; then
+              CLANG_TIDY_RESULT=1
+            fi
+          done < <(find src/ -name '*.cpp' -print0 | sort -z)
+          # error 수준 진단 또는 clang-tidy 실행 실패가 있으면 CI 실패
           if [ $CLANG_TIDY_RESULT -ne 0 ] || grep -qE "^.+:[0-9]+:[0-9]+: error:" /tmp/clang-tidy-report.txt; then
             echo "clang-tidy 오류가 발견되었습니다."
             exit 1
