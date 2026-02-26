@@ -29,7 +29,7 @@ jobs:
     name: Build & Test (GCC 14)
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Install dependencies
         run: |
@@ -37,7 +37,7 @@ jobs:
           sudo apt-get install -y g++-14 cmake ninja-build
 
       - name: Cache vcpkg binary packages
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: ${{ env.VCPKG_BINCACHE }}
           key: vcpkg-linux-x64-${{ hashFiles('vcpkg.json') }}
@@ -45,7 +45,14 @@ jobs:
 
       - name: Install vcpkg
         run: |
-          git clone --depth=1 https://github.com/microsoft/vcpkg.git $VCPKG_ROOT
+          git clone --depth=1 --branch 2026.01.16 https://github.com/microsoft/vcpkg.git $VCPKG_ROOT
+          # 공급망 공격 방지: 예상 커밋 SHA 검증
+          actual_sha=$(git -C $VCPKG_ROOT rev-parse HEAD)
+          expected_sha="66c0373dc7fca549e5803087b9487edfe3aca0a1"
+          if [ "$actual_sha" != "$expected_sha" ]; then
+            echo "❌ vcpkg SHA 불일치: expected $expected_sha, got $actual_sha"
+            exit 1
+          fi
           $VCPKG_ROOT/bootstrap-vcpkg.sh -disableMetrics
           mkdir -p $VCPKG_BINCACHE
           echo "VCPKG_BINARY_SOURCES=clear;files,$VCPKG_BINCACHE,readwrite" >> "$GITHUB_ENV"
@@ -63,7 +70,7 @@ jobs:
     name: Static Analysis (clang-tidy + cppcheck)
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Install dependencies
         run: |
@@ -71,7 +78,7 @@ jobs:
           sudo apt-get install -y g++-14 cmake ninja-build clang-tidy cppcheck
 
       - name: Cache vcpkg binary packages
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: ${{ env.VCPKG_BINCACHE }}
           key: vcpkg-linux-x64-${{ hashFiles('vcpkg.json') }}
@@ -79,7 +86,14 @@ jobs:
 
       - name: Install vcpkg
         run: |
-          git clone --depth=1 https://github.com/microsoft/vcpkg.git $VCPKG_ROOT
+          git clone --depth=1 --branch 2026.01.16 https://github.com/microsoft/vcpkg.git $VCPKG_ROOT
+          # 공급망 공격 방지: 예상 커밋 SHA 검증
+          actual_sha=$(git -C $VCPKG_ROOT rev-parse HEAD)
+          expected_sha="66c0373dc7fca549e5803087b9487edfe3aca0a1"
+          if [ "$actual_sha" != "$expected_sha" ]; then
+            echo "❌ vcpkg SHA 불일치: expected $expected_sha, got $actual_sha"
+            exit 1
+          fi
           $VCPKG_ROOT/bootstrap-vcpkg.sh -disableMetrics
           mkdir -p $VCPKG_BINCACHE
           echo "VCPKG_BINARY_SOURCES=clear;files,$VCPKG_BINCACHE,readwrite" >> "$GITHUB_ENV"
@@ -92,11 +106,15 @@ jobs:
 
       - name: Run clang-tidy
         run: |
+          set -o pipefail
+          # xargs/clang-tidy 종료코드를 파이프라인 실패로 전파 (pipefail)
+          # || 로 종료코드를 보존하여 tee 성공에 마스킹되지 않도록 명시적 검증
+          CLANG_TIDY_RESULT=0
           find src/ -name '*.cpp' -print0 | \
             xargs -0 -P$(nproc) clang-tidy -p build/debug 2>&1 | \
-            tee /tmp/clang-tidy-report.txt
-          # error: 수준 문제 시 실패
-          if grep -qE "^.+:[0-9]+:[0-9]+: error:" /tmp/clang-tidy-report.txt; then
+            tee /tmp/clang-tidy-report.txt || CLANG_TIDY_RESULT=$?
+          # error: 수준 문제 시 실패 (xargs 종료코드 + grep 이중 검증)
+          if [ $CLANG_TIDY_RESULT -ne 0 ] || grep -qE "^.+:[0-9]+:[0-9]+: error:" /tmp/clang-tidy-report.txt; then
             echo "clang-tidy 오류가 발견되었습니다."
             exit 1
           fi
@@ -118,7 +136,7 @@ jobs:
     name: AddressSanitizer
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Install dependencies
         run: |
@@ -126,7 +144,7 @@ jobs:
           sudo apt-get install -y g++-14 cmake ninja-build
 
       - name: Cache vcpkg binary packages
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: ${{ env.VCPKG_BINCACHE }}
           key: vcpkg-linux-x64-${{ hashFiles('vcpkg.json') }}
@@ -134,7 +152,14 @@ jobs:
 
       - name: Install vcpkg
         run: |
-          git clone --depth=1 https://github.com/microsoft/vcpkg.git $VCPKG_ROOT
+          git clone --depth=1 --branch 2026.01.16 https://github.com/microsoft/vcpkg.git $VCPKG_ROOT
+          # 공급망 공격 방지: 예상 커밋 SHA 검증
+          actual_sha=$(git -C $VCPKG_ROOT rev-parse HEAD)
+          expected_sha="66c0373dc7fca549e5803087b9487edfe3aca0a1"
+          if [ "$actual_sha" != "$expected_sha" ]; then
+            echo "❌ vcpkg SHA 불일치: expected $expected_sha, got $actual_sha"
+            exit 1
+          fi
           $VCPKG_ROOT/bootstrap-vcpkg.sh -disableMetrics
           mkdir -p $VCPKG_BINCACHE
           echo "VCPKG_BINARY_SOURCES=clear;files,$VCPKG_BINCACHE,readwrite" >> "$GITHUB_ENV"
@@ -155,7 +180,7 @@ jobs:
     # TSan은 GCC에서 aarch64 미지원 — ubuntu-24.04는 x86_64 고정
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Install dependencies
         run: |
@@ -163,7 +188,7 @@ jobs:
           sudo apt-get install -y g++-14 cmake ninja-build
 
       - name: Cache vcpkg binary packages
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: ${{ env.VCPKG_BINCACHE }}
           key: vcpkg-linux-x64-${{ hashFiles('vcpkg.json') }}
@@ -171,7 +196,14 @@ jobs:
 
       - name: Install vcpkg
         run: |
-          git clone --depth=1 https://github.com/microsoft/vcpkg.git $VCPKG_ROOT
+          git clone --depth=1 --branch 2026.01.16 https://github.com/microsoft/vcpkg.git $VCPKG_ROOT
+          # 공급망 공격 방지: 예상 커밋 SHA 검증
+          actual_sha=$(git -C $VCPKG_ROOT rev-parse HEAD)
+          expected_sha="66c0373dc7fca549e5803087b9487edfe3aca0a1"
+          if [ "$actual_sha" != "$expected_sha" ]; then
+            echo "❌ vcpkg SHA 불일치: expected $expected_sha, got $actual_sha"
+            exit 1
+          fi
           $VCPKG_ROOT/bootstrap-vcpkg.sh -disableMetrics
           mkdir -p $VCPKG_BINCACHE
           echo "VCPKG_BINARY_SOURCES=clear;files,$VCPKG_BINCACHE,readwrite" >> "$GITHUB_ENV"
