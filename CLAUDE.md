@@ -15,11 +15,34 @@ MySQL 클라이언트와 서버 사이에 위치하여 SQL을 파싱하고 정�
 
 ## Git Workflow
 - 상세 규칙은 CONTRIBUTING.md 참조
-- 커밋: `type(scope): 설명 [DON-XX]` (한글, Linear ID 필수)
 - 브랜치: `feat/DON-XX-모듈명`, `fix/DON-XX-설명`
 - PR 제목: 커밋 컨벤션과 동일 형식
 - 머지: Squash merge → main (머지 후 브랜치 삭제)
 - main에 직접 커밋 금지, 항상 PR 경유
+
+### 커밋 메시지 형식 (CI 검증 패턴과 동일)
+
+```
+type(scope): 설명 [DON-XX]
+```
+
+- **type**: `feat` | `fix` | `docs` | `chore` | `test` | `refactor` | `perf` | `style` | `ci` | `revert`
+- **scope**: 소문자 영문+하이픈만 허용 (`[a-z][a-z0-9-]*`). **콤마(,)로 여러 스코프 나열 금지** — 대표 스코프 하나만 사용
+- **설명**: 한글 권장, 마침표 없이
+- **[DON-XX]**: Linear 이슈 ID 필수
+
+올바른 예:
+```
+fix(logger): sign-conversion 경고로 인한 CI 빌드 실패 수정 [DON-30]
+feat(proxy): 세션 타임아웃 처리 추가 [DON-45]
+```
+
+잘못된 예:
+```
+fix(logger,stats): 수정 [DON-30]   ← 콤마 사용 금지
+Fix(Logger): 수정 [DON-30]         ← 대문자 금지
+fix(logger): 수정                   ← Linear ID 누락
+```
 
 ## 서브에이전트 사용법
 - 서브에이전트 정의: .claude/agents/ 디렉토리
