@@ -92,7 +92,7 @@ if [ ! -x "$DBGATE_BIN" ]; then
     echo "  ❌ $DBGATE_BIN 없음 — 프록시 바이너리 누락으로 통합 테스트 실패"
     exit 1
 else
-    # testuser 를 허용하는 테스트 전용 정책 (Phase 3에서 일부 패턴은 차단)
+    # MYSQL_USER 를 허용하는 테스트 전용 정책 (Phase 3에서 일부 패턴은 차단)
     cat > "$TEST_POLICY" <<'YAML'
 global:
   log_level: warn
@@ -100,7 +100,7 @@ global:
   max_connections: 100
   connection_timeout: 30s
 access_control:
-  - user: "testuser"
+  - user: "__MYSQL_USER__"
     source_ip: "0.0.0.0/0"
     allowed_tables: ["*"]
     allowed_operations: ["SELECT", "INSERT", "UPDATE", "DELETE", "CREATE", "DROP"]
@@ -124,6 +124,8 @@ alerts:
   on_high_volume_query: false
   threshold_qps: 10000
 YAML
+    # heredoc 내 플레이스홀더를 실제 MYSQL_USER로 치환
+    sed -i "s/__MYSQL_USER__/${MYSQL_USER}/g" "$TEST_POLICY"
 
     # 프록시 기동
     MYSQL_HOST="$MYSQL_HOST" \
