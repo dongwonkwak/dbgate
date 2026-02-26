@@ -21,21 +21,28 @@ if [[ ${#CPP_FILES[@]} -gt 0 ]]; then
   if ! command -v clang-format >/dev/null 2>&1; then
     echo "[pre-commit] ⚠️  clang-format 미설치 — C++ 포맷 검사 skip (CI가 최종 검증)"
   else
-    CPP_ERRORS=()
-    for f in "${CPP_FILES[@]}"; do
-      if ! clang-format --dry-run --Werror "$f" 2>/dev/null; then
-        CPP_ERRORS+=("$f")
-      fi
-    done
-    if [[ ${#CPP_ERRORS[@]} -gt 0 ]]; then
-      echo "[pre-commit] ❌ C++ 포맷 오류:"
-      for f in "${CPP_ERRORS[@]}"; do
-        echo "    $f"
-      done
-      echo "[pre-commit]    수정 명령: clang-format -i <파일>"
-      HAS_ERROR=1
+    _CF_MAJOR=$(clang-format --version 2>/dev/null | grep -oE '[0-9]+' | head -1)
+    if [[ -n "$_CF_MAJOR" && "$_CF_MAJOR" -lt 19 ]]; then
+      echo "[pre-commit] ⚠️  clang-format ${_CF_MAJOR} < 19 (Standard: c++23 미지원) — C++ 포맷 검사 skip (CI가 최종 검증)"
+    elif ! echo "" | clang-format --stdin-filename=test.cpp >/dev/null 2>&1; then
+      echo "[pre-commit] ⚠️  clang-format 설정 오류(.clang-format 비호환) — C++ 포맷 검사 skip (CI가 최종 검증)"
     else
-      echo "[pre-commit] ✅ C++ 포맷 OK"
+      CPP_ERRORS=()
+      for f in "${CPP_FILES[@]}"; do
+        if ! clang-format --dry-run --Werror "$f" 2>/dev/null; then
+          CPP_ERRORS+=("$f")
+        fi
+      done
+      if [[ ${#CPP_ERRORS[@]} -gt 0 ]]; then
+        echo "[pre-commit] ❌ C++ 포맷 오류:"
+        for f in "${CPP_ERRORS[@]}"; do
+          echo "    $f"
+        done
+        echo "[pre-commit]    수정 명령: clang-format -i <파일>"
+        HAS_ERROR=1
+      else
+        echo "[pre-commit] ✅ C++ 포맷 OK"
+      fi
     fi
   fi
 fi

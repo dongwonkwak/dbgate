@@ -19,6 +19,13 @@ RUN set -eux; \
     software-properties-common; \
   add-apt-repository -y universe; \
   apt-get update; \
+  # LLVM 19 apt repository (clang-format/tidy 19 supports Standard: c++23)
+  mkdir -p /etc/apt/keyrings; \
+  curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key \
+    | gpg --dearmor -o /etc/apt/keyrings/llvm.gpg; \
+  echo "deb [signed-by=/etc/apt/keyrings/llvm.gpg] https://apt.llvm.org/noble/ llvm-toolchain-noble-19 main" \
+    > /etc/apt/sources.list.d/llvm19.list; \
+  apt-get update; \
   apt-get install -y --no-install-recommends \
     # Build tools
     build-essential \
@@ -43,10 +50,10 @@ RUN set -eux; \
     libmysqlclient-dev \
     # SSL
     libssl-dev \
-    # clang tools
-    clang-tools \
-    clang-format \
-    clang-tidy \
+    # clang tools (19: first version with Standard: c++23 support)
+    clang-tools-19 \
+    clang-format-19 \
+    clang-tidy-19 \
     # Debugging / networking
     gdb \
     valgrind \
@@ -69,10 +76,12 @@ RUN set -eux; \
 # Set GCC 14 as default
 # -----------------------------
 RUN set -eux; \
-  update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-14 100; \
-  update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-14 100; \
-  update-alternatives --install /usr/bin/cc  cc  /usr/bin/gcc-14 100; \
-  update-alternatives --install /usr/bin/c++ c++ /usr/bin/g++-14 100
+  update-alternatives --install /usr/bin/gcc         gcc         /usr/bin/gcc-14         100; \
+  update-alternatives --install /usr/bin/g++         g++         /usr/bin/g++-14         100; \
+  update-alternatives --install /usr/bin/cc          cc          /usr/bin/gcc-14         100; \
+  update-alternatives --install /usr/bin/c++         c++         /usr/bin/g++-14         100; \
+  update-alternatives --install /usr/bin/clang-format clang-format /usr/bin/clang-format-19 100; \
+  update-alternatives --install /usr/bin/clang-tidy   clang-tidy   /usr/bin/clang-tidy-19   100
 
 # -----------------------------
 # Persist shell history (bash)
