@@ -1,0 +1,51 @@
+name: Go CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'tools/**'
+      - '.golangci.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'tools/**'
+      - '.golangci.yml'
+
+jobs:
+  lint:
+    name: Lint (golangci-lint)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: tools/go.mod
+
+      - name: Run golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+          working-directory: tools
+          args: --timeout=5m
+
+  test:
+    name: Test (go test -race)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: tools/go.mod
+
+      - name: Download dependencies
+        working-directory: tools
+        run: go mod download
+
+      - name: Run tests with race detector
+        working-directory: tools
+        run: go test -race -v ./...

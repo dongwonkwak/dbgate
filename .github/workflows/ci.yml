@@ -1,0 +1,188 @@
+name: C++ CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'tests/**'
+      - 'CMakeLists.txt'
+      - 'CMakePresets.json'
+      - 'vcpkg.json'
+      - '.clang-tidy'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'tests/**'
+      - 'CMakeLists.txt'
+      - 'CMakePresets.json'
+      - 'vcpkg.json'
+      - '.clang-tidy'
+
+env:
+  VCPKG_ROOT: /opt/vcpkg
+  VCPKG_BINCACHE: /tmp/vcpkg-bincache
+
+jobs:
+  build-test:
+    name: Build & Test (GCC 14)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y g++-14 cmake ninja-build
+
+      - name: Cache vcpkg binary packages
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.VCPKG_BINCACHE }}
+          key: vcpkg-linux-x64-${{ hashFiles('vcpkg.json') }}
+          restore-keys: vcpkg-linux-x64-
+
+      - name: Install vcpkg
+        run: |
+          git clone --depth=1 https://github.com/microsoft/vcpkg.git $VCPKG_ROOT
+          $VCPKG_ROOT/bootstrap-vcpkg.sh -disableMetrics
+          mkdir -p $VCPKG_BINCACHE
+          echo "VCPKG_BINARY_SOURCES=clear;files,$VCPKG_BINCACHE,readwrite" >> "$GITHUB_ENV"
+
+      - name: Configure (Release)
+        run: cmake --preset default
+
+      - name: Build
+        run: cmake --build build/default -j$(nproc)
+
+      - name: Run tests
+        run: ctest --test-dir build/default --output-on-failure -j$(nproc)
+
+  static-analysis:
+    name: Static Analysis (clang-tidy + cppcheck)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y g++-14 cmake ninja-build clang-tidy cppcheck
+
+      - name: Cache vcpkg binary packages
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.VCPKG_BINCACHE }}
+          key: vcpkg-linux-x64-${{ hashFiles('vcpkg.json') }}
+          restore-keys: vcpkg-linux-x64-
+
+      - name: Install vcpkg
+        run: |
+          git clone --depth=1 https://github.com/microsoft/vcpkg.git $VCPKG_ROOT
+          $VCPKG_ROOT/bootstrap-vcpkg.sh -disableMetrics
+          mkdir -p $VCPKG_BINCACHE
+          echo "VCPKG_BINARY_SOURCES=clear;files,$VCPKG_BINCACHE,readwrite" >> "$GITHUB_ENV"
+
+      - name: Configure (Debug + compile_commands.json)
+        run: cmake --preset debug -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+
+      - name: Build (generate headers)
+        run: cmake --build build/debug -j$(nproc)
+
+      - name: Run clang-tidy
+        run: |
+          find src/ -name '*.cpp' -print0 | \
+            xargs -0 -P$(nproc) clang-tidy -p build/debug 2>&1 | \
+            tee /tmp/clang-tidy-report.txt
+          # error: 수준 문제 시 실패
+          if grep -qE "^.+:[0-9]+:[0-9]+: error:" /tmp/clang-tidy-report.txt; then
+            echo "clang-tidy 오류가 발견되었습니다."
+            exit 1
+          fi
+
+      - name: Run cppcheck
+        run: |
+          cppcheck \
+            --enable=warning,performance,portability \
+            --error-exitcode=1 \
+            --std=c++23 \
+            --project=build/debug/compile_commands.json \
+            --suppress=missingInclude \
+            --suppress=unmatchedSuppression \
+            --suppress=missingIncludeSystem \
+            -i build/ \
+            2>&1
+
+  asan:
+    name: AddressSanitizer
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y g++-14 cmake ninja-build
+
+      - name: Cache vcpkg binary packages
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.VCPKG_BINCACHE }}
+          key: vcpkg-linux-x64-${{ hashFiles('vcpkg.json') }}
+          restore-keys: vcpkg-linux-x64-
+
+      - name: Install vcpkg
+        run: |
+          git clone --depth=1 https://github.com/microsoft/vcpkg.git $VCPKG_ROOT
+          $VCPKG_ROOT/bootstrap-vcpkg.sh -disableMetrics
+          mkdir -p $VCPKG_BINCACHE
+          echo "VCPKG_BINARY_SOURCES=clear;files,$VCPKG_BINCACHE,readwrite" >> "$GITHUB_ENV"
+
+      - name: Configure (ASan)
+        run: cmake --preset asan
+
+      - name: Build
+        run: cmake --build build/asan -j$(nproc)
+
+      - name: Run tests (ASan)
+        run: ctest --test-dir build/asan --output-on-failure -j$(nproc)
+        env:
+          ASAN_OPTIONS: detect_leaks=1:abort_on_error=1:symbolize=1
+
+  tsan:
+    name: ThreadSanitizer
+    # TSan은 GCC에서 aarch64 미지원 — ubuntu-24.04는 x86_64 고정
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y g++-14 cmake ninja-build
+
+      - name: Cache vcpkg binary packages
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.VCPKG_BINCACHE }}
+          key: vcpkg-linux-x64-${{ hashFiles('vcpkg.json') }}
+          restore-keys: vcpkg-linux-x64-
+
+      - name: Install vcpkg
+        run: |
+          git clone --depth=1 https://github.com/microsoft/vcpkg.git $VCPKG_ROOT
+          $VCPKG_ROOT/bootstrap-vcpkg.sh -disableMetrics
+          mkdir -p $VCPKG_BINCACHE
+          echo "VCPKG_BINARY_SOURCES=clear;files,$VCPKG_BINCACHE,readwrite" >> "$GITHUB_ENV"
+
+      - name: Configure (TSan)
+        run: cmake --preset tsan
+
+      - name: Build
+        run: cmake --build build/tsan -j$(nproc)
+
+      - name: Run tests (TSan)
+        run: ctest --test-dir build/tsan --output-on-failure -j$(nproc)
+        env:
+          TSAN_OPTIONS: halt_on_error=1:symbolize=1

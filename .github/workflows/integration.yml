@@ -1,0 +1,91 @@
+name: Integration Tests
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'tests/integration/**'
+      - 'config/**'
+      - 'docker-compose.yaml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'tests/integration/**'
+      - 'config/**'
+      - 'docker-compose.yaml'
+
+env:
+  VCPKG_ROOT: /opt/vcpkg
+  VCPKG_BINCACHE: /tmp/vcpkg-bincache
+
+jobs:
+  integration:
+    name: Integration Test (docker-compose)
+    runs-on: ubuntu-24.04
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: testpass
+          MYSQL_DATABASE: testdb
+          MYSQL_USER: testuser
+          MYSQL_PASSWORD: testpass
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h localhost -u root -ptestpass"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y g++-14 cmake ninja-build mysql-client
+
+      - name: Cache vcpkg binary packages
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.VCPKG_BINCACHE }}
+          key: vcpkg-linux-x64-${{ hashFiles('vcpkg.json') }}
+          restore-keys: vcpkg-linux-x64-
+
+      - name: Install vcpkg
+        run: |
+          git clone --depth=1 https://github.com/microsoft/vcpkg.git $VCPKG_ROOT
+          $VCPKG_ROOT/bootstrap-vcpkg.sh -disableMetrics
+          mkdir -p $VCPKG_BINCACHE
+          echo "VCPKG_BINARY_SOURCES=clear;files,$VCPKG_BINCACHE,readwrite" >> "$GITHUB_ENV"
+
+      - name: Build dbgate (Release)
+        run: |
+          cmake --preset default
+          cmake --build build/default -j$(nproc)
+
+      - name: Verify MySQL connection
+        run: |
+          mysql -h 127.0.0.1 -P 3306 -u testuser -ptestpass testdb -e "SELECT 1"
+
+      - name: Prepare test policy
+        run: |
+          cp config/policy.yaml /tmp/test-policy.yaml
+
+      - name: Run integration tests
+        run: |
+          if [ -x tests/integration/test_scenarios.sh ]; then
+            MYSQL_HOST=127.0.0.1 \
+            MYSQL_PORT=3306 \
+            MYSQL_USER=testuser \
+            MYSQL_PASSWORD=testpass \
+            MYSQL_DATABASE=testdb \
+            POLICY_PATH=/tmp/test-policy.yaml \
+            bash tests/integration/test_scenarios.sh
+          else
+            echo "⚠️  통합 테스트 스크립트가 아직 없습니다 (DON-34에서 구현 예정)"
+            echo "   기본 빌드/MySQL 연결만 검증됩니다."
+          fi
