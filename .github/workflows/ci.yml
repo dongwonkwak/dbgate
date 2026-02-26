@@ -75,7 +75,17 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y g++-14 cmake ninja-build clang-tidy cppcheck
+          sudo apt-get install -y g++-14 cmake ninja-build cppcheck \
+            gnupg curl
+          # LLVM 19 apt repository (clang-tidy 19: Standard c++23 지원)
+          sudo mkdir -p /etc/apt/keyrings
+          curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key \
+            | sudo gpg --dearmor -o /etc/apt/keyrings/llvm.gpg
+          echo "deb [signed-by=/etc/apt/keyrings/llvm.gpg] https://apt.llvm.org/noble/ llvm-toolchain-noble-19 main" \
+            | sudo tee /etc/apt/sources.list.d/llvm19.list
+          sudo apt-get update -qq
+          sudo apt-get install -y clang-tidy-19
+          sudo update-alternatives --install /usr/bin/clang-tidy clang-tidy /usr/bin/clang-tidy-19 100
 
       - name: Cache vcpkg binary packages
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
