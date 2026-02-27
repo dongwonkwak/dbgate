@@ -10,7 +10,7 @@
 // ---------------------------------------------------------------------------
 namespace {
 
-std::string env_str(const char* name, std::string default_val) {
+std::string env_str(const char* name, const std::string& default_val) {
     const char* val = std::getenv(name);  // NOLINT(concurrency-mt-unsafe)
     if (val != nullptr && val[0] != '\0') {
         return val;

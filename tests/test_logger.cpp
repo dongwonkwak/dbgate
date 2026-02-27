@@ -22,10 +22,8 @@ namespace fs = std::filesystem;
 // ---------------------------------------------------------------------------
 class JsonLineParser {
 public:
-    explicit JsonLineParser(const std::string& json_str) {
-        // Very basic JSON field extraction for testing
-        parsed_ = json_str;
-    }
+    explicit JsonLineParser(const std::string& json_str)
+        : parsed_(json_str) {}
 
     bool has_field(const std::string& field) const {
         return parsed_.find("\"" + field + "\"") != std::string::npos;
