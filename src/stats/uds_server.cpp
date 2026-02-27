@@ -197,11 +197,30 @@ UdsServer::~UdsServer() {
 //   acceptor를 닫아 run()의 accept 루프를 종료한다.
 // ---------------------------------------------------------------------------
 void UdsServer::stop() {
-    boost::system::error_code ec;
-    acceptor_.close(ec);
-    if (ec) {
-        spdlog::warn("[uds_server] stop: acceptor close error: {}", ec.message());
+    if (stop_requested_.exchange(true, std::memory_order_acq_rel)) {
+        return;
     }
+
+    auto close_acceptor = [this]() {
+        boost::system::error_code cancel_ec;
+        acceptor_.cancel(cancel_ec);
+        if (cancel_ec && cancel_ec != asio::error::bad_descriptor) {
+            spdlog::warn("[uds_server] stop: acceptor cancel error: {}", cancel_ec.message());
+        }
+
+        boost::system::error_code close_ec;
+        acceptor_.close(close_ec);
+        if (close_ec && close_ec != asio::error::bad_descriptor) {
+            spdlog::warn("[uds_server] stop: acceptor close error: {}", close_ec.message());
+        }
+    };
+
+    // acceptor 소유 스레드(io_context)에서 정리해 TSan 경합을 방지한다.
+    if (ioc_.stopped()) {
+        close_acceptor();
+        return;
+    }
+    asio::post(ioc_, std::move(close_acceptor));
 }
 
 // ---------------------------------------------------------------------------
@@ -211,6 +230,10 @@ void UdsServer::stop() {
 // ---------------------------------------------------------------------------
 asio::awaitable<void> UdsServer::run() {
     using stream_protocol = asio::local::stream_protocol;
+
+    if (stop_requested_.load(std::memory_order_acquire)) {
+        co_return;
+    }
 
     // 기존 소켓 파일 제거 (bind 실패 방지)
     std::error_code fs_ec;
@@ -245,6 +268,10 @@ asio::awaitable<void> UdsServer::run() {
 
     // accept 루프
     for (;;) {
+        if (stop_requested_.load(std::memory_order_acquire)) {
+            co_return;
+        }
+
         stream_protocol::socket client_socket{ioc_};
         auto [accept_ec] = co_await acceptor_.async_accept(
             client_socket, asio::as_tuple(asio::use_awaitable));

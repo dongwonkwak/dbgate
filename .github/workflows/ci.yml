@@ -121,9 +121,23 @@ jobs:
           # 단일 대형 프로세스에서 발생하는 리소스 스파이크를 줄인다.
           CLANG_TIDY_RESULT=0
           : > /tmp/clang-tidy-report.txt
+          gcc_major="$(g++-14 -dumpfullversion -dumpversion | cut -d. -f1)"
+          gcc_triple="$(g++-14 -dumpmachine)"
+          clang_tidy_args=(
+            -p build/debug
+            --extra-arg=-std=c++23
+            --extra-arg=--gcc-toolchain=/usr
+          )
+          if [ -d "/usr/include/c++/${gcc_major}" ]; then
+            clang_tidy_args+=(--extra-arg=-isystem --extra-arg="/usr/include/c++/${gcc_major}")
+          fi
+          if [ -d "/usr/include/${gcc_triple}/c++/${gcc_major}" ]; then
+            clang_tidy_args+=(--extra-arg=-isystem --extra-arg="/usr/include/${gcc_triple}/c++/${gcc_major}")
+          fi
           while IFS= read -r -d '' file; do
-            echo "==> clang-tidy ${file}" | tee -a /tmp/clang-tidy-report.txt
-            if ! clang-tidy -p build/debug "${file}" 2>&1 | tee -a /tmp/clang-tidy-report.txt; then
+            file_abs="$(realpath "${file}")"
+            echo "==> clang-tidy ${file_abs}" | tee -a /tmp/clang-tidy-report.txt
+            if ! clang-tidy "${clang_tidy_args[@]}" "${file_abs}" 2>&1 | tee -a /tmp/clang-tidy-report.txt; then
               CLANG_TIDY_RESULT=1
             fi
           done < <(find src/ -name '*.cpp' -print0 | sort -z)

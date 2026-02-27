@@ -39,6 +39,7 @@
 #include <boost/asio.hpp>
 #include <boost/asio/awaitable.hpp>
 #include <boost/asio/local/stream_protocol.hpp>
+#include <atomic>
 #include <filesystem>
 #include <memory>
 
@@ -93,4 +94,5 @@ private:
     std::shared_ptr<StatsCollector>                      stats_;
     asio::io_context&                                    ioc_;
     asio::local::stream_protocol::acceptor               acceptor_;
+    std::atomic<bool>                                    stop_requested_{false};
 };
