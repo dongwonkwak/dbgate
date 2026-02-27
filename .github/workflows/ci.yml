@@ -255,11 +255,50 @@ jobs:
 
       - name: Run cppcheck
         run: |
+          set -euo pipefail
+          cppcheck --version
+
+          # Ubuntu 24.04 기본 cppcheck(2.13)는 C++23 표준 플래그를 인식하지 못할 수 있다.
+          cppcheck_std="c++23"
+          if ! cppcheck --help 2>&1 | grep -q "c++23"; then
+            cppcheck_std="c++20"
+            echo "cppcheck가 c++23을 지원하지 않아 ${cppcheck_std}로 폴백합니다."
+          fi
+
+          db_src="build/debug/compile_commands.json"
+          db_dir="/tmp/cppcheck-db"
+          db_cppcheck="${db_dir}/compile_commands.json"
+          mkdir -p "${db_dir}"
+
+          jq --arg std "${cppcheck_std}" '
+            map(
+              if .command then
+                .command |= (
+                  gsub("-std=gnu\\+\\+23"; "-std=\($std)")
+                  | gsub("-std=c\\+\\+23"; "-std=\($std)")
+                )
+              else
+                .
+              end
+              | if ((.arguments | type) == "array") then
+                  .arguments |= map(
+                    if . == "-std=gnu++23" or . == "-std=c++23" then
+                      "-std=" + $std
+                    else
+                      .
+                    end
+                  )
+                else
+                  .
+                end
+            )' \
+            "${db_src}" > "${db_cppcheck}"
+
           cppcheck \
             --enable=warning,performance,portability \
             --error-exitcode=1 \
-            --std=c++23 \
-            --project=build/debug/compile_commands.json \
+            --std="${cppcheck_std}" \
+            --project="${db_cppcheck}" \
             --suppress=missingInclude \
             --suppress=unmatchedSuppression \
             --suppress=missingIncludeSystem \
