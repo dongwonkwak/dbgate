@@ -75,7 +75,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y g++-14 cmake ninja-build cppcheck \
+          sudo apt-get install -y g++-14 cmake ninja-build cppcheck jq \
             gnupg curl
           # LLVM 19 apt repository (clang-tidy 19: Standard c++23 지원)
           sudo mkdir -p /etc/apt/keyrings
@@ -114,6 +114,102 @@ jobs:
       - name: Build (generate headers)
         run: cmake --build build/debug -j$(nproc)
 
+      - name: Prepare clang-tidy compile database
+        run: |
+          set -euo pipefail
+          db_path="build/debug/compile_commands.json"
+          tidy_db_dir="/tmp/clang-tidy-db"
+          tidy_db="${tidy_db_dir}/compile_commands.json"
+
+          # 디버그용 버전 출력 (환경 드리프트 확인)
+          clang-tidy --version
+          g++-14 --version | head -n 1
+
+          if [ ! -s "${db_path}" ]; then
+            echo "❌ compile_commands.json not found: ${db_path}"
+            exit 1
+          fi
+
+          mapfile -t src_files < <(find src -name '*.cpp' -print | sort)
+          if [ ${#src_files[@]} -eq 0 ]; then
+            echo "❌ src/*.cpp 파일을 찾을 수 없습니다."
+            exit 1
+          fi
+
+          missing_entries=0
+          bad_std_entries=0
+          for rel in "${src_files[@]}"; do
+            abs="$(realpath "${rel}")"
+            cmd="$(jq -r --arg file "${abs}" '
+              ([.[] | select(.file == $file)][0]
+                | if .command then
+                    .command
+                  elif ((.arguments | type) == "array") then
+                    (.arguments | join(" "))
+                  else
+                    empty
+                  end)
+            ' "${db_path}")"
+            if [ -z "${cmd}" ]; then
+              echo "❌ compile_commands 누락: ${abs}"
+              missing_entries=1
+              continue
+            fi
+            if ! echo "${cmd}" | grep -Eq '(^| )-std=(gnu\+\+23|c\+\+23)( |$)'; then
+              echo "❌ C++23 플래그 누락: ${abs}"
+              echo "   command: ${cmd}"
+              bad_std_entries=1
+            fi
+          done
+
+          if [ ${missing_entries} -ne 0 ] || [ ${bad_std_entries} -ne 0 ]; then
+            echo "clang-tidy preflight 실패: compile_commands 검증 오류"
+            exit 1
+          fi
+
+          mkdir -p "${tidy_db_dir}"
+          src_root="$(realpath src)"
+          jq \
+            --arg root "${src_root}" \
+            'def cmd:
+               if .command then
+                 .command
+               elif ((.arguments | type) == "array") then
+                 (.arguments | join(" "))
+               else
+                 ""
+               end;
+            [
+              .[]
+              | select(
+                  (.file | startswith($root + "/"))
+                  and (cmd | test("(^| )-std=(gnu\\+\\+23|c\\+\\+23)( |$)"))
+                )
+              | if .command then . else (. + {command: cmd}) end
+            ]
+            | sort_by(.file)
+            | unique_by(.file)' \
+            "${db_path}" > "${tidy_db}"
+
+          expected_count="${#src_files[@]}"
+          actual_count="$(jq 'length' "${tidy_db}")"
+          if [ "${actual_count}" -ne "${expected_count}" ]; then
+            echo "❌ clang-tidy 전용 compile DB 엔트리 수 불일치: expected=${expected_count}, actual=${actual_count}"
+            jq -r '.[].file' "${tidy_db}" | sort > /tmp/clang-tidy-db-files.txt
+            : > /tmp/clang-tidy-src-files.txt
+            for rel in "${src_files[@]}"; do
+              realpath "${rel}" >> /tmp/clang-tidy-src-files.txt
+            done
+            sort -o /tmp/clang-tidy-src-files.txt /tmp/clang-tidy-src-files.txt
+            echo "누락 파일:"
+            comm -23 /tmp/clang-tidy-src-files.txt /tmp/clang-tidy-db-files.txt || true
+            exit 1
+          fi
+
+          echo "clang-tidy compile DB entries: ${actual_count}"
+          echo "sample compile command:"
+          jq -r '.[0].command' "${tidy_db}"
+
       - name: Run clang-tidy
         run: |
           set -o pipefail
@@ -124,7 +220,7 @@ jobs:
           gcc_major="$(g++-14 -dumpfullversion -dumpversion | cut -d. -f1)"
           gcc_triple="$(g++-14 -dumpmachine)"
           clang_tidy_args=(
-            -p build/debug
+            -p /tmp/clang-tidy-db
             --extra-arg=-std=c++23
             --extra-arg=--gcc-toolchain=/usr
           )
