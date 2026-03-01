@@ -5,7 +5,7 @@
 //
 // Usage:
 //
-//	dbgate-cli [--socket /var/run/dbgate/dbgate.sock] [--timeout 5s] <command>
+//	dbgate-cli [--socket /tmp/dbgate.sock] [--timeout 5s] <command>
 //
 // Commands:
 //
@@ -24,12 +24,13 @@ import (
 )
 
 const (
-	defaultSocket  = "/var/run/dbgate/dbgate.sock"
+	defaultSocket  = "/tmp/dbgate.sock"
 	defaultTimeout = 5 * time.Second
 )
 
 func main() {
 	if err := newRootCmd().Execute(); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
 }
@@ -110,8 +111,8 @@ func runStats(socketPath string, timeout time.Duration) error {
 }
 
 // runGenericCommand sends a raw command to the server and prints the response.
-// For commands that are not yet implemented server-side (501), it prints a
-// friendly message instead of a raw error.
+// Any non-OK response from the server is returned as an error so that callers
+// (including shell scripts and CI pipelines) receive a non-zero exit code.
 func runGenericCommand(socketPath string, timeout time.Duration, cmd string) error {
 	c := client.NewClient(socketPath, timeout)
 	resp, err := c.SendCommand(cmd)
@@ -120,9 +121,11 @@ func runGenericCommand(socketPath string, timeout time.Duration, cmd string) err
 	}
 
 	if !resp.OK {
-		// Detect the common "not implemented" placeholder from the C++ side.
-		printNotImplemented(cmd, resp.Error)
-		return nil
+		errMsg := resp.Error
+		if errMsg == "" {
+			errMsg = "not implemented"
+		}
+		return fmt.Errorf("%s: server error: %s", cmd, errMsg)
 	}
 
 	fmt.Printf("[%s] OK\n", cmd)
@@ -130,12 +133,4 @@ func runGenericCommand(socketPath string, timeout time.Duration, cmd string) err
 		fmt.Printf("payload: %v\n", resp.Payload)
 	}
 	return nil
-}
-
-// printNotImplemented prints a user-friendly message for server-side 501 responses.
-func printNotImplemented(cmd, serverMsg string) {
-	if serverMsg == "" {
-		serverMsg = "not implemented"
-	}
-	fmt.Printf("[%s] %s (code 501)\n", cmd, serverMsg)
 }

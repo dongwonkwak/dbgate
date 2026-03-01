@@ -63,12 +63,12 @@ func (c *Client) SendCommand(cmd string) (*Response, error) {
 	// Write 4-byte LE length prefix.
 	var lenBuf [4]byte
 	binary.LittleEndian.PutUint32(lenBuf[:], uint32(len(body)))
-	if _, err := conn.Write(lenBuf[:]); err != nil {
+	if err := writeFull(conn, lenBuf[:]); err != nil {
 		return nil, fmt.Errorf("write length prefix: %w", err)
 	}
 
 	// Write JSON body.
-	if _, err := conn.Write(body); err != nil {
+	if err := writeFull(conn, body); err != nil {
 		return nil, fmt.Errorf("write request body: %w", err)
 	}
 
@@ -95,6 +95,21 @@ func (c *Client) SendCommand(cmd string) (*Response, error) {
 	}
 
 	return &resp, nil
+}
+
+// writeFull writes all bytes in buf to w, looping until all bytes are written
+// or an error occurs. This handles the rare case where Write returns n < len(buf)
+// without an error, which technically violates the io.Writer contract but can
+// occur on some platforms or under resource pressure.
+func writeFull(w io.Writer, buf []byte) error {
+	for len(buf) > 0 {
+		n, err := w.Write(buf)
+		buf = buf[n:]
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // rawStats is an intermediate struct that handles the C++ serialization quirk:
