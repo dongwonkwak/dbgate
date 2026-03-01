@@ -185,126 +185,7 @@ void ProxyServer::run(boost::asio::io_context& io_ctx)
 
     boost::asio::co_spawn(
         io_ctx,
-        // accept 루프 코루틴
-        [this, listen_ep, &io_ctx]() -> boost::asio::awaitable<void> {
-            boost::asio::ip::tcp::acceptor acceptor{io_ctx, listen_ep};
-            acceptor.set_option(boost::asio::ip::tcp::acceptor::reuse_address(true));
-
-            spdlog::info("[proxy] listening on {}:{}",
-                         config_.listen_address, config_.listen_port);
-
-            while (!stopping_) {
-                boost::system::error_code ec;
-                auto client_sock = co_await acceptor.async_accept(
-                    boost::asio::redirect_error(boost::asio::use_awaitable, ec)
-                );
-
-                if (ec) {
-                    if (ec == boost::asio::error::operation_aborted) {
-                        spdlog::info("[proxy] acceptor closed");
-                        break;
-                    }
-                    if (!stopping_) {
-                        spdlog::warn("[proxy] accept error: {}", ec.message());
-                    }
-                    continue;
-                }
-
-                if (stopping_) {
-                    // 이미 종료 중 — 소켓 즉시 닫기
-                    boost::system::error_code close_ec;
-                    client_sock.close(close_ec);
-                    continue;
-                }
-
-                // max_connections 초과 시 unhealthy 전환 + 연결 거부
-                if (config_.max_connections > 0) {
-                    const auto snap = stats_->snapshot();
-                    if (snap.active_sessions >= config_.max_connections) {
-                        spdlog::warn(
-                            "[proxy] max_connections ({}) reached, rejecting new connection",
-                            config_.max_connections
-                        );
-                        health_check_->set_unhealthy(
-                            std::format("max_connections ({}) reached",
-                                        config_.max_connections)
-                        );
-                        boost::system::error_code close_ec;
-                        client_sock.close(close_ec);
-                        continue;
-                    }
-
-                    // 세션 수가 회복되면 healthy 전환
-                    if (health_check_->status() == HealthStatus::kUnhealthy &&
-                        snap.active_sessions < config_.max_connections)
-                    {
-                        health_check_->set_healthy();
-                    }
-                }
-
-                // 세션 생성
-                const std::uint64_t sid = next_session_id_.fetch_add(
-                    1, std::memory_order_relaxed
-                );
-
-                // upstream 호스트명 해석 (숫자 IP도 지원)
-                boost::asio::ip::tcp::resolver resolver{io_ctx};
-                boost::system::error_code resolve_ec;
-                auto resolve_results = co_await resolver.async_resolve(
-                    config_.upstream_address,
-                    std::to_string(config_.upstream_port),
-                    boost::asio::redirect_error(boost::asio::use_awaitable, resolve_ec)
-                );
-
-                if (resolve_ec || resolve_results.empty()) {
-                    spdlog::error("[proxy] failed to resolve upstream {}: {}",
-                                  config_.upstream_address, resolve_ec.message());
-                    boost::system::error_code close_ec;
-                    client_sock.close(close_ec);
-                    continue;
-                }
-
-                const auto server_ep = *resolve_results.begin();
-
-                auto session = std::make_shared<Session>(
-                    sid,
-                    std::move(client_sock),
-                    server_ep,
-                    policy_engine_,
-                    logger_,
-                    stats_
-                );
-
-                sessions_.emplace(sid, session);
-
-                spdlog::debug("[proxy] new session {}", sid);
-
-                // 세션 코루틴 spawn — 완료 시 sessions_ 에서 제거
-                boost::asio::co_spawn(
-                    session->executor(),
-                    session->run(),
-                    [this, sid](std::exception_ptr eptr) {
-                        if (eptr) {
-                            try { std::rethrow_exception(eptr); }
-                            catch (const std::exception& e) {
-                                spdlog::error("[proxy] session {} exception: {}",
-                                              sid, e.what());
-                            }
-                        }
-
-                        sessions_.erase(sid);
-                        spdlog::debug("[proxy] session {} removed (active: {})",
-                                      sid, sessions_.size());
-
-                        // 모든 세션 종료 + stopping 중 → io_context 중단
-                        if (stopping_ && sessions_.empty()) {
-                            spdlog::info("[proxy] all sessions closed, stopping io_context");
-                            io_ctx_->stop();
-                        }
-                    }
-                );
-            }
-        }(),
+        accept_loop(listen_ep),
         [](std::exception_ptr eptr) {
             if (eptr) {
                 try { std::rethrow_exception(eptr); }
@@ -314,6 +195,134 @@ void ProxyServer::run(boost::asio::io_context& io_ctx)
             }
         }
     );
+}
+
+// ---------------------------------------------------------------------------
+// ProxyServer::accept_loop
+//   TCP Accept 루프 코루틴.
+//   listen_ep 는 값으로 받아 코루틴 프레임(힙)에 안전하게 보관한다.
+//   람다 클로저 캡처 대신 멤버 함수로 분리하여 stack-use-after-return 방지.
+// ---------------------------------------------------------------------------
+boost::asio::awaitable<void> ProxyServer::accept_loop(
+    boost::asio::ip::tcp::endpoint listen_ep)
+{
+    boost::asio::ip::tcp::acceptor acceptor{*io_ctx_, listen_ep};
+    acceptor.set_option(boost::asio::ip::tcp::acceptor::reuse_address(true));
+
+    spdlog::info("[proxy] listening on {}:{}",
+                 config_.listen_address, config_.listen_port);
+
+    while (!stopping_) {
+        boost::system::error_code ec;
+        auto client_sock = co_await acceptor.async_accept(
+            boost::asio::redirect_error(boost::asio::use_awaitable, ec)
+        );
+
+        if (ec) {
+            if (ec == boost::asio::error::operation_aborted) {
+                spdlog::info("[proxy] acceptor closed");
+                break;
+            }
+            if (!stopping_) {
+                spdlog::warn("[proxy] accept error: {}", ec.message());
+            }
+            continue;
+        }
+
+        if (stopping_) {
+            // 이미 종료 중 — 소켓 즉시 닫기
+            boost::system::error_code close_ec;
+            client_sock.close(close_ec);
+            continue;
+        }
+
+        // max_connections 초과 시 unhealthy 전환 + 연결 거부
+        if (config_.max_connections > 0) {
+            const auto snap = stats_->snapshot();
+            if (snap.active_sessions >= config_.max_connections) {
+                spdlog::warn(
+                    "[proxy] max_connections ({}) reached, rejecting new connection",
+                    config_.max_connections
+                );
+                health_check_->set_unhealthy(
+                    std::format("max_connections ({}) reached",
+                                config_.max_connections)
+                );
+                boost::system::error_code close_ec;
+                client_sock.close(close_ec);
+                continue;
+            }
+
+            // 세션 수가 회복되면 healthy 전환
+            if (health_check_->status() == HealthStatus::kUnhealthy &&
+                snap.active_sessions < config_.max_connections)
+            {
+                health_check_->set_healthy();
+            }
+        }
+
+        // 세션 생성
+        const std::uint64_t sid = next_session_id_.fetch_add(
+            1, std::memory_order_relaxed
+        );
+
+        // upstream 호스트명 해석 (숫자 IP도 지원)
+        boost::asio::ip::tcp::resolver resolver{*io_ctx_};
+        boost::system::error_code resolve_ec;
+        auto resolve_results = co_await resolver.async_resolve(
+            config_.upstream_address,
+            std::to_string(config_.upstream_port),
+            boost::asio::redirect_error(boost::asio::use_awaitable, resolve_ec)
+        );
+
+        if (resolve_ec || resolve_results.empty()) {
+            spdlog::error("[proxy] failed to resolve upstream {}: {}",
+                          config_.upstream_address, resolve_ec.message());
+            boost::system::error_code close_ec;
+            client_sock.close(close_ec);
+            continue;
+        }
+
+        const auto server_ep = *resolve_results.begin();
+
+        auto session = std::make_shared<Session>(
+            sid,
+            std::move(client_sock),
+            server_ep,
+            policy_engine_,
+            logger_,
+            stats_
+        );
+
+        sessions_.emplace(sid, session);
+
+        spdlog::debug("[proxy] new session {}", sid);
+
+        // 세션 코루틴 spawn — 완료 시 sessions_ 에서 제거
+        boost::asio::co_spawn(
+            session->executor(),
+            session->run(),
+            [this, sid](std::exception_ptr eptr) {
+                if (eptr) {
+                    try { std::rethrow_exception(eptr); }
+                    catch (const std::exception& e) {
+                        spdlog::error("[proxy] session {} exception: {}",
+                                      sid, e.what());
+                    }
+                }
+
+                sessions_.erase(sid);
+                spdlog::debug("[proxy] session {} removed (active: {})",
+                              sid, sessions_.size());
+
+                // 모든 세션 종료 + stopping 중 → io_context 중단
+                if (stopping_ && sessions_.empty()) {
+                    spdlog::info("[proxy] all sessions closed, stopping io_context");
+                    io_ctx_->stop();
+                }
+            }
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------

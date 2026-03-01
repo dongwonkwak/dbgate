@@ -7,6 +7,7 @@
 #include "logger/structured_logger.hpp"
 
 #include <chrono>
+#include <ctime>
 #include <iomanip>
 #include <sstream>
 
@@ -24,10 +25,19 @@ static std::string format_iso8601(const std::chrono::system_clock::time_point& t
     const auto millis   = std::chrono::duration_cast<std::chrono::milliseconds>(duration) - seconds;
 
     std::time_t time_t_val = std::chrono::system_clock::to_time_t(tp);
-    std::tm*    tm_val     = std::gmtime(&time_t_val);
+    std::tm     tm_val{};
+#if defined(_WIN32)
+    if (gmtime_s(&tm_val, &time_t_val) != 0) {
+        return "1970-01-01T00:00:00.000Z";
+    }
+#else
+    if (gmtime_r(&time_t_val, &tm_val) == nullptr) {
+        return "1970-01-01T00:00:00.000Z";
+    }
+#endif
 
     std::ostringstream oss;
-    oss << std::put_time(tm_val, "%Y-%m-%dT%H:%M:%S") << '.' << std::setfill('0') << std::setw(3)
+    oss << std::put_time(&tm_val, "%Y-%m-%dT%H:%M:%S") << '.' << std::setfill('0') << std::setw(3)
         << millis.count() << 'Z';
     return oss.str();
 }
@@ -39,7 +49,7 @@ static std::string escape_json_string(const std::string& str) {
     std::string result;
     result.reserve(str.size() + 16);
 
-    for (unsigned char ch : str) {
+    for (char ch : str) {
         switch (ch) {
             case '"':
                 result += "\\\"";
@@ -63,9 +73,9 @@ static std::string escape_json_string(const std::string& str) {
                 result += "\\t";
                 break;
             default:
-                if (ch < 0x20) {
+                if (static_cast<unsigned char>(ch) < 0x20) {
                     char buf[8]{};
-                    snprintf(buf, sizeof(buf), "\\u%04x", static_cast<unsigned int>(ch));
+                    snprintf(buf, sizeof(buf), "\\u%04x", static_cast<unsigned int>(static_cast<unsigned char>(ch)));
                     result += buf;
                 } else {
                     result += ch;

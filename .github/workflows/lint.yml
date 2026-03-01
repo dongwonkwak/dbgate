@@ -1,0 +1,65 @@
+name: Commit & PR Lint
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+
+jobs:
+  pr-title:
+    name: PR 제목 형식 검증
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check PR title format
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          # 허용 형식: type(scope): 설명 [DON-XX]
+          PATTERN='^(feat|fix|docs|chore|test|refactor|perf|style|ci|revert)\([a-z][a-z0-9-]*\)!?: .+ \[DON-[0-9]+\]$'
+          if ! echo "$PR_TITLE" | grep -qP "$PATTERN"; then
+            echo "❌ PR 제목 형식 오류"
+            echo "   현재: $PR_TITLE"
+            echo ""
+            echo "   올바른 형식: type(scope): 설명 [DON-XX]"
+            echo "   예시: feat(proxy): Boost.Asio 프록시 서버 구현 [DON-28]"
+            echo ""
+            echo "   허용 type: feat, fix, docs, chore, test, refactor, perf, style, ci, revert"
+            echo "   허용 scope: protocol, proxy, health, parser, policy, logger, stats, cli, dashboard, ci, deploy, adr, agents, project"
+            exit 1
+          fi
+          echo "✅ PR 제목 형식 OK: $PR_TITLE"
+
+  commit-messages:
+    name: 커밋 메시지 형식 검증
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Fetch base branch
+        run: git fetch origin "${{ github.base_ref }}" --depth=1
+
+      - name: Check commit message formats
+        run: |
+          PATTERN='^(feat|fix|docs|chore|test|refactor|perf|style|ci|revert)\([a-z][a-z0-9-]*\)!?: .+ \[DON-[0-9]+\]$'
+          MERGE_PATTERN='^Merge '
+
+          FAILED=0
+          while IFS= read -r msg; do
+            # Merge 커밋 제외
+            if echo "$msg" | grep -qP "$MERGE_PATTERN"; then
+              continue
+            fi
+            if ! echo "$msg" | grep -qP "$PATTERN"; then
+              echo "❌ 커밋 메시지 형식 오류: $msg"
+              FAILED=1
+            fi
+          done < <(git log --format="%s" "origin/${{ github.base_ref }}..HEAD")
+
+          if [ $FAILED -eq 1 ]; then
+            echo ""
+            echo "올바른 형식: type(scope): 설명 [DON-XX]"
+            echo "예시: fix(parser): trailing 세미콜론 단일 구문 허용 [DON-39]"
+            exit 1
+          fi
+          echo "✅ 모든 커밋 메시지 형식 OK"

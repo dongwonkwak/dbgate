@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# commit-msg hook: 커밋 메시지 형식을 검증한다.
+# scripts/install-hooks.sh 로 설치한다.
+set -euo pipefail
+
+COMMIT_MSG_FILE="$1"
+COMMIT_MSG="$(head -1 "$COMMIT_MSG_FILE")"
+
+PATTERN='^(feat|fix|docs|chore|test|refactor|perf|style|ci|revert)\([a-z][a-z0-9-]*\)!?: .+ \[DON-[0-9]+\]$'
+MERGE_PATTERN='^Merge '
+
+# Merge 커밋 제외
+if echo "$COMMIT_MSG" | grep -qP "$MERGE_PATTERN"; then
+  exit 0
+fi
+
+if ! echo "$COMMIT_MSG" | grep -qP "$PATTERN"; then
+  echo ""
+  echo "❌ 커밋 메시지 형식 오류: $COMMIT_MSG"
+  echo ""
+  echo "올바른 형식: type(scope): 설명 [DON-XX]"
+  echo ""
+  echo "  type  : feat | fix | docs | chore | test | refactor | perf | style | ci | revert"
+  echo "  scope : 소문자 + 하이픈만 허용 (예: logger, proxy, policy)"
+  echo "  설명  : 한글 권장, 마침표 없이"
+  echo ""
+  echo "예시: fix(logger): sign-conversion 경고로 인한 CI 빌드 실패 수정 [DON-30]"
+  echo ""
+  exit 1
+fi

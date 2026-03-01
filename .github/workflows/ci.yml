@@ -1,0 +1,393 @@
+name: C++ CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'tests/**'
+      - 'CMakeLists.txt'
+      - 'CMakePresets.json'
+      - 'vcpkg.json'
+      - '.clang-tidy'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'tests/**'
+      - 'CMakeLists.txt'
+      - 'CMakePresets.json'
+      - 'vcpkg.json'
+      - '.clang-tidy'
+
+env:
+  VCPKG_ROOT: /opt/vcpkg
+  VCPKG_BINCACHE: /tmp/vcpkg-bincache
+
+jobs:
+  build-test:
+    name: Build & Test (GCC 14)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y g++-14 cmake ninja-build
+
+      - name: Cache vcpkg binary packages
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ${{ env.VCPKG_BINCACHE }}
+          key: vcpkg-linux-x64-${{ hashFiles('vcpkg.json') }}
+          restore-keys: vcpkg-linux-x64-
+
+      - name: Install vcpkg
+        run: |
+          git clone --depth=1 --branch 2026.01.16 https://github.com/microsoft/vcpkg.git $VCPKG_ROOT
+          # 공급망 공격 방지: 예상 커밋 SHA 검증
+          actual_sha=$(git -C $VCPKG_ROOT rev-parse HEAD)
+          expected_sha="66c0373dc7fca549e5803087b9487edfe3aca0a1"
+          if [ "$actual_sha" != "$expected_sha" ]; then
+            echo "❌ vcpkg SHA 불일치: expected $expected_sha, got $actual_sha"
+            exit 1
+          fi
+          $VCPKG_ROOT/bootstrap-vcpkg.sh -disableMetrics
+          mkdir -p $VCPKG_BINCACHE
+          echo "VCPKG_BINARY_SOURCES=clear;files,$VCPKG_BINCACHE,readwrite" >> "$GITHUB_ENV"
+
+      - name: Configure (Release)
+        run: cmake --preset default
+
+      - name: Build
+        run: cmake --build build/default -j$(nproc)
+
+      - name: Run tests
+        run: ctest --test-dir build/default --output-on-failure -j$(nproc)
+
+  static-analysis:
+    name: Static Analysis (clang-tidy + cppcheck)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y g++-14 cmake ninja-build cppcheck jq \
+            gnupg curl
+          # LLVM 19 apt repository (clang-tidy 19: Standard c++23 지원)
+          sudo mkdir -p /etc/apt/keyrings
+          curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key \
+            | sudo gpg --dearmor -o /etc/apt/keyrings/llvm.gpg
+          echo "deb [signed-by=/etc/apt/keyrings/llvm.gpg] https://apt.llvm.org/noble/ llvm-toolchain-noble-19 main" \
+            | sudo tee /etc/apt/sources.list.d/llvm19.list
+          sudo apt-get update -qq
+          sudo apt-get install -y clang-tidy-19
+          sudo update-alternatives --install /usr/bin/clang-tidy clang-tidy /usr/bin/clang-tidy-19 100
+          if ! command -v clang-tidy-19 >/dev/null 2>&1; then
+            echo "❌ clang-tidy-19 설치 확인 실패"
+            exit 1
+          fi
+          echo "CLANG_TIDY_BIN=$(command -v clang-tidy-19)" >> "$GITHUB_ENV"
+
+      - name: Cache vcpkg binary packages
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ${{ env.VCPKG_BINCACHE }}
+          key: vcpkg-linux-x64-${{ hashFiles('vcpkg.json') }}
+          restore-keys: vcpkg-linux-x64-
+
+      - name: Install vcpkg
+        run: |
+          git clone --depth=1 --branch 2026.01.16 https://github.com/microsoft/vcpkg.git $VCPKG_ROOT
+          # 공급망 공격 방지: 예상 커밋 SHA 검증
+          actual_sha=$(git -C $VCPKG_ROOT rev-parse HEAD)
+          expected_sha="66c0373dc7fca549e5803087b9487edfe3aca0a1"
+          if [ "$actual_sha" != "$expected_sha" ]; then
+            echo "❌ vcpkg SHA 불일치: expected $expected_sha, got $actual_sha"
+            exit 1
+          fi
+          $VCPKG_ROOT/bootstrap-vcpkg.sh -disableMetrics
+          mkdir -p $VCPKG_BINCACHE
+          echo "VCPKG_BINARY_SOURCES=clear;files,$VCPKG_BINCACHE,readwrite" >> "$GITHUB_ENV"
+
+      - name: Configure (Debug + compile_commands.json)
+        run: cmake --preset debug -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+
+      - name: Build (generate headers)
+        run: cmake --build build/debug -j$(nproc)
+
+      - name: Prepare clang-tidy compile database
+        run: |
+          set -euo pipefail
+          db_path="build/debug/compile_commands.json"
+          tidy_db_dir="/tmp/clang-tidy-db"
+          tidy_db="${tidy_db_dir}/compile_commands.json"
+
+          # 디버그용 버전 출력 (환경 드리프트 확인)
+          echo "using clang-tidy binary: ${CLANG_TIDY_BIN}"
+          "${CLANG_TIDY_BIN}" --version
+          if ! "${CLANG_TIDY_BIN}" --version | head -n 1 | grep -q "version 19"; then
+            echo "❌ clang-tidy 19가 아닌 버전이 선택되었습니다."
+            exit 1
+          fi
+          g++-14 --version | head -n 1
+
+          if [ ! -s "${db_path}" ]; then
+            echo "❌ compile_commands.json not found: ${db_path}"
+            exit 1
+          fi
+
+          mapfile -t src_files < <(find src -name '*.cpp' -print | sort)
+          if [ ${#src_files[@]} -eq 0 ]; then
+            echo "❌ src/*.cpp 파일을 찾을 수 없습니다."
+            exit 1
+          fi
+
+          missing_entries=0
+          bad_std_entries=0
+          for rel in "${src_files[@]}"; do
+            abs="$(realpath "${rel}")"
+            cmd="$(jq -r --arg file "${abs}" '
+              ([.[] | select(.file == $file)][0]
+                | if .command then
+                    .command
+                  elif ((.arguments | type) == "array") then
+                    (.arguments | join(" "))
+                  else
+                    empty
+                  end)
+            ' "${db_path}")"
+            if [ -z "${cmd}" ]; then
+              echo "❌ compile_commands 누락: ${abs}"
+              missing_entries=1
+              continue
+            fi
+            if ! echo "${cmd}" | grep -Eq '(^| )-std=(gnu\+\+23|c\+\+23)( |$)'; then
+              echo "❌ C++23 플래그 누락: ${abs}"
+              echo "   command: ${cmd}"
+              bad_std_entries=1
+            fi
+          done
+
+          if [ ${missing_entries} -ne 0 ] || [ ${bad_std_entries} -ne 0 ]; then
+            echo "clang-tidy preflight 실패: compile_commands 검증 오류"
+            exit 1
+          fi
+
+          mkdir -p "${tidy_db_dir}"
+          src_root="$(realpath src)"
+          jq \
+            --arg root "${src_root}" \
+            'def cmd:
+               if .command then
+                 .command
+               elif ((.arguments | type) == "array") then
+                 (.arguments | join(" "))
+               else
+                 ""
+               end;
+            [
+              .[]
+              | select(
+                  (.file | startswith($root + "/"))
+                  and (cmd | test("(^| )-std=(gnu\\+\\+23|c\\+\\+23)( |$)"))
+                )
+              | if .command then . else (. + {command: cmd}) end
+            ]
+            | sort_by(.file)
+            | unique_by(.file)' \
+            "${db_path}" > "${tidy_db}"
+
+          expected_count="${#src_files[@]}"
+          actual_count="$(jq 'length' "${tidy_db}")"
+          if [ "${actual_count}" -ne "${expected_count}" ]; then
+            echo "❌ clang-tidy 전용 compile DB 엔트리 수 불일치: expected=${expected_count}, actual=${actual_count}"
+            jq -r '.[].file' "${tidy_db}" | sort > /tmp/clang-tidy-db-files.txt
+            : > /tmp/clang-tidy-src-files.txt
+            for rel in "${src_files[@]}"; do
+              realpath "${rel}" >> /tmp/clang-tidy-src-files.txt
+            done
+            sort -o /tmp/clang-tidy-src-files.txt /tmp/clang-tidy-src-files.txt
+            echo "누락 파일:"
+            comm -23 /tmp/clang-tidy-src-files.txt /tmp/clang-tidy-db-files.txt || true
+            exit 1
+          fi
+
+          echo "clang-tidy compile DB entries: ${actual_count}"
+          echo "sample compile command:"
+          jq -r '.[0].command' "${tidy_db}"
+
+      - name: Run clang-tidy
+        run: |
+          set -euo pipefail
+          # 파일 단위로 실행해 종료코드 수집을 안정화하고,
+          # 단일 대형 프로세스에서 발생하는 리소스 스파이크를 줄인다.
+          CLANG_TIDY_RESULT=0
+          : > /tmp/clang-tidy-report.txt
+          gcc_major="$(g++-14 -dumpfullversion -dumpversion | cut -d. -f1)"
+          gcc_triple="$(g++-14 -dumpmachine)"
+          clang_tidy_args=(
+            -p /tmp/clang-tidy-db
+            --extra-arg=-std=c++23
+            --extra-arg=--gcc-toolchain=/usr
+          )
+          if [ -d "/usr/include/c++/${gcc_major}" ]; then
+            clang_tidy_args+=(--extra-arg=-isystem --extra-arg="/usr/include/c++/${gcc_major}")
+          fi
+          if [ -d "/usr/include/${gcc_triple}/c++/${gcc_major}" ]; then
+            clang_tidy_args+=(--extra-arg=-isystem --extra-arg="/usr/include/${gcc_triple}/c++/${gcc_major}")
+          fi
+          while IFS= read -r -d '' file; do
+            file_abs="$(realpath "${file}")"
+            echo "==> clang-tidy ${file_abs}" | tee -a /tmp/clang-tidy-report.txt
+            if ! "${CLANG_TIDY_BIN}" "${clang_tidy_args[@]}" "${file_abs}" 2>&1 | tee -a /tmp/clang-tidy-report.txt; then
+              CLANG_TIDY_RESULT=1
+            fi
+          done < <(find src/ -name '*.cpp' -print0 | sort -z)
+          # error 수준 진단 또는 clang-tidy 실행 실패가 있으면 CI 실패
+          if [ $CLANG_TIDY_RESULT -ne 0 ] || grep -qE "^.+:[0-9]+:[0-9]+: error:" /tmp/clang-tidy-report.txt; then
+            echo "clang-tidy 오류가 발견되었습니다."
+            exit 1
+          fi
+
+      - name: Run cppcheck
+        run: |
+          set -euo pipefail
+          cppcheck --version
+
+          # Ubuntu 24.04 기본 cppcheck(2.13)는 C++23 표준 플래그를 인식하지 못할 수 있다.
+          cppcheck_std="c++23"
+          if ! cppcheck --help 2>&1 | grep -q "c++23"; then
+            cppcheck_std="c++20"
+            echo "cppcheck가 c++23을 지원하지 않아 ${cppcheck_std}로 폴백합니다."
+          fi
+
+          db_src="build/debug/compile_commands.json"
+          db_dir="/tmp/cppcheck-db"
+          db_cppcheck="${db_dir}/compile_commands.json"
+          mkdir -p "${db_dir}"
+
+          jq --arg std "${cppcheck_std}" '
+            map(
+              if .command then
+                .command |= (
+                  gsub("-std=gnu\\+\\+23"; "-std=\($std)")
+                  | gsub("-std=c\\+\\+23"; "-std=\($std)")
+                )
+              else
+                .
+              end
+              | if ((.arguments | type) == "array") then
+                  .arguments |= map(
+                    if . == "-std=gnu++23" or . == "-std=c++23" then
+                      "-std=" + $std
+                    else
+                      .
+                    end
+                  )
+                else
+                  .
+                end
+            )' \
+            "${db_src}" > "${db_cppcheck}"
+
+          cppcheck \
+            --enable=warning,performance,portability \
+            --error-exitcode=1 \
+            --std="${cppcheck_std}" \
+            --project="${db_cppcheck}" \
+            --suppress=missingInclude \
+            --suppress=unmatchedSuppression \
+            --suppress=missingIncludeSystem \
+            -i build/ \
+            2>&1
+
+  asan:
+    name: AddressSanitizer
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y g++-14 cmake ninja-build
+
+      - name: Cache vcpkg binary packages
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ${{ env.VCPKG_BINCACHE }}
+          key: vcpkg-linux-x64-${{ hashFiles('vcpkg.json') }}
+          restore-keys: vcpkg-linux-x64-
+
+      - name: Install vcpkg
+        run: |
+          git clone --depth=1 --branch 2026.01.16 https://github.com/microsoft/vcpkg.git $VCPKG_ROOT
+          # 공급망 공격 방지: 예상 커밋 SHA 검증
+          actual_sha=$(git -C $VCPKG_ROOT rev-parse HEAD)
+          expected_sha="66c0373dc7fca549e5803087b9487edfe3aca0a1"
+          if [ "$actual_sha" != "$expected_sha" ]; then
+            echo "❌ vcpkg SHA 불일치: expected $expected_sha, got $actual_sha"
+            exit 1
+          fi
+          $VCPKG_ROOT/bootstrap-vcpkg.sh -disableMetrics
+          mkdir -p $VCPKG_BINCACHE
+          echo "VCPKG_BINARY_SOURCES=clear;files,$VCPKG_BINCACHE,readwrite" >> "$GITHUB_ENV"
+
+      - name: Configure (ASan)
+        run: cmake --preset asan
+
+      - name: Build
+        run: cmake --build build/asan -j$(nproc)
+
+      - name: Run tests (ASan)
+        run: ctest --test-dir build/asan --output-on-failure -j$(nproc)
+        env:
+          ASAN_OPTIONS: detect_leaks=1:abort_on_error=1:symbolize=1
+
+  tsan:
+    name: ThreadSanitizer
+    # TSan은 GCC에서 aarch64 미지원 — ubuntu-24.04는 x86_64 고정
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y g++-14 cmake ninja-build
+
+      - name: Cache vcpkg binary packages
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ${{ env.VCPKG_BINCACHE }}
+          key: vcpkg-linux-x64-${{ hashFiles('vcpkg.json') }}
+          restore-keys: vcpkg-linux-x64-
+
+      - name: Install vcpkg
+        run: |
+          git clone --depth=1 --branch 2026.01.16 https://github.com/microsoft/vcpkg.git $VCPKG_ROOT
+          # 공급망 공격 방지: 예상 커밋 SHA 검증
+          actual_sha=$(git -C $VCPKG_ROOT rev-parse HEAD)
+          expected_sha="66c0373dc7fca549e5803087b9487edfe3aca0a1"
+          if [ "$actual_sha" != "$expected_sha" ]; then
+            echo "❌ vcpkg SHA 불일치: expected $expected_sha, got $actual_sha"
+            exit 1
+          fi
+          $VCPKG_ROOT/bootstrap-vcpkg.sh -disableMetrics
+          mkdir -p $VCPKG_BINCACHE
+          echo "VCPKG_BINARY_SOURCES=clear;files,$VCPKG_BINCACHE,readwrite" >> "$GITHUB_ENV"
+
+      - name: Configure (TSan)
+        run: cmake --preset tsan
+
+      - name: Build
+        run: cmake --build build/tsan -j$(nproc)
+
+      - name: Run tests (TSan)
+        run: ctest --test-dir build/tsan --output-on-failure -j$(nproc)
+        env:
+          TSAN_OPTIONS: halt_on_error=1:symbolize=1

@@ -114,5 +114,37 @@ target_link_libraries(dbgate_tests PRIVATE
     pthread
 )
 
-include(GoogleTest)
-gtest_discover_tests(dbgate_tests)
+set(DBGATE_SANITIZER_FLAGS "${CMAKE_CXX_FLAGS} ${CMAKE_EXE_LINKER_FLAGS}")
+set(DBGATE_TSAN_ENABLED OFF)
+if(DBGATE_SANITIZER_FLAGS MATCHES "(^| )-fsanitize=thread( |$)")
+    set(DBGATE_TSAN_ENABLED ON)
+endif()
+
+set(DBGATE_TSAN_RUNTIME_SUPPORTED ON)
+if(DBGATE_TSAN_ENABLED
+   AND CMAKE_SYSTEM_NAME STREQUAL "Linux"
+   AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64)$")
+    set(DBGATE_MMAP_RND_BITS_PATH "/proc/sys/vm/mmap_rnd_bits")
+    if(EXISTS "${DBGATE_MMAP_RND_BITS_PATH}")
+        file(READ "${DBGATE_MMAP_RND_BITS_PATH}" DBGATE_MMAP_RND_BITS_RAW)
+        string(STRIP "${DBGATE_MMAP_RND_BITS_RAW}" DBGATE_MMAP_RND_BITS)
+        if(DBGATE_MMAP_RND_BITS MATCHES "^[0-9]+$" AND DBGATE_MMAP_RND_BITS GREATER 28)
+            set(DBGATE_TSAN_RUNTIME_SUPPORTED OFF)
+            message(WARNING
+                "Skipping gtest discovery for TSan on Linux arm64: "
+                "vm.mmap_rnd_bits=${DBGATE_MMAP_RND_BITS} (> 28) crashes TSan runtime."
+            )
+        endif()
+    endif()
+endif()
+
+if(DBGATE_TSAN_RUNTIME_SUPPORTED)
+    include(GoogleTest)
+    gtest_discover_tests(dbgate_tests)
+else()
+    add_test(
+        NAME dbgate_tests_tsan_runtime_unsupported
+        COMMAND ${CMAKE_COMMAND} -E echo
+            "Skipping TSan unit tests on this host (Linux arm64 vm.mmap_rnd_bits > 28)."
+    )
+endif()

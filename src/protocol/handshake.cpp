@@ -93,6 +93,130 @@ auto read_packet(boost::asio::ip::tcp::socket& sock)
 }
 
 // -----------------------------------------------------------------------
+// strip_unsupported_capabilities
+//   서버 Initial Handshake payload에서 프록시가 지원하지 않는 capability
+//   비트를 제거한다.
+//
+//   제거 대상:
+//   1) CLIENT_SSL (capability_flags_1 bit 11, 0x0800):
+//      프록시는 TLS 미지원. 서버가 SSL을 광고하면 mysql 클라이언트가
+//      SSLRequest(32B)를 전송해 HandshakeResponse41 파싱 실패.
+//
+//   2) CLIENT_QUERY_ATTRIBUTES (capability_flags_2 bit 11, 0x0800 of upper 2B
+//      = full value 0x08000000):
+//      활성화 시 COM_QUERY payload 앞에 \x00\x01 attribute header가 붙어
+//      SQL 추출 로직이 오파싱. 제거하면 클라이언트가 plain SQL만 전송.
+//
+//   3) CLIENT_DEPRECATE_EOF (capability_flags_2 bit 8, 0x0100 of upper 2B
+//      = full value 0x01000000):
+//      활성화 시 Result Set 프로토콜이 변경됨 — column definition 뒤에
+//      EOF 패킷 없이 바로 row 데이터가 오고, 마지막 EOF 대신 OK(0xFE)
+//      패킷이 옴. relay_server_response의 상태 머신이 전통적인 EOF 기반
+//      Result Set만 지원하므로, 이 비트를 제거하여 전통 프로토콜을 강제.
+//
+//   HandshakeV10 payload 구조 (capability_flags 위치):
+//     [1B  protocol_version]
+//     [NUL server_version]
+//     [4B  connection_id]
+//     [8B  auth_plugin_data_part_1]
+//     [1B  filler]
+//     [2B  capability_flags_1]  ← CLIENT_SSL(bit 11) 제거
+//     [1B  charset]
+//     [2B  status_flags]
+//     [2B  capability_flags_2]  ← CLIENT_QUERY_ATTRIBUTES(bit 11),
+//                                  CLIENT_DEPRECATE_EOF(bit 8) 제거
+//     ...
+//
+//   파싱 실패 시 원본 직렬화 바이트를 반환한다 (fail-safe).
+// -----------------------------------------------------------------------
+auto strip_unsupported_capabilities(const MysqlPacket& pkt) -> std::vector<std::uint8_t>
+{
+    auto bytes = pkt.serialize();
+    const auto payload = pkt.payload();
+
+    // protocol_version(1) + server_version(최소 1B NUL) 필요
+    if (payload.size() < 2) {
+        return bytes;
+    }
+
+    // server_version NUL terminator 탐색 (offset 1부터)
+    std::size_t pos = 1;
+    while (pos < payload.size() && payload[pos] != 0x00) {
+        ++pos;
+    }
+    if (pos >= payload.size()) {
+        return bytes;  // NUL terminator 없음 — 원본 반환
+    }
+    ++pos;  // NUL terminator 건너뜀
+
+    // connection_id(4) + auth_plugin_data_part_1(8) + filler(1) = 13바이트
+    pos += 13;
+
+    // capability_flags_1 (2바이트 LE) 위치 확인
+    // capability_flags_2는 cap_flags_1(2) + charset(1) + status(2) = 5바이트 이후
+    if (pos + 7 > payload.size()) {
+        return bytes;
+    }
+
+    // serialized bytes에서 payload는 4바이트 헤더 이후
+    const std::size_t cap1_offset = 4 + pos;
+    const std::size_t cap2_offset = cap1_offset + 5;  // +charset(1)+status(2)+cap_flags_1(2)
+
+    // 1) CLIENT_SSL = 0x0800 in cap_flags_1: high byte bit 3
+    bytes[cap1_offset + 1] &= static_cast<std::uint8_t>(~0x08U);
+
+    // cap_flags_2 high byte (bits 24-31):
+    //   bit 0 (0x01) = CLIENT_DEPRECATE_EOF   (full: 0x01000000)
+    //   bit 3 (0x08) = CLIENT_QUERY_ATTRIBUTES (full: 0x08000000)
+    if (cap2_offset + 1 < bytes.size()) {
+        bytes[cap2_offset + 1] &= static_cast<std::uint8_t>(~0x09U);
+    }
+
+    return bytes;
+}
+
+// -----------------------------------------------------------------------
+// strip_unsupported_client_capabilities
+//   클라이언트 HandshakeResponse41 payload의 capability_flags(4B LE)에서
+//   프록시가 지원하지 않는 비트를 제거한다.
+//
+//   payload layout (offset 0):
+//     [4B capability_flags] [4B max_packet_size] [1B charset] [23B reserved] ...
+// -----------------------------------------------------------------------
+auto strip_unsupported_client_capabilities(const MysqlPacket& pkt)
+    -> std::vector<std::uint8_t>
+{
+    auto bytes = pkt.serialize();
+    const auto payload = pkt.payload();
+
+    // HandshakeResponse41 capability_flags(4B) 최소 길이 확인
+    if (payload.size() < 4 || bytes.size() < 8) {
+        return bytes;
+    }
+
+    constexpr std::uint32_t kUnsupportedMask =
+        0x00000800U   // CLIENT_SSL
+        | 0x01000000U // CLIENT_DEPRECATE_EOF
+        | 0x08000000U; // CLIENT_QUERY_ATTRIBUTES
+
+    // serialized bytes에서 payload 시작 오프셋은 4
+    std::uint32_t cap_flags =
+        static_cast<std::uint32_t>(bytes[4])
+        | (static_cast<std::uint32_t>(bytes[5]) << 8U)
+        | (static_cast<std::uint32_t>(bytes[6]) << 16U)
+        | (static_cast<std::uint32_t>(bytes[7]) << 24U);
+
+    cap_flags &= ~kUnsupportedMask;
+
+    bytes[4] = static_cast<std::uint8_t>(cap_flags & 0xFFU);
+    bytes[5] = static_cast<std::uint8_t>((cap_flags >> 8U) & 0xFFU);
+    bytes[6] = static_cast<std::uint8_t>((cap_flags >> 16U) & 0xFFU);
+    bytes[7] = static_cast<std::uint8_t>((cap_flags >> 24U) & 0xFFU);
+
+    return bytes;
+}
+
+// -----------------------------------------------------------------------
 // write_packet
 //   MysqlPacket을 serialize()한 뒤 소켓에 비동기 전송한다.
 // -----------------------------------------------------------------------
@@ -226,11 +350,21 @@ auto process_handshake_packet(HandshakeState                current_state,
                         HandshakeState::kWaitClientAuthSwitch,
                         HandshakeAction::kRelayToClient
                     };
-                case AuthResponseType::kAuthMoreData:
+                case AuthResponseType::kAuthMoreData: {
+                    // caching_sha2_password AuthMoreData 분기:
+                    //   payload[1] == 0x03: fast auth OK —
+                    //     서버가 캐시로 패스워드 검증 완료. 클라이언트 응답 없이
+                    //     서버의 최종 OK 패킷만 기다리므로 kWaitServerMoreData로 전이.
+                    //   payload[1] == 0x04 or other: full auth needed —
+                    //     클라이언트가 RSA 키 교환 등을 수행해야 하므로 kWaitClientMoreData.
+                    const bool fast_auth_ok =
+                        (payload.size() >= 2 && payload[1] == 0x03U);
                     return HandshakeTransition{
-                        HandshakeState::kWaitClientMoreData,
+                        fast_auth_ok ? HandshakeState::kWaitServerMoreData
+                                     : HandshakeState::kWaitClientMoreData,
                         HandshakeAction::kRelayToClient
                     };
+                }
                 case AuthResponseType::kUnknown:
                     return HandshakeTransition{
                         HandshakeState::kFailed,
@@ -353,10 +487,17 @@ auto process_handshake_packet(HandshakeState                current_state,
                             std::format("round_trips={}", round_trips)
                         });
                     }
-                    return HandshakeTransition{
-                        HandshakeState::kWaitClientMoreData,
-                        HandshakeAction::kRelayToClient
-                    };
+                    {
+                        // fast auth OK(0x03): 서버가 이미 검증 완료 → 서버 OK 패킷 대기
+                        // full auth(0x04) 또는 기타: 클라이언트 응답 대기
+                        const bool fast_auth_ok =
+                            (payload.size() >= 2 && payload[1] == 0x03U);
+                        return HandshakeTransition{
+                            fast_auth_ok ? HandshakeState::kWaitServerMoreData
+                                         : HandshakeState::kWaitClientMoreData,
+                            HandshakeAction::kRelayToClient
+                        };
+                    }
                 case AuthResponseType::kAuthSwitch:
                     // AuthMoreData 중 AuthSwitch는 비정상 → fail-close
                     return std::unexpected(ParseError{
@@ -365,9 +506,20 @@ auto process_handshake_packet(HandshakeState                current_state,
                         {}
                     });
                 case AuthResponseType::kUnknown:
+                    // caching_sha2_password RSA 공개키 교환:
+                    //   MySQL이 RSA 공개키를 0x01 AuthMoreData 헤더 없이 raw 패킷으로 전송.
+                    //   첫 바이트가 '-'(0x2D)이므로 kUnknown으로 분류되지만 정상 프로토콜임.
+                    //   클라이언트에 릴레이 후 RSA-암호화 비밀번호를 기다린다.
+                    if (round_trips >= kMaxRoundTrips) {
+                        return std::unexpected(ParseError{
+                            ParseErrorCode::kMalformedPacket,
+                            "handshake auth loop exceeded max round trips",
+                            std::format("round_trips={}", round_trips)
+                        });
+                    }
                     return HandshakeTransition{
-                        HandshakeState::kFailed,
-                        HandshakeAction::kTerminateNoRelay
+                        HandshakeState::kWaitClientMoreData,
+                        HandshakeAction::kRelayToClient
                     };
             }
             return std::unexpected(ParseError{
@@ -675,16 +827,55 @@ auto HandshakeRelay::relay_handshake(
         // 액션 수행
         switch (transition.action) {
             case detail::HandshakeAction::kRelayToClient: {
-                auto write_result = co_await write_packet(client_sock, pkt);
-                if (!write_result) {
-                    co_return std::unexpected(write_result.error());
+                if (state == detail::HandshakeState::kWaitServerGreeting) {
+                    // Initial Handshake 릴레이: CLIENT_SSL 비트 제거
+                    // 프록시는 TLS 미지원 — SSL 광고를 유지하면 클라이언트가
+                    // SSLRequest(32B)를 보내 HandshakeResponse41 파싱 실패
+                    const auto modified = strip_unsupported_capabilities(pkt);
+                    boost::system::error_code write_ec;
+                    co_await boost::asio::async_write(
+                        client_sock,
+                        boost::asio::buffer(modified),
+                        boost::asio::redirect_error(boost::asio::use_awaitable, write_ec)
+                    );
+                    if (write_ec) {
+                        co_return std::unexpected(ParseError{
+                            ParseErrorCode::kInternalError,
+                            "failed to write modified server greeting",
+                            write_ec.message()
+                        });
+                    }
+                } else {
+                    auto write_result = co_await write_packet(client_sock, pkt);
+                    if (!write_result) {
+                        co_return std::unexpected(write_result.error());
+                    }
                 }
                 break;
             }
             case detail::HandshakeAction::kRelayToServer: {
-                auto write_result = co_await write_packet(server_sock, pkt);
-                if (!write_result) {
-                    co_return std::unexpected(write_result.error());
+                if (state == detail::HandshakeState::kWaitClientResponse) {
+                    // HandshakeResponse41 릴레이: 서버 그리팅에서 제거한 capability와
+                    // 동일한 비트를 클라이언트 응답에서도 제거해 양방향 정합성 유지
+                    const auto modified = strip_unsupported_client_capabilities(pkt);
+                    boost::system::error_code write_ec;
+                    co_await boost::asio::async_write(
+                        server_sock,
+                        boost::asio::buffer(modified),
+                        boost::asio::redirect_error(boost::asio::use_awaitable, write_ec)
+                    );
+                    if (write_ec) {
+                        co_return std::unexpected(ParseError{
+                            ParseErrorCode::kInternalError,
+                            "failed to write modified client handshake response",
+                            write_ec.message()
+                        });
+                    }
+                } else {
+                    auto write_result = co_await write_packet(server_sock, pkt);
+                    if (!write_result) {
+                        co_return std::unexpected(write_result.error());
+                    }
                 }
                 break;
             }

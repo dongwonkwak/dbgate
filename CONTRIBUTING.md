@@ -207,15 +207,20 @@ chore(ci): GitHub Actions CI 파이프라인 추가 [DON-30]
 
 ### Git Hooks 설치 (권장)
 
-push 전에 로컬에서 doc impact 체크를 자동으로 실행하려면 아래 명령을 실행한다.
+저장소 클론 후 아래 명령을 한 번 실행한다.
 
 ```bash
 bash scripts/install-hooks.sh
 ```
 
-설치 후 `git push` 시 `scripts/check-doc-impact.sh`가 자동으로 실행되며,
-관련 문서 업데이트가 누락된 경우 push가 중단된다.
-CI와 동일한 체크를 로컬에서 미리 잡을 수 있다.
+설치되는 훅:
+
+| 훅 | 시점 | 역할 |
+|----|------|------|
+| `commit-msg` | `git commit` | 커밋 메시지 형식 검증 (`type(scope): 설명 [DON-XX]`) |
+| `pre-push` | `git push` | doc impact 누락 여부 검증 |
+
+CI에서 잡히는 오류를 로컬 커밋/push 단계에서 미리 차단한다.
 
 훅을 건너뛰어야 하는 경우:
 ```bash
@@ -226,9 +231,4 @@ git push --no-verify
 
 ## 추후 권장 자동화
 
-문서 규칙만으로는 일관성이 깨질 수 있으므로, 이후 아래 도입을 권장합니다.
-
-- `commitlint`로 커밋 메시지 검사 (`[DON-XX]` 패턴 포함)
-- `commit-msg` Git hook (예: Husky)
-- CI에서 커밋 메시지 규칙 검증
-- PR 제목 형식 검증 (`<type>\(.+\): .+ \[DON-\d+\]`)
+- PR 제목 형식 자동 검증 (GitHub Actions)

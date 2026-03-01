@@ -140,7 +140,42 @@ kill -HUP $(pgrep dbgate)
 | `SIGINT` | Graceful Shutdown |
 | `SIGHUP` | 정책 파일 핫 리로드 (기존 정책 유지하며 재로드) |
 
+## CI/CD 파이프라인
+
+### GitHub Actions 워크플로우
+
+| 워크플로우 | 파일 | 트리거 경로 | 비고 |
+|---|---|---|---|
+| C++ CI | `.github/workflows/ci.yml` | `src/**`, `tests/**`, `CMakeLists.txt` | 4개 job: 빌드/clang-tidy/ASan/TSan |
+| Go CI | `.github/workflows/go.yml` | `tools/**`, `.golangci.yml` | golangci-lint + go test -race |
+| Commit/PR Lint | `.github/workflows/lint.yml` | PR 이벤트 | 커밋 메시지·PR 제목 형식 검증 |
+| Integration | `.github/workflows/integration.yml` | `src/**`, `tests/integration/**` | docker-compose + MySQL 연동 |
+| Docs Impact | `.github/workflows/docs-impact-check.yml` | PR 이벤트 | 문서 영향도 자동 검증 |
+
+### CI 캐시 전략
+
+vcpkg 의존성 컴파일 시간 절감을 위해 바이너리 캐시를 사용한다:
+- 캐시 키: `vcpkg-linux-x64-<vcpkg.json 해시>`
+- 캐시 경로: `/tmp/vcpkg-bincache`
+- 첫 실행 시 15~30분 소요, 이후 캐시 히트 시 1~2분
+
+### CI 실패 시 대응
+
+| 실패 job | 원인 | 조치 |
+|---|---|---|
+| Build & Test | 빌드 오류 또는 테스트 실패 | 로컬 `cmake --preset default && ctest` 재현 |
+| Static Analysis | clang-tidy error 또는 cppcheck 오류 | `clang-tidy -p build/debug <파일>.cpp` 로컬 실행 |
+| ASan | 메모리 오염/누수 | `cmake --preset asan && ctest` 로컬 실행 |
+| TSan | 데이터레이스 | `cmake --preset tsan && ctest` 로컬 실행 |
+| Go CI | 린트 오류 또는 테스트 실패 | `cd tools && golangci-lint run` 로컬 실행 |
+| Commit/PR Lint | 메시지 형식 오류 | `type(scope): 설명 [DON-XX]` 형식 준수 |
+
+### TSan runner 제약
+TSan job은 `ubuntu-24.04` (x86_64 고정) 에서만 실행한다.
+GCC ThreadSanitizer가 aarch64에서 불안정하므로 runner 아키텍처를 명시적으로 제한한다.
+
 ## 변경 체크리스트 (문서 유지보수용)
 - CLI 명령/옵션이 실제 `tools/` 구현과 일치하는가?
 - 배포/기동/롤백 절차가 실제 환경과 일치하는가?
 - 관측성 문서(`docs/observability.md`)와 지표/로그 항목이 일치하는가?
+- CI 워크플로우 변경 시 이 섹션의 표를 업데이트했는가?
