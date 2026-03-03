@@ -61,6 +61,21 @@
         "CMAKE_CXX_FLAGS": "-fsanitize=thread -fno-omit-frame-pointer -g -Wno-error=tsan",
         "CMAKE_EXE_LINKER_FLAGS": "-fsanitize=thread"
       }
+    },
+    {
+      "name": "fuzz",
+      "displayName": "libFuzzer + ASan",
+      "description": "Fuzzing build with libFuzzer and AddressSanitizer (clang++ only)",
+      "inherits": "base",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": {
+        "CMAKE_CXX_COMPILER": "clang++-19",
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_CXX_FLAGS": "-fsanitize=fuzzer-no-link,address -fno-omit-frame-pointer -g",
+        "CMAKE_EXE_LINKER_FLAGS": "-fsanitize=address",
+        "DBGATE_ENABLE_FUZZING": "ON"
+      }
     }
   ],
   "buildPresets": [
@@ -79,6 +94,10 @@
     {
       "name": "tsan",
       "configurePreset": "tsan"
+    },
+    {
+      "name": "fuzz",
+      "configurePreset": "fuzz"
     }
   ]
 }

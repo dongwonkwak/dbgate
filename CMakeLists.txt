@@ -25,13 +25,19 @@ add_compile_options(
     -Wnon-virtual-dtor
 )
 
+# ─── Fuzzing option ──────────────────────────────────────────────────────────
+option(DBGATE_ENABLE_FUZZING "Build libFuzzer fuzz targets only (requires clang)" OFF)
+
 # ─── Dependencies ───────────────────────────────────────────────────────────
 find_package(Boost REQUIRED COMPONENTS system)
 find_package(spdlog REQUIRED)
-find_package(yaml-cpp REQUIRED)
-find_package(OpenSSL REQUIRED)
-find_package(GTest REQUIRED)
+if(NOT DBGATE_ENABLE_FUZZING)
+    find_package(yaml-cpp REQUIRED)
+    find_package(OpenSSL REQUIRED)
+    find_package(GTest REQUIRED)
+endif()
 
+if(NOT DBGATE_ENABLE_FUZZING)
 # ─── Source files ───────────────────────────────────────────────────────────
 # Will be populated as modules are implemented
 set(DBGATE_SOURCES
@@ -153,3 +159,45 @@ else()
             "Skipping TSan unit tests on this host (Linux arm64 vm.mmap_rnd_bits > 28)."
     )
 endif()
+
+else() # DBGATE_ENABLE_FUZZING is ON
+
+# ─── Fuzz targets ────────────────────────────────────────────────────────────
+# libFuzzer provides main(); each target is a standalone executable.
+# Sanitizer flags (-fsanitize=fuzzer,address) are injected via CMakePresets.json.
+
+# fuzz_mysql_packet — protocol layer only (no spdlog)
+add_executable(fuzz_mysql_packet
+    tests/fuzz/fuzz_mysql_packet.cpp
+    src/protocol/mysql_packet.cpp
+    src/protocol/command.cpp
+)
+target_include_directories(fuzz_mysql_packet PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_options(fuzz_mysql_packet PRIVATE -fsanitize=fuzzer)
+
+# fuzz_sql_parser — parser layer (spdlog for InjectionDetector)
+add_executable(fuzz_sql_parser
+    tests/fuzz/fuzz_sql_parser.cpp
+    src/parser/sql_parser.cpp
+    src/parser/injection_detector.cpp
+    src/parser/procedure_detector.cpp
+)
+target_include_directories(fuzz_sql_parser PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_options(fuzz_sql_parser PRIVATE -fsanitize=fuzzer)
+target_link_libraries(fuzz_sql_parser PRIVATE spdlog::spdlog)
+target_compile_definitions(fuzz_sql_parser PRIVATE SPDLOG_ACTIVE_LEVEL=SPDLOG_LEVEL_OFF)
+
+# fuzz_policy_engine — parser + policy (spdlog, no yaml-cpp)
+add_executable(fuzz_policy_engine
+    tests/fuzz/fuzz_policy_engine.cpp
+    src/parser/sql_parser.cpp
+    src/parser/injection_detector.cpp
+    src/parser/procedure_detector.cpp
+    src/policy/policy_engine.cpp
+)
+target_include_directories(fuzz_policy_engine PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_options(fuzz_policy_engine PRIVATE -fsanitize=fuzzer)
+target_link_libraries(fuzz_policy_engine PRIVATE spdlog::spdlog)
+target_compile_definitions(fuzz_policy_engine PRIVATE SPDLOG_ACTIVE_LEVEL=SPDLOG_LEVEL_OFF)
+
+endif() # DBGATE_ENABLE_FUZZING
