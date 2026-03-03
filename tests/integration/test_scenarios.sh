@@ -196,7 +196,10 @@ access_control:
     time_restriction: null
 sql_rules:
   block_statements: ["DROP", "TRUNCATE"]
-  block_patterns: []
+  # policy_loader fail-close 제약: block_patterns 는 최소 1개 필요
+  # Phase 4 검증 대상은 DROP/TRUNCATE 이므로 기존 기본 패턴 1개만 유지
+  block_patterns:
+    - "UNION\\s+SELECT"
 procedure_control:
   mode: "whitelist"
   whitelist: []
@@ -289,7 +292,10 @@ access_control:
       timezone: "UTC"
 sql_rules:
   block_statements: []
-  block_patterns: []
+  # policy_loader fail-close 제약: block_patterns 는 최소 1개 필요
+  # Phase 5 검증 대상은 time_restriction 이므로 기본 패턴 1개만 유지
+  block_patterns:
+    - "UNION\\s+SELECT"
 procedure_control:
   mode: "whitelist"
   whitelist: []
