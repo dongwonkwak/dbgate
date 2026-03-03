@@ -77,11 +77,13 @@ public:
 
     ~PolicyEngine() = default;
 
-    // 복사 금지 (shared_ptr 소유권 명확화), 이동 허용
+    // 복사/이동 금지:
+    // atomic<shared_ptr<...>> 멤버는 복사/이동 연산이 삭제되어 있으므로
+    // PolicyEngine도 값 복사/이동을 지원하지 않는다.
     PolicyEngine(const PolicyEngine&)            = delete;
     PolicyEngine& operator=(const PolicyEngine&) = delete;
-    PolicyEngine(PolicyEngine&&)                 = default;
-    PolicyEngine& operator=(PolicyEngine&&)      = default;
+    PolicyEngine(PolicyEngine&&)                 = delete;
+    PolicyEngine& operator=(PolicyEngine&&)      = delete;
 
     // evaluate
     //   파싱된 쿼리와 세션 컨텍스트를 기반으로 정책을 평가한다.
