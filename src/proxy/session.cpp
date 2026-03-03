@@ -1,5 +1,8 @@
 #include "proxy/session.hpp"
 
+#include <openssl/err.h>
+#include <openssl/ssl.h>
+#include <openssl/x509_vfy.h>
 #include <spdlog/spdlog.h>
 
 #include <array>
@@ -12,9 +15,6 @@
 #include <boost/asio/ssl/stream.hpp>
 #include <boost/asio/use_awaitable.hpp>
 #include <boost/asio/write.hpp>
-#include <openssl/err.h>
-#include <openssl/ssl.h>
-#include <openssl/x509_vfy.h>
 #include <chrono>
 #include <format>
 #include <span>
@@ -38,6 +38,7 @@
 // ---------------------------------------------------------------------------
 
 // 기본 SQL Injection 패턴 (InjectionDetector 초기화)
+// NOLINTNEXTLINE(cert-err58-cpp)
 static const std::vector<std::string> kDefaultInjectionPatterns = {
     R"(UNION\s+SELECT)",
     R"(('\s*OR\s+['"\d]))",
@@ -59,7 +60,7 @@ Session::Session(std::uint64_t session_id,
                  boost::asio::ip::tcp::endpoint server_endpoint,
                  boost::asio::ssl::context* backend_ssl_ctx,
                  bool backend_ssl_verify,
-                 const std::string& backend_tls_server_name,
+                 const std::string& backend_tls_server_name,  // NOLINT(modernize-pass-by-value)
                  std::shared_ptr<PolicyEngine> policy,
                  std::shared_ptr<StructuredLogger> logger,
                  std::shared_ptr<StatsCollector> stats)
@@ -76,6 +77,7 @@ Session::Session(std::uint64_t session_id,
       logger_{std::move(logger)},
       stats_{std::move(stats)},
       ctx_{},
+      // NOLINTNEXTLINE(cppcoreguidelines-use-default-member-init,modernize-use-default-member-init)
       state_{SessionState::kHandshaking},
       strand_{boost::asio::make_strand(client_stream_.get_executor())},
       sql_parser_{},
@@ -98,8 +100,9 @@ auto read_one_packet(AsyncStream& stream)
                                      boost::asio::redirect_error(boost::asio::use_awaitable, ec));
 
     if (ec) {
-        co_return std::unexpected(ParseError{
-            ParseErrorCode::kMalformedPacket, "failed to read packet header", ec.message()});
+        co_return std::unexpected(ParseError{.code = ParseErrorCode::kMalformedPacket,
+                                             .message = "failed to read packet header",
+                                             .context = ec.message()});
     }
 
     const std::uint32_t payload_len = static_cast<std::uint32_t>(header[0]) |
@@ -118,8 +121,9 @@ auto read_one_packet(AsyncStream& stream)
             boost::asio::buffer(buf.data() + 4, payload_len),
             boost::asio::redirect_error(boost::asio::use_awaitable, ec));
         if (ec) {
-            co_return std::unexpected(ParseError{
-                ParseErrorCode::kMalformedPacket, "failed to read packet payload", ec.message()});
+            co_return std::unexpected(ParseError{.code = ParseErrorCode::kMalformedPacket,
+                                                 .message = "failed to read packet payload",
+                                                 .context = ec.message()});
         }
     }
 
@@ -136,8 +140,9 @@ auto write_packet_raw(AsyncStream& stream, const MysqlPacket& pkt)
                                       boost::asio::redirect_error(boost::asio::use_awaitable, ec));
 
     if (ec) {
-        co_return std::unexpected(
-            ParseError{ParseErrorCode::kInternalError, "failed to write packet", ec.message()});
+        co_return std::unexpected(ParseError{.code = ParseErrorCode::kInternalError,
+                                             .message = "failed to write packet",
+                                             .context = ec.message()});
     }
 
     co_return std::expected<void, ParseError>{};
@@ -243,7 +248,7 @@ auto is_resultset_final_ok_packet(std::span<const std::uint8_t> payload) -> bool
 }
 
 auto is_metadata_terminator_packet(std::span<const std::uint8_t> payload) -> bool {
-    return (payload.size() >= 1 && payload[0] == 0xFE && payload.size() < 9) ||
+    return (!payload.empty() && payload[0] == 0xFE && payload.size() < 9) ||
            is_resultset_final_ok_packet(payload);
 }
 
@@ -294,11 +299,11 @@ auto relay_stmt_prepare_section(AsyncStream& server_stream,
 auto Session::relay_server_response(CommandType request_type,
                                     [[maybe_unused]] std::uint8_t request_seq_id)
     -> boost::asio::awaitable<std::expected<void, ParseError>> {
-    enum class ResponseState {
-        kFirst,       // 첫 패킷 분석 중
-        kColumnDefs,  // column definition 읽는 중
-        kRows,        // row 데이터 읽는 중
-        kDone,        // 응답 완료
+    enum class ResponseState {  // NOLINT(performance-enum-size)
+        kFirst,                 // 첫 패킷 분석 중
+        kColumnDefs,            // column definition 읽는 중
+        kRows,                  // row 데이터 읽는 중
+        kDone,                  // 응답 완료
     };
 
     // 첫 패킷으로 응답 유형 판별
@@ -370,9 +375,9 @@ auto Session::relay_server_response(CommandType request_type,
     if (first_byte == 0xFB) {
         spdlog::warn("[session {}] unsupported LOCAL_INFILE response (0xFB) from server",
                      session_id_);
-        co_return std::unexpected(ParseError{ParseErrorCode::kUnsupportedCommand,
-                                             "LOCAL_INFILE response is not supported",
-                                             "server response first byte = 0xFB"});
+        co_return std::unexpected(ParseError{.code = ParseErrorCode::kUnsupportedCommand,
+                                             .message = "LOCAL_INFILE response is not supported",
+                                             .context = "server response first byte = 0xFB"});
     }
 
     // Result Set: 첫 바이트가 column count (0x01~0xFC)
@@ -442,13 +447,12 @@ auto Session::relay_server_response(CommandType request_type,
             }
 
             case ResponseState::kRows: {
-                if (byte0 == 0xFE && payload.size() < 9) {
-                    state = ResponseState::kDone;
-                } else if (byte0 == 0xFF) {
-                    state = ResponseState::kDone;
-                } else if (request_type == CommandType::kComQuery && byte0 == 0x00 &&
-                           !is_text_row_packet(payload, column_count) &&
-                           is_resultset_final_ok_packet(payload)) {
+                // EOF/ERR packet, or binary-protocol final OK packet — end of result set
+                const bool eof_or_err = (byte0 == 0xFE && payload.size() < 9) || byte0 == 0xFF;
+                const bool final_ok = request_type == CommandType::kComQuery && byte0 == 0x00 &&
+                                      !is_text_row_packet(payload, column_count) &&
+                                      is_resultset_final_ok_packet(payload);
+                if (eof_or_err || final_ok) {
                     state = ResponseState::kDone;
                 }
                 break;
@@ -486,10 +490,10 @@ auto Session::run() -> boost::asio::awaitable<void> {
     // -----------------------------------------------------------------------
     stats_->on_connection_open();
 
-    struct StatsGuard {
+    struct StatsGuard {  // NOLINT(cppcoreguidelines-special-member-functions)
         StatsCollector* stats;
         ~StatsGuard() { stats->on_connection_close(); }
-    } stats_guard{stats_.get()};
+    } const stats_guard{stats_.get()};
 
     // -----------------------------------------------------------------------
     // 3. Frontend TLS 핸드셰이크 (클라이언트 구간 TLS 활성화 시)
@@ -505,8 +509,10 @@ auto Session::run() -> boost::asio::awaitable<void> {
                 "[session {}] frontend TLS handshake failed: {}", session_id_, tls_ec.message());
             state_ = SessionState::kClosed;
             boost::system::error_code close_ec;
+            // NOLINTNEXTLINE(bugprone-unused-return-value,cert-err33-c)
             client_stream_.lowest_layer().shutdown(boost::asio::ip::tcp::socket::shutdown_both,
                                                    close_ec);
+            // NOLINTNEXTLINE(bugprone-unused-return-value,cert-err33-c)
             client_stream_.lowest_layer().close(close_ec);
             co_return;
         }
@@ -538,8 +544,10 @@ auto Session::run() -> boost::asio::awaitable<void> {
 
         state_ = SessionState::kClosed;
         boost::system::error_code close_ec;
+        // NOLINTNEXTLINE(bugprone-unused-return-value,cert-err33-c)
         client_stream_.lowest_layer().shutdown(boost::asio::ip::tcp::socket::shutdown_both,
                                                close_ec);
+        // NOLINTNEXTLINE(bugprone-unused-return-value,cert-err33-c)
         client_stream_.lowest_layer().close(close_ec);
         co_return;
     }
@@ -559,8 +567,8 @@ auto Session::run() -> boost::asio::awaitable<void> {
                                      ? server_endpoint_.address().to_string()
                                      : backend_tls_server_name_;
         boost::system::error_code ip_ec;
-        const bool verify_name_is_ip = !boost::asio::ip::make_address(verify_name, ip_ec).is_unspecified() &&
-                                       !ip_ec;
+        const bool verify_name_is_ip =
+            !boost::asio::ip::make_address(verify_name, ip_ec).is_unspecified() && !ip_ec;
 
         // SNI는 호스트명 기반 TLS에서만 설정한다.
         if (!verify_name.empty() && !verify_name_is_ip) {
@@ -573,8 +581,10 @@ auto Session::run() -> boost::asio::awaitable<void> {
                               err != 0 ? ERR_error_string(err, nullptr) : "unknown");
                 state_ = SessionState::kClosed;
                 boost::system::error_code close_ec;
+                // NOLINTNEXTLINE(bugprone-unused-return-value,cert-err33-c)
                 client_stream_.lowest_layer().shutdown(boost::asio::ip::tcp::socket::shutdown_both,
                                                        close_ec);
+                // NOLINTNEXTLINE(bugprone-unused-return-value,cert-err33-c)
                 client_stream_.lowest_layer().close(close_ec);
                 co_return;
             }
@@ -591,14 +601,17 @@ auto Session::run() -> boost::asio::awaitable<void> {
             }
             if (verify_ok != 1) {
                 const auto err = ERR_get_error();
-                spdlog::error("[session {}] backend TLS hostname verification setup failed for {}: {}",
-                              session_id_,
-                              verify_name,
-                              err != 0 ? ERR_error_string(err, nullptr) : "unknown");
+                spdlog::error(
+                    "[session {}] backend TLS hostname verification setup failed for {}: {}",
+                    session_id_,
+                    verify_name,
+                    err != 0 ? ERR_error_string(err, nullptr) : "unknown");
                 state_ = SessionState::kClosed;
                 boost::system::error_code close_ec;
+                // NOLINTNEXTLINE(bugprone-unused-return-value,cert-err33-c)
                 client_stream_.lowest_layer().shutdown(boost::asio::ip::tcp::socket::shutdown_both,
                                                        close_ec);
+                // NOLINTNEXTLINE(bugprone-unused-return-value,cert-err33-c)
                 client_stream_.lowest_layer().close(close_ec);
                 co_return;
             }
@@ -627,8 +640,10 @@ auto Session::run() -> boost::asio::awaitable<void> {
 
             state_ = SessionState::kClosed;
             boost::system::error_code close_ec;
+            // NOLINTNEXTLINE(bugprone-unused-return-value,cert-err33-c)
             client_stream_.lowest_layer().shutdown(boost::asio::ip::tcp::socket::shutdown_both,
                                                    close_ec);
+            // NOLINTNEXTLINE(bugprone-unused-return-value,cert-err33-c)
             client_stream_.lowest_layer().close(close_ec);
             co_return;
         }
@@ -652,11 +667,15 @@ auto Session::run() -> boost::asio::awaitable<void> {
         spdlog::error("[session {}] handshake failed: {}", session_id_, hs_result.error().message);
         state_ = SessionState::kClosed;
         boost::system::error_code close_ec;
+        // NOLINTNEXTLINE(bugprone-unused-return-value,cert-err33-c)
         client_stream_.lowest_layer().shutdown(boost::asio::ip::tcp::socket::shutdown_both,
                                                close_ec);
+        // NOLINTNEXTLINE(bugprone-unused-return-value,cert-err33-c)
         client_stream_.lowest_layer().close(close_ec);
+        // NOLINTNEXTLINE(bugprone-unused-return-value,cert-err33-c)
         server_stream_.lowest_layer().shutdown(boost::asio::ip::tcp::socket::shutdown_both,
                                                close_ec);
+        // NOLINTNEXTLINE(bugprone-unused-return-value,cert-err33-c)
         server_stream_.lowest_layer().close(close_ec);
         co_return;
     }
@@ -903,9 +922,13 @@ auto Session::run() -> boost::asio::awaitable<void> {
     spdlog::info("[session {}] closed", session_id_);
 
     boost::system::error_code close_ec;
+    // NOLINTNEXTLINE(bugprone-unused-return-value,cert-err33-c)
     client_stream_.lowest_layer().shutdown(boost::asio::ip::tcp::socket::shutdown_both, close_ec);
+    // NOLINTNEXTLINE(bugprone-unused-return-value,cert-err33-c)
     client_stream_.lowest_layer().close(close_ec);
+    // NOLINTNEXTLINE(bugprone-unused-return-value,cert-err33-c)
     server_stream_.lowest_layer().shutdown(boost::asio::ip::tcp::socket::shutdown_both, close_ec);
+    // NOLINTNEXTLINE(bugprone-unused-return-value,cert-err33-c)
     server_stream_.lowest_layer().close(close_ec);
 
     // stats_guard 소멸 시 on_connection_close() 호출됨
@@ -921,7 +944,9 @@ void Session::close() {
         auto self = shared_from_this();
         boost::asio::post(strand_, [self]() {
             boost::system::error_code ec;
+            // NOLINTNEXTLINE(bugprone-unused-return-value,cert-err33-c)
             self->client_stream_.lowest_layer().cancel(ec);
+            // NOLINTNEXTLINE(bugprone-unused-return-value,cert-err33-c)
             self->server_stream_.lowest_layer().cancel(ec);
         });
     }

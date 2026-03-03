@@ -41,13 +41,13 @@
 
 #include "parser/injection_detector.hpp"
 
+#include <spdlog/spdlog.h>
+
 #include <memory>
 #include <regex>
 #include <string>
 #include <string_view>
 #include <vector>
-
-#include <spdlog/spdlog.h>
 
 // ---------------------------------------------------------------------------
 // CompiledPattern: 헤더에서 전방 선언한 내부 구조체
@@ -60,27 +60,24 @@
 //   type-erasure로 처리한다.
 // ---------------------------------------------------------------------------
 struct InjectionDetector::CompiledPattern {
-    std::string                   source_pattern;  // 원본 패턴 문자열 (감사 로그용)
-    std::shared_ptr<std::regex>   compiled;        // 컴파일된 정규식
-    std::string                   reason;          // 사람이 읽을 수 있는 탐지 이유
+    std::string source_pattern;            // 원본 패턴 문자열 (감사 로그용)
+    std::shared_ptr<std::regex> compiled;  // 컴파일된 정규식
+    std::string reason;                    // 사람이 읽을 수 있는 탐지 이유
 
     // CompiledPattern의 소멸자는 여기서 완전하게 정의됨.
     // shared_ptr<regex>의 소멸자는 이 시점에서 완전한 regex 정의를 가진다.
     ~CompiledPattern() = default;
-    CompiledPattern()  = default;
+    CompiledPattern() = default;
 
     CompiledPattern(std::string src, std::shared_ptr<std::regex> re, std::string rsn)
-        : source_pattern(std::move(src))
-        , compiled(std::move(re))
-        , reason(std::move(rsn))
-    {}
+        : source_pattern(std::move(src)), compiled(std::move(re)), reason(std::move(rsn)) {}
 
     // 이동 지원
-    CompiledPattern(CompiledPattern&&)            = default;
+    CompiledPattern(CompiledPattern&&) = default;
     CompiledPattern& operator=(CompiledPattern&&) = default;
 
     // 복사 지원 (shared_ptr 공유)
-    CompiledPattern(const CompiledPattern&)            = default;
+    CompiledPattern(const CompiledPattern&) = default;
     CompiledPattern& operator=(const CompiledPattern&) = default;
 };
 
@@ -101,9 +98,7 @@ InjectionDetector::InjectionDetector(std::vector<std::string> patterns) {
     for (auto& p : patterns) {
         try {
             auto re = std::make_shared<std::regex>(
-                p,
-                std::regex_constants::icase | std::regex_constants::ECMAScript
-            );
+                p, std::regex_constants::icase | std::regex_constants::ECMAScript);
             CompiledPattern cp(p, std::move(re), "Matched injection pattern: " + p);
             compiled_patterns_.push_back(std::move(cp));
 
@@ -112,9 +107,7 @@ InjectionDetector::InjectionDetector(std::vector<std::string> patterns) {
             // [보안 주의] 잘못된 패턴을 건너뛰면 탐지 범위가 줄어든다 (false negative 증가).
             // fail-open을 방지하기 위해 유효한 나머지 패턴은 계속 적용한다.
             spdlog::warn(
-                "injection_detector: invalid regex pattern '{}', skipping: {}",
-                p, e.what()
-            );
+                "injection_detector: invalid regex pattern '{}', skipping: {}", p, e.what());
         }
     }
 
@@ -129,8 +122,7 @@ InjectionDetector::InjectionDetector(std::vector<std::string> patterns) {
         fail_close_active_ = true;
         spdlog::error(
             "injection_detector: no valid injection patterns loaded, "
-            "fail-close active — all SQL will be blocked"
-        );
+            "fail-close active — all SQL will be blocked");
     }
 }
 
@@ -143,10 +135,7 @@ InjectionResult InjectionDetector::check(std::string_view sql) const {
     // 운영자에게 설정 오류를 알리고 차단하는 것이 더 안전하다.
     if (fail_close_active_) {
         return InjectionResult{
-            true,
-            "",
-            "no valid patterns loaded"
-        };
+            .detected = true, .matched_pattern = "", .reason = "no valid patterns loaded"};
     }
 
     const std::string sql_str(sql);
@@ -158,12 +147,9 @@ InjectionResult InjectionDetector::check(std::string_view sql) const {
         if (std::regex_search(sql_str, *cp.compiled)) {
             // 첫 번째 매칭 시 즉시 반환
             return InjectionResult{
-                true,
-                cp.source_pattern,
-                cp.reason
-            };
+                .detected = true, .matched_pattern = cp.source_pattern, .reason = cp.reason};
         }
     }
 
-    return InjectionResult{false, "", ""};
+    return InjectionResult{.detected = false, .matched_pattern = "", .reason = ""};
 }

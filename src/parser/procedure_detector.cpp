@@ -35,6 +35,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <ranges>
 #include <regex>
 #include <string>
 
@@ -46,8 +47,8 @@ namespace {
 // 문자열을 대문자로 변환 (ASCII only)
 std::string to_upper_str(const std::string& s) {
     std::string result(s);
-    std::transform(result.begin(), result.end(), result.begin(),
-                   [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
+    std::ranges::transform(
+        result, result.begin(), [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
     return result;
 }
 
@@ -61,17 +62,15 @@ std::string to_upper_str(const std::string& s) {
 std::string extract_procedure_name(const std::string& raw_sql) {
     try {
         // case-insensitive: 원문 SQL에서 직접 추출하여 케이스 보존
-        const std::regex call_re(
-            "CALL\\s+([\\w.]+)\\s*\\(",
-            std::regex_constants::icase | std::regex_constants::ECMAScript
-        );
+        const std::regex call_re(R"(CALL\s+([\w.]+)\s*\()",
+                                 std::regex_constants::icase | std::regex_constants::ECMAScript);
 
         std::smatch m;
         if (std::regex_search(raw_sql, m, call_re) && m.size() >= 2) {
             return m[1].str();
         }
-    } catch (const std::regex_error&) {
-        // 정규식 오류는 무시하고 빈 이름 반환
+    } catch (const std::regex_error&) {  // NOLINT(bugprone-empty-catch)
+        // 정규식 오류는 무시하고 빈 이름 반환 — caller에게 빈 문자열로 안전하게 전달
     }
 
     return {};
@@ -82,10 +81,7 @@ std::string extract_procedure_name(const std::string& raw_sql) {
 bool contains_word(const std::string& raw_sql, const std::string& word) {
     const std::string upper = to_upper_str(raw_sql);
     try {
-        const std::regex re(
-            "\\b" + word + "\\b",
-            std::regex_constants::ECMAScript
-        );
+        const std::regex re("\\b" + word + "\\b", std::regex_constants::ECMAScript);
         return std::regex_search(upper, re);
     } catch (const std::regex_error&) {
         // 폴백: 단순 문자열 탐색
@@ -98,28 +94,25 @@ bool contains_word(const std::string& raw_sql, const std::string& word) {
 // ---------------------------------------------------------------------------
 // ProcedureDetector::detect 구현
 // ---------------------------------------------------------------------------
-std::optional<ProcedureInfo>
-ProcedureDetector::detect(const ParsedQuery& query) const {
+// NOLINTNEXTLINE(readability-convert-member-functions-to-static)
+std::optional<ProcedureInfo> ProcedureDetector::detect(const ParsedQuery& query) const {
     switch (query.command) {
-
         // CALL proc_name(...) 탐지
         case SqlCommand::kCall: {
             const std::string proc_name = extract_procedure_name(query.raw_sql);
             return ProcedureInfo{
-                ProcedureType::kCall,
-                proc_name,
-                false  // CALL 자체는 동적 SQL이 아님
+                .type = ProcedureType::kCall,
+                .procedure_name = proc_name,
+                .is_dynamic_sql = false  // CALL 자체는 동적 SQL이 아님
             };
         }
 
         // CREATE PROCEDURE ... 탐지
         case SqlCommand::kCreate: {
             if (contains_word(query.raw_sql, "PROCEDURE")) {
-                return ProcedureInfo{
-                    ProcedureType::kCreateProcedure,
-                    {},    // procedure_name은 kCall에서만 유효
-                    false
-                };
+                return ProcedureInfo{.type = ProcedureType::kCreateProcedure,
+                                     .procedure_name = {},  // procedure_name은 kCall에서만 유효
+                                     .is_dynamic_sql = false};
             }
             return std::nullopt;
         }
@@ -127,11 +120,9 @@ ProcedureDetector::detect(const ParsedQuery& query) const {
         // ALTER PROCEDURE ... 탐지
         case SqlCommand::kAlter: {
             if (contains_word(query.raw_sql, "PROCEDURE")) {
-                return ProcedureInfo{
-                    ProcedureType::kAlterProcedure,
-                    {},
-                    false
-                };
+                return ProcedureInfo{.type = ProcedureType::kAlterProcedure,
+                                     .procedure_name = {},
+                                     .is_dynamic_sql = false};
             }
             return std::nullopt;
         }
@@ -139,11 +130,9 @@ ProcedureDetector::detect(const ParsedQuery& query) const {
         // DROP PROCEDURE ... 탐지
         case SqlCommand::kDrop: {
             if (contains_word(query.raw_sql, "PROCEDURE")) {
-                return ProcedureInfo{
-                    ProcedureType::kDropProcedure,
-                    {},
-                    false
-                };
+                return ProcedureInfo{.type = ProcedureType::kDropProcedure,
+                                     .procedure_name = {},
+                                     .is_dynamic_sql = false};
             }
             return std::nullopt;
         }
@@ -153,7 +142,8 @@ ProcedureDetector::detect(const ParsedQuery& query) const {
         // [보안 설계]
         // PREPARE와 EXECUTE는 문자열 리터럴 내부의 실제 SQL을 파싱하지 않으므로
         // is_dynamic_sql=true로 마킹하여 정책 엔진에 위임.
-        // block_dynamic_sql=true 설정 시 차단, false 시 허용 (false positive/negative 트레이드오프).
+        // block_dynamic_sql=true 설정 시 차단, false 시 허용 (false positive/negative
+        // 트레이드오프).
         //
         // [미탐 주의]
         // SET @q = 'DROP TABLE users'; PREPARE s FROM @q;
@@ -161,9 +151,9 @@ ProcedureDetector::detect(const ParsedQuery& query) const {
         case SqlCommand::kPrepare:
         case SqlCommand::kExecute: {
             return ProcedureInfo{
-                ProcedureType::kPrepareExecute,
-                {},
-                true  // 동적 SQL 우회 가능성 있음
+                .type = ProcedureType::kPrepareExecute,
+                .procedure_name = {},
+                .is_dynamic_sql = true  // 동적 SQL 우회 가능성 있음
             };
         }
 

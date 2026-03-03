@@ -74,12 +74,14 @@ LogLevel parse_log_level(const std::string& level_str) {
             boost::asio::ssl::context::no_tlsv1_1 | boost::asio::ssl::context::single_dh_use);
 
         // 약한 cipher 비활성화
-        SSL_CTX_set_cipher_list(ctx.native_handle(),
-                                "ECDHE+AESGCM:ECDHE+CHACHA20:DHE+AESGCM:DHE+CHACHA20:!aNULL:!eNULL:"
-                                "!EXPORT:!DES:!RC4:!3DES:!MD5:!PSK");
+        SSL_CTX_set_cipher_list(
+            ctx.native_handle(),
+            "ECDHE+AESGCM:ECDHE+CHACHA20:DHE+AESGCM:DHE+CHACHA20:!aNULL:!eNULL:"
+            "!EXPORT:!DES:!RC4:!3DES:!MD5:!PSK");  // NOLINT(bugprone-unused-return-value,cert-err33-c)
 
         // 인증서 로드
         boost::system::error_code ec;
+        // NOLINTNEXTLINE(bugprone-unused-return-value,cert-err33-c)
         ctx.use_certificate_chain_file(config_.frontend_ssl_cert_path, ec);
         if (ec) {
             spdlog::error("[proxy] frontend SSL: failed to load certificate {}: {}",
@@ -88,6 +90,7 @@ LogLevel parse_log_level(const std::string& level_str) {
             return false;
         }
 
+        // NOLINTNEXTLINE(bugprone-unused-return-value,cert-err33-c)
         ctx.use_private_key_file(config_.frontend_ssl_key_path, boost::asio::ssl::context::pem, ec);
         if (ec) {
             spdlog::error("[proxy] frontend SSL: failed to load private key {}: {}",
@@ -124,6 +127,7 @@ LogLevel parse_log_level(const std::string& level_str) {
         // CA 인증서 로드 (경로 지정 시)
         if (!config_.backend_ssl_ca_path.empty()) {
             boost::system::error_code ec;
+            // NOLINTNEXTLINE(bugprone-unused-return-value,cert-err33-c)
             ctx.load_verify_file(config_.backend_ssl_ca_path, ec);
             if (ec) {
                 spdlog::error("[proxy] backend SSL: failed to load CA file {}: {}",
@@ -134,7 +138,7 @@ LogLevel parse_log_level(const std::string& level_str) {
         } else {
             // CA 경로 미지정: 시스템 기본 CA 사용
             boost::system::error_code ec;
-            ctx.set_default_verify_paths(ec);
+            ctx.set_default_verify_paths(ec);  // NOLINT(bugprone-unused-return-value,cert-err33-c)
             if (ec) {
                 spdlog::warn("[proxy] backend SSL: set_default_verify_paths failed: {}",
                              ec.message());
@@ -212,30 +216,36 @@ void ProxyServer::run(boost::asio::io_context& io_ctx) {
     // -----------------------------------------------------------------------
     uds_server_ = std::make_unique<UdsServer>(config_.uds_socket_path, stats_, io_ctx);
 
-    boost::asio::co_spawn(io_ctx, uds_server_->run(), [](std::exception_ptr eptr) {
-        if (eptr) {
-            try {
-                std::rethrow_exception(eptr);
-            } catch (const std::exception& e) {
-                spdlog::error("[proxy] uds_server error: {}", e.what());
+    boost::asio::co_spawn(
+        io_ctx,
+        uds_server_->run(),
+        [](std::exception_ptr eptr) {  // NOLINT(performance-unnecessary-value-param)
+            if (eptr) {
+                try {
+                    std::rethrow_exception(eptr);
+                } catch (const std::exception& e) {
+                    spdlog::error("[proxy] uds_server error: {}", e.what());
+                }
             }
-        }
-    });
+        });
 
     // -----------------------------------------------------------------------
     // 6. HealthCheck 생성 + co_spawn
     // -----------------------------------------------------------------------
     health_check_ = std::make_unique<HealthCheck>(config_.health_check_port, stats_, io_ctx);
 
-    boost::asio::co_spawn(io_ctx, health_check_->run(), [](std::exception_ptr eptr) {
-        if (eptr) {
-            try {
-                std::rethrow_exception(eptr);
-            } catch (const std::exception& e) {
-                spdlog::error("[proxy] health_check error: {}", e.what());
+    boost::asio::co_spawn(
+        io_ctx,
+        health_check_->run(),
+        [](std::exception_ptr eptr) {  // NOLINT(performance-unnecessary-value-param)
+            if (eptr) {
+                try {
+                    std::rethrow_exception(eptr);
+                } catch (const std::exception& e) {
+                    spdlog::error("[proxy] health_check error: {}", e.what());
+                }
             }
-        }
-    });
+        });
 
     // -----------------------------------------------------------------------
     // 7. 시그널 핸들러
@@ -268,15 +278,18 @@ void ProxyServer::run(boost::asio::io_context& io_ctx) {
     const auto listen_addr = boost::asio::ip::make_address(config_.listen_address);
     const auto listen_ep = boost::asio::ip::tcp::endpoint{listen_addr, config_.listen_port};
 
-    boost::asio::co_spawn(io_ctx, accept_loop(listen_ep), [](std::exception_ptr eptr) {
-        if (eptr) {
-            try {
-                std::rethrow_exception(eptr);
-            } catch (const std::exception& e) {
-                spdlog::error("[proxy] accept loop exception: {}", e.what());
+    boost::asio::co_spawn(
+        io_ctx,
+        accept_loop(listen_ep),
+        [](std::exception_ptr eptr) {  // NOLINT(performance-unnecessary-value-param)
+            if (eptr) {
+                try {
+                    std::rethrow_exception(eptr);
+                } catch (const std::exception& e) {
+                    spdlog::error("[proxy] accept loop exception: {}", e.what());
+                }
             }
-        }
-    });
+        });
 }
 
 // ---------------------------------------------------------------------------
@@ -311,7 +324,7 @@ boost::asio::awaitable<void> ProxyServer::accept_loop(boost::asio::ip::tcp::endp
 
         if (stopping_) {
             boost::system::error_code close_ec;
-            client_sock.close(close_ec);
+            client_sock.close(close_ec);  // NOLINT(bugprone-unused-return-value,cert-err33-c)
             continue;
         }
 
@@ -324,7 +337,7 @@ boost::asio::awaitable<void> ProxyServer::accept_loop(boost::asio::ip::tcp::endp
                 health_check_->set_unhealthy(
                     std::format("max_connections ({}) reached", config_.max_connections));
                 boost::system::error_code close_ec;
-                client_sock.close(close_ec);
+                client_sock.close(close_ec);  // NOLINT(bugprone-unused-return-value,cert-err33-c)
                 continue;
             }
 
@@ -350,7 +363,7 @@ boost::asio::awaitable<void> ProxyServer::accept_loop(boost::asio::ip::tcp::endp
                           config_.upstream_address,
                           resolve_ec.message());
             boost::system::error_code close_ec;
-            client_sock.close(close_ec);
+            client_sock.close(close_ec);  // NOLINT(bugprone-unused-return-value,cert-err33-c)
             continue;
         }
 
@@ -374,9 +387,8 @@ boost::asio::awaitable<void> ProxyServer::accept_loop(boost::asio::ip::tcp::endp
         boost::asio::ssl::context* backend_ssl_ctx_ptr =
             backend_ssl_ctx_.has_value() ? &(*backend_ssl_ctx_) : nullptr;
 
-        const auto backend_tls_server_name = config_.upstream_ssl_sni.empty()
-                                                 ? config_.upstream_address
-                                                 : config_.upstream_ssl_sni;
+        const auto backend_tls_server_name =
+            config_.upstream_ssl_sni.empty() ? config_.upstream_address : config_.upstream_ssl_sni;
 
         // 세션 생성
         auto session = std::make_shared<Session>(sid,
@@ -395,7 +407,9 @@ boost::asio::awaitable<void> ProxyServer::accept_loop(boost::asio::ip::tcp::endp
 
         // 세션 코루틴 spawn
         boost::asio::co_spawn(
-            session->executor(), session->run(), [this, sid](std::exception_ptr eptr) {
+            session->executor(),
+            session->run(),
+            [this, sid](std::exception_ptr eptr) {  // NOLINT(performance-unnecessary-value-param)
                 if (eptr) {
                     try {
                         std::rethrow_exception(eptr);

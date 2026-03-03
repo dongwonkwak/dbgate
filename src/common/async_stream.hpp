@@ -55,8 +55,8 @@ public:
     explicit AsyncStream(ssl_socket ssl_stream);
 
     // 이동 생성자 / 이동 대입
-    AsyncStream(AsyncStream&&) noexcept;
-    AsyncStream& operator=(AsyncStream&&) noexcept;
+    AsyncStream(AsyncStream&&) noexcept;             // NOLINT(readability-named-parameter)
+    AsyncStream& operator=(AsyncStream&&) noexcept;  // NOLINT(readability-named-parameter)
 
     // 복사 금지
     AsyncStream(const AsyncStream&) = delete;

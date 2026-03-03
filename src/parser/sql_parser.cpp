@@ -25,15 +25,16 @@
 
 #include "parser/sql_parser.hpp"
 
+#include <spdlog/spdlog.h>
+
 #include <algorithm>
 #include <cctype>
+#include <ranges>
 #include <regex>
 #include <string>
 #include <string_view>
 #include <unordered_map>
 #include <vector>
-
-#include <spdlog/spdlog.h>
 
 // ---------------------------------------------------------------------------
 // 익명 네임스페이스: 내부 헬퍼 함수들
@@ -101,23 +102,24 @@ std::string remove_comments(std::string_view sql) {
 // 문자열을 대문자로 변환한다 (ASCII only).
 std::string to_upper(std::string_view s) {
     std::string result(s);
-    std::transform(result.begin(), result.end(), result.begin(),
-                   [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
+    std::ranges::transform(
+        result, result.begin(), [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
     return result;
 }
 
 // 문자열의 앞뒤 공백(스페이스, 탭, 개행 포함)을 제거한다.
 std::string_view trim(std::string_view s) {
-    const auto not_space = [](unsigned char c) { return std::isspace(c) == 0; };
-    const auto begin = std::find_if(s.begin(), s.end(), not_space);
+    const auto not_space = [](unsigned char c) {
+        return std::isspace(c) == 0;
+    };
+    const auto* const begin = std::ranges::find_if(s, not_space);
     if (begin == s.end()) {
         return {};
     }
-    const auto end = std::find_if(s.rbegin(), s.rend(), not_space).base();
-    return s.substr(
-        static_cast<std::size_t>(begin - s.begin()),
-        static_cast<std::size_t>(end - begin)
-    );
+    const auto* const end =
+        std::find_if(s.rbegin(), s.rend(), not_space).base();  // NOLINT(modernize-use-ranges)
+    return s.substr(static_cast<std::size_t>(begin - s.begin()),
+                    static_cast<std::size_t>(end - begin));
 }
 
 // 정규화된 SQL(대문자, 주석 제거)에서 첫 번째 키워드를 추출한다.
@@ -136,22 +138,22 @@ std::string extract_first_keyword(std::string_view normalized_sql) {
 
 // 첫 번째 키워드 → SqlCommand 매핑
 SqlCommand keyword_to_command(const std::string& keyword) {
-    static const std::unordered_map<std::string, SqlCommand> kKeywordMap = {
-        {"SELECT",   SqlCommand::kSelect},
-        {"INSERT",   SqlCommand::kInsert},
-        {"UPDATE",   SqlCommand::kUpdate},
-        {"DELETE",   SqlCommand::kDelete},
-        {"DROP",     SqlCommand::kDrop},
+    static const std::unordered_map<std::string, SqlCommand> keyword_map = {
+        {"SELECT", SqlCommand::kSelect},
+        {"INSERT", SqlCommand::kInsert},
+        {"UPDATE", SqlCommand::kUpdate},
+        {"DELETE", SqlCommand::kDelete},
+        {"DROP", SqlCommand::kDrop},
         {"TRUNCATE", SqlCommand::kTruncate},
-        {"ALTER",    SqlCommand::kAlter},
-        {"CREATE",   SqlCommand::kCreate},
-        {"CALL",     SqlCommand::kCall},
-        {"PREPARE",  SqlCommand::kPrepare},
-        {"EXECUTE",  SqlCommand::kExecute},
+        {"ALTER", SqlCommand::kAlter},
+        {"CREATE", SqlCommand::kCreate},
+        {"CALL", SqlCommand::kCall},
+        {"PREPARE", SqlCommand::kPrepare},
+        {"EXECUTE", SqlCommand::kExecute},
     };
 
-    const auto it = kKeywordMap.find(keyword);
-    if (it != kKeywordMap.end()) {
+    const auto it = keyword_map.find(keyword);
+    if (it != keyword_map.end()) {
         return it->second;
     }
     return SqlCommand::kUnknown;
@@ -160,10 +162,7 @@ SqlCommand keyword_to_command(const std::string& keyword) {
 // 테이블명으로 허용되는 문자인지 확인한다.
 // 허용: 알파벳, 숫자, 밑줄, 점(schema.table), 백틱
 bool is_table_name_char(char c) {
-    return (std::isalnum(static_cast<unsigned char>(c)) != 0)
-        || c == '_'
-        || c == '.'
-        || c == '`';
+    return (std::isalnum(static_cast<unsigned char>(c)) != 0) || c == '_' || c == '.' || c == '`';
 }
 
 // normalized_sql에서 keyword 뒤에 오는 테이블명(들)을 추출하여 out_tables에 추가.
@@ -175,25 +174,20 @@ bool is_table_name_char(char c) {
 // - "FROM t1 AS a, t2" 처럼 별칭이 오면 별칭도 함께 잡힐 수 있음.
 //   현재는 첫 토큰만 추출하여 별칭 오탐을 최소화.
 // - ORM 생성 쿼리에서 false positive 발생 가능 (알려진 한계).
-void extract_tables_for_keyword(
-    const std::string&        normalized_sql,
-    std::string_view          original_sql,
-    const std::string&        keyword,
-    std::vector<std::string>& out_tables
-) {
+void extract_tables_for_keyword(const std::string& normalized_sql,
+                                std::string_view original_sql,
+                                const std::string& keyword,
+                                std::vector<std::string>& out_tables) {
     // keyword 다음에 오는 테이블명(들)을 추출하는 정규식
     // 쉼표 구분 복수 테이블: FROM t1, t2, t3
     // 각 테이블명은 백틱 선택적 포함
-    const std::string pattern =
-        keyword + "\\s+(`?[\\w.]+`?(?:\\s*,\\s*`?[\\w.]+`?)*)";
+    const std::string pattern = keyword + R"(\s+(`?[\w.]+`?(?:\s*,\s*`?[\w.]+`?)*))";
 
     try {
-        std::regex re(pattern,
-                      std::regex_constants::icase |
-                      std::regex_constants::ECMAScript);
+        const std::regex re(pattern,
+                            std::regex_constants::icase | std::regex_constants::ECMAScript);
 
-        auto it = std::sregex_iterator(
-            normalized_sql.begin(), normalized_sql.end(), re);
+        auto it = std::sregex_iterator(normalized_sql.begin(), normalized_sql.end(), re);
         const auto end_it = std::sregex_iterator();
 
         for (; it != end_it; ++it) {
@@ -264,8 +258,7 @@ void extract_tables_for_keyword(
 
                     // 단어 경계 확인: 앞뒤가 식별자 문자가 아니어야 함
                     const bool valid_start =
-                        (found == 0) ||
-                        (!is_table_name_char(orig_str[found - 1]));
+                        (found == 0) || (!is_table_name_char(orig_str[found - 1]));
                     const bool valid_end =
                         (found + upper_token.size() >= orig_str.size()) ||
                         (!is_table_name_char(orig_str[found + upper_token.size()]));
@@ -300,10 +293,7 @@ void extract_tables_for_keyword(
 // 단어 경계 적용: ELSEWHERE 같은 단어에서 오탐 방지
 bool has_where_keyword(const std::string& normalized_sql) {
     try {
-        const std::regex where_re(
-            "\\bWHERE\\b",
-            std::regex_constants::ECMAScript
-        );
+        const std::regex where_re("\\bWHERE\\b", std::regex_constants::ECMAScript);
         return std::regex_search(normalized_sql, where_re);
     } catch (const std::regex_error&) {
         return false;
@@ -343,12 +333,12 @@ bool has_where_keyword(const std::string& normalized_sql) {
 bool has_semicolon_outside_string_or_comment(std::string_view sql) {
     // 상태 머신으로 문자열/주석 영역을 추적
     enum class State : std::uint8_t {
-        kNormal,         // 일반 SQL 구문
-        kSingleQuote,    // 'string' 내부
-        kDoubleQuote,    // "string" 내부
-        kBlockComment,   // /* ... */ 내부
-        kLineComment,    // -- ... \n 내부
-        kHashComment,    // # ... \n 내부
+        kNormal,        // 일반 SQL 구문
+        kSingleQuote,   // 'string' 내부
+        kDoubleQuote,   // "string" 내부
+        kBlockComment,  // /* ... */ 내부
+        kLineComment,   // -- ... \n 내부
+        kHashComment,   // # ... \n 내부
     };
 
     State state = State::kNormal;
@@ -378,16 +368,11 @@ bool has_semicolon_outside_string_or_comment(std::string_view sql) {
                     // 단일 구문의 trailing 세미콜론으로 판단하여 허용한다.
                     // 뒤에 non-whitespace 문자가 하나라도 있으면 멀티 스테이트먼트.
                     const std::string_view tail = sql.substr(i + 1);
-                    const bool only_whitespace = std::all_of(
-                        tail.begin(), tail.end(),
-                        [](unsigned char ch) { return std::isspace(ch) != 0; }
-                    );
-                    if (only_whitespace) {
-                        // trailing 세미콜론: 단일 구문으로 허용
-                        return false;
-                    }
-                    // 세미콜론 뒤에 추가 내용 있음 → 멀티 스테이트먼트
-                    return true;
+                    const bool only_whitespace = std::ranges::all_of(
+                        tail, [](unsigned char ch) { return std::isspace(ch) != 0; });
+                    // trailing 세미콜론이면 단일 구문으로 허용(false), 아니면 멀티
+                    // 스테이트먼트(true)
+                    return !only_whitespace;
                 }
                 break;
 
@@ -441,16 +426,14 @@ bool has_semicolon_outside_string_or_comment(std::string_view sql) {
 // ---------------------------------------------------------------------------
 // SqlParser::parse 구현
 // ---------------------------------------------------------------------------
-std::expected<ParsedQuery, ParseError>
-SqlParser::parse(std::string_view sql) const {
+// NOLINTNEXTLINE(readability-convert-member-functions-to-static)
+std::expected<ParsedQuery, ParseError> SqlParser::parse(std::string_view sql) const {
     // 1. 빈 입력 검사
     const auto trimmed = trim(sql);
     if (trimmed.empty()) {
-        return std::unexpected(ParseError{
-            ParseErrorCode::kInvalidSql,
-            "Empty SQL input",
-            std::string(sql)
-        });
+        return std::unexpected(ParseError{.code = ParseErrorCode::kInvalidSql,
+                                          .message = "Empty SQL input",
+                                          .context = std::string(sql)});
     }
 
     // 2. 멀티 스테이트먼트 감지 (주석 제거 전 원문에서 수행)
@@ -464,14 +447,14 @@ SqlParser::parse(std::string_view sql) const {
     // MySQL 클라이언트 대부분이 trailing 세미콜론을 붙이므로 이를 허용하지 않으면
     // 운영 환경에서 정상 쿼리가 차단되는 false positive 가 발생한다.
     if (has_semicolon_outside_string_or_comment(sql)) {
-        spdlog::warn("sql_parser: multi-statement detected (semicolon outside string/comment), "
-                     "fail-close applied. sql_prefix='{}'",
-                     std::string(sql).substr(0, 80));
+        spdlog::warn(
+            "sql_parser: multi-statement detected (semicolon outside string/comment), "
+            "fail-close applied. sql_prefix='{}'",
+            std::string(sql).substr(0, 80));
         return std::unexpected(ParseError{
-            ParseErrorCode::kInvalidSql,
-            "Multi-statement SQL detected: semicolon outside string or comment",
-            std::string(sql)
-        });
+            .code = ParseErrorCode::kInvalidSql,
+            .message = "Multi-statement SQL detected: semicolon outside string or comment",
+            .context = std::string(sql)});
     }
 
     // 3. 주석 제거
@@ -483,11 +466,9 @@ SqlParser::parse(std::string_view sql) const {
     // 정규화 후 공백만 남은 경우
     const auto normalized_trimmed = trim(normalized);
     if (normalized_trimmed.empty()) {
-        return std::unexpected(ParseError{
-            ParseErrorCode::kInvalidSql,
-            "SQL is empty after comment removal",
-            std::string(sql)
-        });
+        return std::unexpected(ParseError{.code = ParseErrorCode::kInvalidSql,
+                                          .message = "SQL is empty after comment removal",
+                                          .context = std::string(sql)});
     }
 
     // 5. 첫 번째 키워드로 SqlCommand 분류
@@ -518,12 +499,9 @@ SqlParser::parse(std::string_view sql) const {
 
         case SqlCommand::kDrop:
         case SqlCommand::kTruncate:
-            // "DROP TABLE users" / "TRUNCATE TABLE users"
-            extract_tables_for_keyword(normalized_str, sql, "TABLE", tables);
-            break;
-
         case SqlCommand::kAlter:
         case SqlCommand::kCreate:
+            // "DROP TABLE users" / "TRUNCATE TABLE users" / "ALTER TABLE" / "CREATE TABLE"
             extract_tables_for_keyword(normalized_str, sql, "TABLE", tables);
             break;
 
@@ -542,9 +520,9 @@ SqlParser::parse(std::string_view sql) const {
     // 8. ParsedQuery 구성
     // raw_sql은 원문 그대로 보존
     ParsedQuery result;
-    result.command          = cmd;
-    result.tables           = std::move(tables);
-    result.raw_sql          = std::string(sql);
+    result.command = cmd;
+    result.tables = std::move(tables);
+    result.raw_sql = std::string(sql);
     result.has_where_clause = has_where;
 
     return result;

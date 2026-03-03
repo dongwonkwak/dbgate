@@ -45,46 +45,59 @@
 
 #include "policy/policy_engine.hpp"
 
+#include <arpa/inet.h>   // inet_pton, AF_INET
+#include <netinet/in.h>  // in_addr
+#include <spdlog/spdlog.h>
+
 #include <algorithm>
-#include <arpa/inet.h>      // inet_pton, AF_INET
 #include <cctype>
-#include <chrono>           // C++20 timezone
-#include <cstring>          // memset
-#include <ctime>            // localtime_r
+#include <chrono>   // C++20 timezone
+#include <cstring>  // memset
+#include <ctime>    // localtime_r
 #include <memory>
-#include <netinet/in.h>     // in_addr
 #include <optional>
+#include <ranges>
 #include <regex>
 #include <string>
 #include <string_view>
 
-#include <spdlog/spdlog.h>
+// ---------------------------------------------------------------------------
+// 내부 헬퍼
+// ---------------------------------------------------------------------------
+namespace {
 
-// ---------------------------------------------------------------------------
-// 내부 헬퍼: SqlCommand → 문자열 변환
-// ---------------------------------------------------------------------------
-static std::string_view command_to_string(SqlCommand cmd) {
+std::string_view command_to_string(SqlCommand cmd) {
     switch (cmd) {
-        case SqlCommand::kSelect:   return "SELECT";
-        case SqlCommand::kInsert:   return "INSERT";
-        case SqlCommand::kUpdate:   return "UPDATE";
-        case SqlCommand::kDelete:   return "DELETE";
-        case SqlCommand::kDrop:     return "DROP";
-        case SqlCommand::kTruncate: return "TRUNCATE";
-        case SqlCommand::kAlter:    return "ALTER";
-        case SqlCommand::kCreate:   return "CREATE";
-        case SqlCommand::kCall:     return "CALL";
-        case SqlCommand::kPrepare:  return "PREPARE";
-        case SqlCommand::kExecute:  return "EXECUTE";
-        case SqlCommand::kUnknown:  return "UNKNOWN";
-        default:                    return "UNKNOWN";
+        case SqlCommand::kSelect:
+            return "SELECT";
+        case SqlCommand::kInsert:
+            return "INSERT";
+        case SqlCommand::kUpdate:
+            return "UPDATE";
+        case SqlCommand::kDelete:
+            return "DELETE";
+        case SqlCommand::kDrop:
+            return "DROP";
+        case SqlCommand::kTruncate:
+            return "TRUNCATE";
+        case SqlCommand::kAlter:
+            return "ALTER";
+        case SqlCommand::kCreate:
+            return "CREATE";
+        case SqlCommand::kCall:
+            return "CALL";
+        case SqlCommand::kPrepare:
+            return "PREPARE";
+        case SqlCommand::kExecute:
+            return "EXECUTE";
+        case SqlCommand::kUnknown:
+        default:
+            return "UNKNOWN";
     }
 }
 
-// ---------------------------------------------------------------------------
-// 내부 헬퍼: 문자열 대소문자 무관 비교
-// ---------------------------------------------------------------------------
-static bool iequals(std::string_view a, std::string_view b) {
+// 문자열 대소문자 무관 비교
+bool iequals(std::string_view a, std::string_view b) {
     if (a.size() != b.size()) {
         return false;
     }
@@ -107,7 +120,7 @@ static bool iequals(std::string_view a, std::string_view b) {
 // - IPv6 미지원. IPv6 주소가 전달되면 inet_pton(AF_INET, ...) 실패 → false 반환.
 // - "0.0.0.0/0" (모든 IP 허용) 은 올바르게 처리된다.
 // ---------------------------------------------------------------------------
-static bool ip_in_cidr(const std::string& ip, const std::string& cidr) {
+bool ip_in_cidr(const std::string& ip, const std::string& cidr) {
     // CIDR에서 '/' 기준 분리
     const auto slash_pos = cidr.find('/');
     if (slash_pos == std::string::npos) {
@@ -116,7 +129,7 @@ static bool ip_in_cidr(const std::string& ip, const std::string& cidr) {
     }
 
     const std::string network_str = cidr.substr(0, slash_pos);
-    const std::string prefix_str  = cidr.substr(slash_pos + 1);
+    const std::string prefix_str = cidr.substr(slash_pos + 1);
 
     // prefix_len 파싱
     int prefix_len = 0;
@@ -142,19 +155,17 @@ static bool ip_in_cidr(const std::string& ip, const std::string& cidr) {
         return false;
     }
     if (inet_pton(AF_INET, network_str.c_str(), &net_addr) != 1) {
-        spdlog::warn("policy_engine: cannot parse network address '{}' in CIDR '{}'",
-                     network_str, cidr);
+        spdlog::warn(
+            "policy_engine: cannot parse network address '{}' in CIDR '{}'", network_str, cidr);
         return false;
     }
 
     // 네트워크 마스크 계산
     // prefix_len == 0: 모든 IP 허용 (마스크 = 0)
     const std::uint32_t mask =
-        (prefix_len == 0)
-        ? 0u
-        : htonl(~0u << (32 - static_cast<unsigned>(prefix_len)));
+        (prefix_len == 0) ? 0U : htonl(~0U << (32 - static_cast<unsigned>(prefix_len)));
 
-    const std::uint32_t ip_int  = ip_addr.s_addr;
+    const std::uint32_t ip_int = ip_addr.s_addr;
     const std::uint32_t net_int = net_addr.s_addr;
 
     return (ip_int & mask) == (net_int & mask);
@@ -171,7 +182,7 @@ struct TimeRange {
     int end_m{0};
 };
 
-static std::optional<TimeRange> parse_time_range(const std::string& range_str) {
+std::optional<TimeRange> parse_time_range(const std::string& range_str) {
     // "HH:MM-HH:MM" 형식 파싱
     // 최소 길이: "0:0-0:0" = 7
     if (range_str.size() < 7) {
@@ -186,7 +197,7 @@ static std::optional<TimeRange> parse_time_range(const std::string& range_str) {
     }
 
     const std::string start_str = range_str.substr(0, dash_pos);
-    const std::string end_str   = range_str.substr(dash_pos + 1);
+    const std::string end_str = range_str.substr(dash_pos + 1);
 
     auto parse_hhmm = [](const std::string& hhmm, int& hour, int& min) -> bool {
         const auto colon_pos = hhmm.find(':');
@@ -196,7 +207,7 @@ static std::optional<TimeRange> parse_time_range(const std::string& range_str) {
         try {
             std::size_t idx{0};
             hour = std::stoi(hhmm.substr(0, colon_pos), &idx);
-            min  = std::stoi(hhmm.substr(colon_pos + 1), &idx);
+            min = std::stoi(hhmm.substr(colon_pos + 1), &idx);
             return (hour >= 0 && hour <= 23 && min >= 0 && min <= 59);
         } catch (const std::exception&) {
             return false;
@@ -239,9 +250,9 @@ static std::optional<TimeRange> parse_time_range(const std::string& range_str) {
 //   (GCC 14 libstdc++ 는 /usr/share/zoneinfo 를 사용한다.)
 // - "Asia/Seoul" 처럼 표준 IANA 이름만 지원한다. "KST+9" 형태는 불가.
 // ---------------------------------------------------------------------------
-static bool is_within_time_range(const TimeRange& range, const std::string& tz_name) {
+bool is_within_time_range(const TimeRange& range, const std::string& tz_name) {
     int now_hour = 0;
-    int now_min  = 0;
+    int now_min = 0;
 
     try {
         // timezone 이름이 비어있으면 UTC 로 fallback (fail-close 보수적 선택)
@@ -251,30 +262,29 @@ static bool is_within_time_range(const TimeRange& range, const std::string& tz_n
         }
 
         // C++20 chrono: TZ 환경변수를 건드리지 않고 로컬 시각 획득
-        const auto* zone       = std::chrono::locate_zone(effective_tz);
-        const auto  now_sys    = std::chrono::system_clock::now();
+        const auto* zone = std::chrono::locate_zone(effective_tz);
+        const auto now_sys = std::chrono::system_clock::now();
         const std::chrono::zoned_time zt{zone, now_sys};
-        const auto  local_time = zt.get_local_time();
+        const auto local_time = zt.get_local_time();
 
         // 일(day) 경계를 구한 뒤 시:분 추출
-        const auto dp  = std::chrono::floor<std::chrono::days>(local_time);
+        const auto dp = std::chrono::floor<std::chrono::days>(local_time);
         const std::chrono::hh_mm_ss hms{local_time - dp};
 
         now_hour = static_cast<int>(hms.hours().count());
-        now_min  = static_cast<int>(hms.minutes().count());
+        now_min = static_cast<int>(hms.minutes().count());
 
     } catch (const std::exception& e) {
         // locate_zone 실패(알 수 없는 timezone 등) → fail-close: 차단
-        spdlog::warn(
-            "policy_engine: timezone '{}' lookup failed ({}), denying access (fail-close)",
-            tz_name, e.what()
-        );
+        spdlog::warn("policy_engine: timezone '{}' lookup failed ({}), denying access (fail-close)",
+                     tz_name,
+                     e.what());
         return false;
     }
 
-    const int now_minutes   = now_hour * 60 + now_min;
-    const int start_minutes = range.start_h * 60 + range.start_m;
-    const int end_minutes   = range.end_h   * 60 + range.end_m;
+    const int now_minutes = (now_hour * 60) + now_min;
+    const int start_minutes = (range.start_h * 60) + range.start_m;
+    const int end_minutes = (range.end_h * 60) + range.end_m;
 
     // 자정을 넘지 않는 단순 범위 (예: 09:00-18:00)
     if (start_minutes <= end_minutes) {
@@ -284,22 +294,27 @@ static bool is_within_time_range(const TimeRange& range, const std::string& tz_n
     return (now_minutes >= start_minutes || now_minutes < end_minutes);
 }
 
+}  // namespace
+
 // ---------------------------------------------------------------------------
 // PolicyEngine 생성자
 // ---------------------------------------------------------------------------
-PolicyEngine::PolicyEngine(std::shared_ptr<PolicyConfig> config)
-    : config_(std::move(config)) {
+PolicyEngine::PolicyEngine(std::shared_ptr<PolicyConfig> config) : config_(std::move(config)) {
     // config_ 가 nullptr 이면 이후 모든 evaluate() 가 kBlock 을 반환한다.
     // fail-close 원칙에 의해 nullptr config 도 허용하되, 차단으로 처리.
     // config_ 는 std::atomic<std::shared_ptr<PolicyConfig>> 이므로 load() 로 읽는다.
     const auto loaded = config_.load(std::memory_order_relaxed);
     if (!loaded) {
-        spdlog::warn("policy_engine: constructed with nullptr config — all queries will be blocked (fail-close)");
+        spdlog::warn(
+            "policy_engine: constructed with nullptr config — all queries will be blocked "
+            "(fail-close)");
     } else {
-        spdlog::info("policy_engine: initialized with {} access rules, {} block statements, {} block patterns",
-                     loaded->access_control.size(),
-                     loaded->sql_rules.block_statements.size(),
-                     loaded->sql_rules.block_patterns.size());
+        spdlog::info(
+            "policy_engine: initialized with {} access rules, {} block statements, {} block "
+            "patterns",
+            loaded->access_control.size(),
+            loaded->sql_rules.block_statements.size(),
+            loaded->sql_rules.block_patterns.size());
     }
 }
 
@@ -309,10 +324,7 @@ PolicyEngine::PolicyEngine(std::shared_ptr<PolicyConfig> config)
 // 평가 순서는 설계 명세(DON-26)를 준수한다.
 // 모든 예외는 catch 후 kBlock 반환 (fail-close).
 // ---------------------------------------------------------------------------
-PolicyResult PolicyEngine::evaluate(
-    const ParsedQuery&    query,
-    const SessionContext& session) const {
-
+PolicyResult PolicyEngine::evaluate(const ParsedQuery& query, const SessionContext& session) const {
     // Step 1: config_ nullptr 체크
     // config_ 는 std::atomic<std::shared_ptr<PolicyConfig>> (C++20) 이다.
     // load() 로 로컬 shared_ptr 를 취득한다.
@@ -324,7 +336,9 @@ PolicyResult PolicyEngine::evaluate(
     if (!config) {
         spdlog::error("policy_engine: config is null, blocking query (fail-close) session={}",
                       session.session_id);
-        return PolicyResult{PolicyAction::kBlock, "no-config", "Policy config unavailable"};
+        return PolicyResult{.action = PolicyAction::kBlock,
+                            .matched_rule = "no-config",
+                            .reason = "Policy config unavailable"};
     }
 
     // Step 2: Unknown command → kBlock
@@ -332,7 +346,9 @@ PolicyResult PolicyEngine::evaluate(
         spdlog::warn("policy_engine: unknown SQL command blocked, session={}, sql_prefix='{}'",
                      session.session_id,
                      query.raw_sql.substr(0, std::min(query.raw_sql.size(), std::size_t{50})));
-        return PolicyResult{PolicyAction::kBlock, "unknown-command", "Unknown SQL command blocked"};
+        return PolicyResult{.action = PolicyAction::kBlock,
+                            .matched_rule = "unknown-command",
+                            .reason = "Unknown SQL command blocked"};
     }
 
     const std::string_view cmd_str = command_to_string(query.command);
@@ -342,15 +358,13 @@ PolicyResult PolicyEngine::evaluate(
     // query.command 를 문자열로 변환하여 대소문자 무관 비교한다.
     for (const auto& stmt : config->sql_rules.block_statements) {
         if (iequals(cmd_str, stmt)) {
-            spdlog::info(
-                "policy_engine: block_statement matched '{}', session={}, user='{}'",
-                stmt, session.session_id, session.db_user
-            );
-            return PolicyResult{
-                PolicyAction::kBlock,
-                "block-statement",
-                fmt::format("SQL statement blocked: {}", stmt)
-            };
+            spdlog::info("policy_engine: block_statement matched '{}', session={}, user='{}'",
+                         stmt,
+                         session.session_id,
+                         session.db_user);
+            return PolicyResult{.action = PolicyAction::kBlock,
+                                .matched_rule = "block-statement",
+                                .reason = fmt::format("SQL statement blocked: {}", stmt)};
         }
     }
 
@@ -359,24 +373,21 @@ PolicyResult PolicyEngine::evaluate(
     // [미탐 주의] 주석 분할(UN/**/ION)은 탐지 불가 (알려진 한계).
     for (const auto& pattern : config->sql_rules.block_patterns) {
         try {
-            const std::regex re(
-                pattern,
-                std::regex_constants::icase | std::regex_constants::ECMAScript
-            );
+            const std::regex re(pattern,
+                                std::regex_constants::icase | std::regex_constants::ECMAScript);
             if (std::regex_search(query.raw_sql, re)) {
-                spdlog::info(
-                    "policy_engine: block_pattern matched '{}', session={}, user='{}'",
-                    pattern, session.session_id, session.db_user
-                );
-                return PolicyResult{
-                    PolicyAction::kBlock,
-                    "block-pattern",
-                    fmt::format("SQL pattern blocked: {}", pattern)
-                };
+                spdlog::info("policy_engine: block_pattern matched '{}', session={}, user='{}'",
+                             pattern,
+                             session.session_id,
+                             session.db_user);
+                return PolicyResult{.action = PolicyAction::kBlock,
+                                    .matched_rule = "block-pattern",
+                                    .reason = fmt::format("SQL pattern blocked: {}", pattern)};
             }
         } catch (const std::regex_error& e) {
             // 잘못된 regex: 건너뜀 (false negative 증가, 로더에서 이미 경고)
-            spdlog::warn("policy_engine: invalid block_pattern '{}', skipping: {}", pattern, e.what());
+            spdlog::warn(
+                "policy_engine: invalid block_pattern '{}', skipping: {}", pattern, e.what());
         }
     }
 
@@ -403,30 +414,28 @@ PolicyResult PolicyEngine::evaluate(
     }
 
     if (matched_rule == nullptr) {
-        spdlog::info(
-            "policy_engine: no matching access rule for user='{}' ip='{}', session={}",
-            session.db_user, session.client_ip, session.session_id
-        );
-        return PolicyResult{
-            PolicyAction::kBlock,
-            "no-access-rule",
-            "No matching access rule for user/IP"
-        };
+        spdlog::info("policy_engine: no matching access rule for user='{}' ip='{}', session={}",
+                     session.db_user,
+                     session.client_ip,
+                     session.session_id);
+        return PolicyResult{.action = PolicyAction::kBlock,
+                            .matched_rule = "no-access-rule",
+                            .reason = "No matching access rule for user/IP"};
     }
 
     // Step 6: 차단 오퍼레이션 체크 (blocked_operations)
     // blocked_operations 는 allowed_operations 보다 우선 적용된다.
     for (const auto& blocked_op : matched_rule->blocked_operations) {
         if (iequals(cmd_str, blocked_op)) {
-            spdlog::info(
-                "policy_engine: blocked_operation '{}' matched, session={}, user='{}'",
-                blocked_op, session.session_id, session.db_user
-            );
+            spdlog::info("policy_engine: blocked_operation '{}' matched, session={}, user='{}'",
+                         blocked_op,
+                         session.session_id,
+                         session.db_user);
             return PolicyResult{
-                PolicyAction::kBlock,
-                "blocked-operation",
-                fmt::format("Operation blocked for user '{}': {}", session.db_user, blocked_op)
-            };
+                .action = PolicyAction::kBlock,
+                .matched_rule = "blocked-operation",
+                .reason = fmt::format(
+                    "Operation blocked for user '{}': {}", session.db_user, blocked_op)};
         }
     }
 
@@ -438,56 +447,48 @@ PolicyResult PolicyEngine::evaluate(
             // allow_range 파싱 실패 → fail-close (차단)
             spdlog::error(
                 "policy_engine: invalid allow_range '{}' for user='{}', blocking (fail-close)",
-                tr.allow_range, session.db_user
-            );
+                tr.allow_range,
+                session.db_user);
             return PolicyResult{
-                PolicyAction::kBlock,
-                "time-restriction",
-                fmt::format("Invalid time restriction configuration for user '{}'", session.db_user)
-            };
+                .action = PolicyAction::kBlock,
+                .matched_rule = "time-restriction",
+                .reason = fmt::format("Invalid time restriction configuration for user '{}'",
+                                      session.db_user)};
         }
         if (!is_within_time_range(range.value(), tr.timezone)) {
             spdlog::info(
                 "policy_engine: time_restriction denied, allow_range='{}', timezone='{}', "
                 "session={}, user='{}'",
-                tr.allow_range, tr.timezone, session.session_id, session.db_user
-            );
-            return PolicyResult{
-                PolicyAction::kBlock,
-                "time-restriction",
-                "Access outside allowed hours"
-            };
+                tr.allow_range,
+                tr.timezone,
+                session.session_id,
+                session.db_user);
+            return PolicyResult{.action = PolicyAction::kBlock,
+                                .matched_rule = "time-restriction",
+                                .reason = "Access outside allowed hours"};
         }
     }
 
     // Step 8: 테이블 접근 제어 (allowed_tables)
     // "*" 가 포함되어 있으면 모든 테이블 허용.
     // query.tables 가 비어있으면 테이블 체크 건너뜀 (허용).
-    const bool all_tables_allowed = std::any_of(
-        matched_rule->allowed_tables.begin(),
-        matched_rule->allowed_tables.end(),
-        [](const std::string& t) { return t == "*"; }
-    );
+    const bool all_tables_allowed = std::ranges::any_of(
+        matched_rule->allowed_tables, [](const std::string& t) { return t == "*"; });
 
     if (!all_tables_allowed && !query.tables.empty()) {
         for (const auto& table : query.tables) {
-            const bool table_allowed = std::any_of(
-                matched_rule->allowed_tables.begin(),
-                matched_rule->allowed_tables.end(),
-                [&table](const std::string& allowed) {
-                    return iequals(table, allowed);
-                }
-            );
+            const bool table_allowed = std::ranges::any_of(
+                matched_rule->allowed_tables,
+                [&table](const std::string& allowed) { return iequals(table, allowed); });
             if (!table_allowed) {
                 spdlog::info(
                     "policy_engine: table '{}' not in allowed_tables for user='{}', session={}",
-                    table, session.db_user, session.session_id
-                );
-                return PolicyResult{
-                    PolicyAction::kBlock,
-                    "table-denied",
-                    fmt::format("Table access denied: {}", table)
-                };
+                    table,
+                    session.db_user,
+                    session.session_id);
+                return PolicyResult{.action = PolicyAction::kBlock,
+                                    .matched_rule = "table-denied",
+                                    .reason = fmt::format("Table access denied: {}", table)};
             }
         }
     }
@@ -495,40 +496,31 @@ PolicyResult PolicyEngine::evaluate(
     // Step 9: 허용 오퍼레이션 체크 (allowed_operations)
     // allowed_operations 가 비어있지 않고 "*" 도 없으면 명시적 허용 목록과 비교.
     if (!matched_rule->allowed_operations.empty()) {
-        const bool all_ops_allowed = std::any_of(
-            matched_rule->allowed_operations.begin(),
-            matched_rule->allowed_operations.end(),
-            [](const std::string& op) { return op == "*"; }
-        );
+        const bool all_ops_allowed = std::ranges::any_of(
+            matched_rule->allowed_operations, [](const std::string& op) { return op == "*"; });
 
         if (!all_ops_allowed) {
-            const bool op_allowed = std::any_of(
-                matched_rule->allowed_operations.begin(),
-                matched_rule->allowed_operations.end(),
-                [&cmd_str](const std::string& op) {
-                    return iequals(cmd_str, op);
-                }
-            );
+            const bool op_allowed = std::ranges::any_of(
+                matched_rule->allowed_operations,
+                [&cmd_str](const std::string& op) { return iequals(cmd_str, op); });
             if (!op_allowed) {
                 spdlog::info(
-                    "policy_engine: operation '{}' not in allowed_operations for user='{}', session={}",
-                    cmd_str, session.db_user, session.session_id
-                );
-                return PolicyResult{
-                    PolicyAction::kBlock,
-                    "operation-denied",
-                    fmt::format("Operation not allowed: {}", cmd_str)
-                };
+                    "policy_engine: operation '{}' not in allowed_operations for user='{}', "
+                    "session={}",
+                    cmd_str,
+                    session.db_user,
+                    session.session_id);
+                return PolicyResult{.action = PolicyAction::kBlock,
+                                    .matched_rule = "operation-denied",
+                                    .reason = fmt::format("Operation not allowed: {}", cmd_str)};
             }
         }
     }
 
     // Step 10: 프로시저 제어
     // kCall, kPrepare, kExecute 에 대한 추가 검사.
-    if (query.command == SqlCommand::kCall     ||
-        query.command == SqlCommand::kPrepare  ||
-        query.command == SqlCommand::kExecute)
-    {
+    if (query.command == SqlCommand::kCall || query.command == SqlCommand::kPrepare ||
+        query.command == SqlCommand::kExecute) {
         const auto& pc = config->procedure_control;
 
         if (query.command == SqlCommand::kPrepare || query.command == SqlCommand::kExecute) {
@@ -537,57 +529,50 @@ PolicyResult PolicyEngine::evaluate(
                 spdlog::info(
                     "policy_engine: dynamic SQL ({}) blocked by procedure_control, "
                     "session={}, user='{}'",
-                    cmd_str, session.session_id, session.db_user
-                );
+                    cmd_str,
+                    session.session_id,
+                    session.db_user);
                 return PolicyResult{
-                    PolicyAction::kBlock,
-                    "procedure-dynamic-sql",
-                    fmt::format("Dynamic SQL ({}) blocked by policy", cmd_str)
-                };
+                    .action = PolicyAction::kBlock,
+                    .matched_rule = "procedure-dynamic-sql",
+                    .reason = fmt::format("Dynamic SQL ({}) blocked by policy", cmd_str)};
             }
         } else if (query.command == SqlCommand::kCall) {
             // CALL: 화이트리스트/블랙리스트 모드
             // 프로시저명은 query.tables 의 첫 번째 요소로 파싱됨 (파서 구현 의존)
-            const std::string proc_name =
-                query.tables.empty() ? "" : query.tables.front();
+            const std::string proc_name = query.tables.empty() ? "" : query.tables.front();
 
             if (pc.mode == "whitelist") {
                 // 화이트리스트 모드: whitelist 에 있어야 허용
-                const bool in_whitelist = std::any_of(
-                    pc.whitelist.begin(), pc.whitelist.end(),
-                    [&proc_name](const std::string& wl) {
-                        return iequals(proc_name, wl);
-                    }
-                );
+                const bool in_whitelist = std::ranges::any_of(
+                    pc.whitelist,
+                    [&proc_name](const std::string& wl) { return iequals(proc_name, wl); });
                 if (!in_whitelist) {
                     spdlog::info(
                         "policy_engine: procedure '{}' not in whitelist, session={}, user='{}'",
-                        proc_name, session.session_id, session.db_user
-                    );
+                        proc_name,
+                        session.session_id,
+                        session.db_user);
                     return PolicyResult{
-                        PolicyAction::kBlock,
-                        "procedure-whitelist",
-                        fmt::format("Procedure '{}' not in whitelist", proc_name)
-                    };
+                        .action = PolicyAction::kBlock,
+                        .matched_rule = "procedure-whitelist",
+                        .reason = fmt::format("Procedure '{}' not in whitelist", proc_name)};
                 }
             } else if (pc.mode == "blacklist") {
                 // 블랙리스트 모드: whitelist(블랙리스트로 재사용) 에 있으면 차단
-                const bool in_blacklist = std::any_of(
-                    pc.whitelist.begin(), pc.whitelist.end(),
-                    [&proc_name](const std::string& bl) {
-                        return iequals(proc_name, bl);
-                    }
-                );
+                const bool in_blacklist = std::ranges::any_of(
+                    pc.whitelist,
+                    [&proc_name](const std::string& bl) { return iequals(proc_name, bl); });
                 if (in_blacklist) {
                     spdlog::info(
                         "policy_engine: procedure '{}' in blacklist, session={}, user='{}'",
-                        proc_name, session.session_id, session.db_user
-                    );
+                        proc_name,
+                        session.session_id,
+                        session.db_user);
                     return PolicyResult{
-                        PolicyAction::kBlock,
-                        "procedure-blacklist",
-                        fmt::format("Procedure '{}' is blacklisted", proc_name)
-                    };
+                        .action = PolicyAction::kBlock,
+                        .matched_rule = "procedure-blacklist",
+                        .reason = fmt::format("Procedure '{}' is blacklisted", proc_name)};
                 }
             }
         }
@@ -601,13 +586,12 @@ PolicyResult PolicyEngine::evaluate(
             spdlog::info(
                 "policy_engine: {} blocked by procedure_control.block_create_alter, "
                 "session={}, user='{}'",
-                cmd_str, session.session_id, session.db_user
-            );
-            return PolicyResult{
-                PolicyAction::kBlock,
-                "procedure-create-alter",
-                fmt::format("{} blocked by procedure policy", cmd_str)
-            };
+                cmd_str,
+                session.session_id,
+                session.db_user);
+            return PolicyResult{.action = PolicyAction::kBlock,
+                                .matched_rule = "procedure-create-alter",
+                                .reason = fmt::format("{} blocked by procedure policy", cmd_str)};
         }
     }
 
@@ -626,8 +610,7 @@ PolicyResult PolicyEngine::evaluate(
     // "db.schema.table" 3단계 형태나 백틱 이스케이프 등은 처리하지 않는다.
     if (config->data_protection.block_schema_access) {
         static const std::array<std::string_view, 4> schema_names = {
-            "information_schema", "mysql", "performance_schema", "sys"
-        };
+            "information_schema", "mysql", "performance_schema", "sys"};
         for (const auto& table : query.tables) {
             // '.' 기준으로 schema prefix 분리
             // "information_schema.tables" → schema_part = "information_schema"
@@ -641,28 +624,26 @@ PolicyResult PolicyEngine::evaluate(
                     spdlog::info(
                         "policy_engine: schema access blocked for table '{}' "
                         "(schema_part='{}'), session={}, user='{}'",
-                        table, schema_part, session.session_id, session.db_user
-                    );
-                    return PolicyResult{
-                        PolicyAction::kBlock,
-                        "schema-access",
-                        "Schema access blocked"
-                    };
+                        table,
+                        schema_part,
+                        session.session_id,
+                        session.db_user);
+                    return PolicyResult{.action = PolicyAction::kBlock,
+                                        .matched_rule = "schema-access",
+                                        .reason = "Schema access blocked"};
                 }
             }
         }
     }
 
     // Step 12: 명시적 allow
-    spdlog::debug(
-        "policy_engine: access allowed for user='{}', cmd={}, session={}",
-        session.db_user, cmd_str, session.session_id
-    );
-    return PolicyResult{
-        PolicyAction::kAllow,
-        fmt::format("access-rule:{}", matched_rule->user),
-        "Access allowed"
-    };
+    spdlog::debug("policy_engine: access allowed for user='{}', cmd={}, session={}",
+                  session.db_user,
+                  cmd_str,
+                  session.session_id);
+    return PolicyResult{.action = PolicyAction::kAllow,
+                        .matched_rule = fmt::format("access-rule:{}", matched_rule->user),
+                        .reason = "Access allowed"};
 }
 
 // ---------------------------------------------------------------------------
@@ -671,9 +652,9 @@ PolicyResult PolicyEngine::evaluate(
 // 파서 오류 시 반드시 kBlock 을 반환한다 (fail-close).
 // noexcept 이므로 예외 발생 가능성 있는 코드를 주의하여 작성한다.
 // ---------------------------------------------------------------------------
-PolicyResult PolicyEngine::evaluate_error(
-    const ParseError&     error,
-    const SessionContext& session) const noexcept {
+// NOLINTNEXTLINE(readability-convert-member-functions-to-static)
+PolicyResult PolicyEngine::evaluate_error(const ParseError& error,
+                                          const SessionContext& session) const noexcept {
     // noexcept 보장: fmt::format 도 예외를 던질 수 있으나,
     // fmt 의 기본 동작은 메모리 부족 시에만 예외를 던짐.
     // std::string 생성도 메모리 부족 시 예외 가능.
@@ -688,20 +669,15 @@ PolicyResult PolicyEngine::evaluate_error(
             "session={}, error_code={}, msg='{}'",
             session.session_id,
             static_cast<int>(error.code),
-            error.message
-        );
-        return PolicyResult{
-            PolicyAction::kBlock,
-            "parse-error",
-            "Parser error: " + error.message
-        };
+            error.message);
+        return PolicyResult{.action = PolicyAction::kBlock,
+                            .matched_rule = "parse-error",
+                            .reason = "Parser error: " + error.message};
     } catch (...) {
         // 최후 안전망: 어떠한 예외가 발생하더라도 kBlock 반환
-        return PolicyResult{
-            PolicyAction::kBlock,
-            "parse-error",
-            "Parser error"
-        };
+        return PolicyResult{.action = PolicyAction::kBlock,
+                            .matched_rule = "parse-error",
+                            .reason = "Parser error"};
     }
 }
 
@@ -718,8 +694,9 @@ PolicyResult PolicyEngine::evaluate_error(
 // ---------------------------------------------------------------------------
 void PolicyEngine::reload(std::shared_ptr<PolicyConfig> new_config) {
     if (!new_config) {
-        spdlog::warn("policy_engine: reload called with nullptr config — "
-                     "all queries will be blocked after reload (fail-close)");
+        spdlog::warn(
+            "policy_engine: reload called with nullptr config — "
+            "all queries will be blocked after reload (fail-close)");
     } else {
         spdlog::info("policy_engine: reloading config with {} access rules",
                      new_config->access_control.size());
