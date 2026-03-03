@@ -100,7 +100,7 @@ func runStats(socketPath string, timeout time.Duration) error {
 
 	fmt.Println("=== dbgate stats ===")
 	fmt.Printf("QPS:              %8.2f\n", snap.QPS)
-	fmt.Printf("Block Rate:       %7.2f%%\n", snap.BlockRate)
+	fmt.Printf("Block Rate:       %7.2f%%\n", snap.BlockRate*100)
 	fmt.Printf("Active Sessions:  %8d\n", snap.ActiveSessions)
 	fmt.Printf("Total Queries:    %8d\n", snap.TotalQueries)
 	fmt.Printf("Blocked Queries:  %8d\n", snap.BlockedQueries)

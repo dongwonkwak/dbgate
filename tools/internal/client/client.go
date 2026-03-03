@@ -62,7 +62,11 @@ func (c *Client) SendCommand(cmd string) (*Response, error) {
 
 	// Write 4-byte LE length prefix.
 	var lenBuf [4]byte
-	binary.LittleEndian.PutUint32(lenBuf[:], uint32(len(body)))
+	if uint64(len(body)) > uint64(^uint32(0)) {
+		return nil, fmt.Errorf("request body too large: %d", len(body))
+	}
+	reqLen := uint32(len(body)) // #nosec G115 -- bounded by the explicit check above.
+	binary.LittleEndian.PutUint32(lenBuf[:], reqLen)
 	if err := writeFull(conn, lenBuf[:]); err != nil {
 		return nil, fmt.Errorf("write length prefix: %w", err)
 	}
