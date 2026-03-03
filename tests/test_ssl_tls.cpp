@@ -45,8 +45,10 @@
 namespace {
 
 struct TestCertificateFiles {
-    std::filesystem::path cert_path;
-    std::filesystem::path key_path;
+    std::filesystem::path
+        cert_path;  // NOLINT(cppcoreguidelines-non-private-member-variables-in-classes)
+    std::filesystem::path
+        key_path;  // NOLINT(cppcoreguidelines-non-private-member-variables-in-classes)
 };
 
 std::shared_ptr<PolicyEngine> make_policy_engine() {
@@ -95,16 +97,16 @@ std::string make_test_file_basename() {
 std::optional<TestCertificateFiles> try_generate_test_certificate_files() {
     const auto base = make_test_file_basename();
     TestCertificateFiles files{
-        std::filesystem::temp_directory_path() / (base + "_cert.pem"),
-        std::filesystem::temp_directory_path() / (base + "_key.pem"),
+        .cert_path = std::filesystem::temp_directory_path() / (base + "_cert.pem"),
+        .key_path = std::filesystem::temp_directory_path() / (base + "_key.pem"),
     };
 
-    const std::string cmd =
-        "openssl req -x509 -newkey rsa:2048 -keyout " + shell_quote(files.key_path.string()) +
-        " -out " + shell_quote(files.cert_path.string()) +
-        " -days 1 -nodes -subj '/CN=dbgate-test' >/dev/null 2>&1";
+    const std::string cmd = "openssl req -x509 -newkey rsa:2048 -keyout " +
+                            shell_quote(files.key_path.string()) + " -out " +
+                            shell_quote(files.cert_path.string()) +
+                            " -days 1 -nodes -subj '/CN=dbgate-test' >/dev/null 2>&1";
 
-    const int rc = std::system(cmd.c_str());
+    const int rc = std::system(cmd.c_str());  // NOLINT(cert-env33-c,concurrency-mt-unsafe)
     if (rc != 0) {
         return std::nullopt;
     }
@@ -131,7 +133,7 @@ const std::optional<TestCertificateFiles>& test_certificate_files() {
 // PA-1. ProxyConfig 기본 생성 시 frontend_ssl_enabled=false
 // ---------------------------------------------------------------------------
 TEST(ProxyConfigSslTest, DefaultFrontendSslEnabled_IsFalse) {
-    ProxyConfig cfg;
+    const ProxyConfig cfg;
     EXPECT_FALSE(cfg.frontend_ssl_enabled);
 }
 
@@ -139,7 +141,7 @@ TEST(ProxyConfigSslTest, DefaultFrontendSslEnabled_IsFalse) {
 // PA-2. ProxyConfig 기본 생성 시 backend_ssl_enabled=false
 // ---------------------------------------------------------------------------
 TEST(ProxyConfigSslTest, DefaultBackendSslEnabled_IsFalse) {
-    ProxyConfig cfg;
+    const ProxyConfig cfg;
     EXPECT_FALSE(cfg.backend_ssl_enabled);
 }
 
@@ -147,7 +149,7 @@ TEST(ProxyConfigSslTest, DefaultBackendSslEnabled_IsFalse) {
 // PA-3. ProxyConfig 기본 생성 시 frontend_ssl_cert_path/key_path 빈 문자열
 // ---------------------------------------------------------------------------
 TEST(ProxyConfigSslTest, DefaultFrontendSslPaths_AreEmpty) {
-    ProxyConfig cfg;
+    const ProxyConfig cfg;
     EXPECT_TRUE(cfg.frontend_ssl_cert_path.empty());
     EXPECT_TRUE(cfg.frontend_ssl_key_path.empty());
 }
@@ -156,7 +158,7 @@ TEST(ProxyConfigSslTest, DefaultFrontendSslPaths_AreEmpty) {
 // PA-4. ProxyConfig 기본 생성 시 backend_ssl_ca_path 빈 문자열
 // ---------------------------------------------------------------------------
 TEST(ProxyConfigSslTest, DefaultBackendSslCaPath_IsEmpty) {
-    ProxyConfig cfg;
+    const ProxyConfig cfg;
     EXPECT_TRUE(cfg.backend_ssl_ca_path.empty());
 }
 
@@ -164,7 +166,7 @@ TEST(ProxyConfigSslTest, DefaultBackendSslCaPath_IsEmpty) {
 // PA-5. ProxyConfig 기본 생성 시 backend_ssl_verify=true
 // ---------------------------------------------------------------------------
 TEST(ProxyConfigSslTest, DefaultBackendSslVerify_IsTrue) {
-    ProxyConfig cfg;
+    const ProxyConfig cfg;
     EXPECT_TRUE(cfg.backend_ssl_verify);
 }
 
@@ -172,7 +174,7 @@ TEST(ProxyConfigSslTest, DefaultBackendSslVerify_IsTrue) {
 // PA-6. ProxyConfig 기본 생성 시 upstream_ssl_sni 빈 문자열
 // ---------------------------------------------------------------------------
 TEST(ProxyConfigSslTest, DefaultUpstreamSslSni_IsEmpty) {
-    ProxyConfig cfg;
+    const ProxyConfig cfg;
     EXPECT_TRUE(cfg.upstream_ssl_sni.empty());
 }
 
@@ -196,7 +198,7 @@ TEST(ProxyServerSslTest, SslDisabled_ConstructionSucceeds) {
     // frontend_ssl_enabled = false (기본값)
     // backend_ssl_enabled = false (기본값)
 
-    EXPECT_NO_THROW({ ProxyServer server{cfg}; });
+    EXPECT_NO_THROW({ const ProxyServer server{cfg}; });
 }
 
 // ---------------------------------------------------------------------------
@@ -224,7 +226,7 @@ TEST(ProxyServerSslTest, FrontendSslEnabled_ConstructionSucceeds) {
     cfg.frontend_ssl_key_path = files->key_path.string();
 
     // 생성자에서는 init_ssl()을 호출하지 않으므로 성공해야 함
-    EXPECT_NO_THROW({ ProxyServer server{cfg}; });
+    EXPECT_NO_THROW({ const ProxyServer server{cfg}; });
 }
 
 // ---------------------------------------------------------------------------
@@ -250,7 +252,7 @@ TEST(ProxyServerSslTest, BackendSslEnabled_ConstructionSucceeds) {
     cfg.backend_ssl_ca_path = files->cert_path.string();
     cfg.backend_ssl_verify = true;
 
-    EXPECT_NO_THROW({ ProxyServer server{cfg}; });
+    EXPECT_NO_THROW({ const ProxyServer server{cfg}; });
 }
 
 // ===========================================================================
@@ -270,9 +272,11 @@ TEST(SslContextTest, ValidCertAndKey_LoadSucceeds) {
     boost::asio::ssl::context ctx{boost::asio::ssl::context::tls_server};
 
     boost::system::error_code ec;
+    // NOLINTNEXTLINE(bugprone-unused-return-value,cert-err33-c)
     ctx.use_certificate_chain_file(files->cert_path.string(), ec);
     EXPECT_FALSE(ec) << "cert 로드 실패: " << ec.message();
 
+    // NOLINTNEXTLINE(bugprone-unused-return-value,cert-err33-c)
     ctx.use_private_key_file(files->key_path.string(), boost::asio::ssl::context::pem, ec);
     EXPECT_FALSE(ec) << "key 로드 실패: " << ec.message();
 }
@@ -289,6 +293,7 @@ TEST(SslContextTest, ValidCaCert_LoadVerifyFileSucceeds) {
     boost::asio::ssl::context ctx{boost::asio::ssl::context::tls_client};
 
     boost::system::error_code ec;
+    // NOLINTNEXTLINE(bugprone-unused-return-value,cert-err33-c)
     ctx.load_verify_file(files->cert_path.string(), ec);
     EXPECT_FALSE(ec) << "CA 로드 실패: " << ec.message();
 }
@@ -317,7 +322,7 @@ TEST(SslContextTest, SslStream_ConstructionSucceeds) {
     boost::asio::ssl::context ssl_ctx{boost::asio::ssl::context::tls_client};
 
     AsyncStream::ssl_socket ssl_sock{boost::asio::ip::tcp::socket{ioc}, ssl_ctx};
-    AsyncStream stream{std::move(ssl_sock)};
+    const AsyncStream stream{std::move(ssl_sock)};
     EXPECT_TRUE(stream.is_ssl());
 }
 
@@ -353,15 +358,15 @@ TEST(SessionSslTest, BackendSslCtxNull_PlaintextMode) {
     const auto server_ep =
         boost::asio::ip::tcp::endpoint{boost::asio::ip::address_v4::loopback(), 3306};
 
-    auto session = std::make_shared<Session>(10ULL,
-                                             std::move(client_stream),
-                                             server_ep,
-                                             nullptr,  // backend_ssl_ctx=nullptr: 평문 모드
-                                             false,
-                                             "",
-                                             make_policy_engine(),
-                                             make_logger(),
-                                             make_stats());
+    const auto session = std::make_shared<Session>(10ULL,
+                                                   std::move(client_stream),
+                                                   server_ep,
+                                                   nullptr,  // backend_ssl_ctx=nullptr: 평문 모드
+                                                   false,
+                                                   "",
+                                                   make_policy_engine(),
+                                                   make_logger(),
+                                                   make_stats());
 
     // 세션이 정상 생성되어야 함
     EXPECT_EQ(session->state(), SessionState::kHandshaking);
@@ -372,7 +377,7 @@ TEST(SessionSslTest, BackendSslCtxNull_PlaintextMode) {
 // ---------------------------------------------------------------------------
 TEST(SessionSslTest, PlaintextAsyncStream_IsNotSsl) {
     boost::asio::io_context ioc;
-    AsyncStream stream{boost::asio::ip::tcp::socket{ioc}};
+    const AsyncStream stream{boost::asio::ip::tcp::socket{ioc}};
 
     EXPECT_FALSE(stream.is_ssl());
 }
@@ -392,7 +397,7 @@ TEST(ProxyServerSslTest, SslDisabled_DefaultSslFieldsUnchanged) {
     cfg.policy_path = "/tmp/nonexistent_ssl_policy.yaml";
 
     // SSL 비활성화 상태에서 생성 성공 확인
-    EXPECT_NO_THROW({ ProxyServer server{cfg}; });
+    EXPECT_NO_THROW({ const ProxyServer server{cfg}; });
 
     // 설정 기본값 확인 (변경되지 않아야 함)
     EXPECT_FALSE(cfg.frontend_ssl_enabled);
@@ -411,6 +416,7 @@ TEST(SslContextFailTest, InvalidCertPath_ReturnsError) {
     boost::asio::ssl::context ctx{boost::asio::ssl::context::tls_server};
 
     boost::system::error_code ec;
+    // NOLINTNEXTLINE(bugprone-unused-return-value,cert-err33-c)
     ctx.use_certificate_chain_file("/nonexistent/path/cert.pem", ec);
 
     EXPECT_TRUE(ec) << "존재하지 않는 cert 경로에서 에러가 반환되어야 함";
@@ -423,6 +429,7 @@ TEST(SslContextFailTest, InvalidKeyPath_ReturnsError) {
     boost::asio::ssl::context ctx{boost::asio::ssl::context::tls_server};
 
     boost::system::error_code ec;
+    // NOLINTNEXTLINE(bugprone-unused-return-value,cert-err33-c)
     ctx.use_private_key_file("/nonexistent/path/key.pem", boost::asio::ssl::context::pem, ec);
 
     EXPECT_TRUE(ec) << "존재하지 않는 key 경로에서 에러가 반환되어야 함";
@@ -435,6 +442,7 @@ TEST(SslContextFailTest, InvalidCaPath_ReturnsError) {
     boost::asio::ssl::context ctx{boost::asio::ssl::context::tls_client};
 
     boost::system::error_code ec;
+    // NOLINTNEXTLINE(bugprone-unused-return-value,cert-err33-c)
     ctx.load_verify_file("/nonexistent/path/ca.pem", ec);
 
     EXPECT_TRUE(ec) << "존재하지 않는 CA 경로에서 에러가 반환되어야 함";
@@ -447,7 +455,7 @@ TEST(SslContextFailTest, EmptyCertPath_ReturnsError) {
     boost::asio::ssl::context ctx{boost::asio::ssl::context::tls_server};
 
     boost::system::error_code ec;
-    ctx.use_certificate_chain_file("", ec);
+    ctx.use_certificate_chain_file("", ec);  // NOLINT(bugprone-unused-return-value,cert-err33-c)
 
     EXPECT_TRUE(ec) << "빈 cert 경로에서 에러가 반환되어야 함";
 }
@@ -463,6 +471,7 @@ TEST(SslContextFailTest, InvalidPemContent_ReturnsError) {
     boost::asio::ssl::context ctx{boost::asio::ssl::context::tls_server};
 
     boost::system::error_code ec;
+    // NOLINTNEXTLINE(bugprone-unused-return-value,cert-err33-c)
     ctx.use_certificate_chain_file(bad_cert_path.string(), ec);
 
     EXPECT_TRUE(ec) << "잘못된 PEM 내용에서 에러가 반환되어야 함";
@@ -477,6 +486,7 @@ TEST(SslContextFailTest, InvalidKeyPemContent_ReturnsError) {
     boost::asio::ssl::context ctx{boost::asio::ssl::context::tls_server};
 
     boost::system::error_code ec;
+    // NOLINTNEXTLINE(bugprone-unused-return-value,cert-err33-c)
     ctx.use_private_key_file(bad_key_path.string(), boost::asio::ssl::context::pem, ec);
 
     EXPECT_TRUE(ec) << "잘못된 key PEM 내용에서 에러가 반환되어야 함";
@@ -496,15 +506,15 @@ TEST(SessionSslModeTest, NullBackendSslCtx_InitialStateIsHandshaking) {
     const auto server_ep =
         boost::asio::ip::tcp::endpoint{boost::asio::ip::address_v4::loopback(), 3306};
 
-    auto session = std::make_shared<Session>(20ULL,
-                                             std::move(client_stream),
-                                             server_ep,
-                                             nullptr,  // backend_ssl_ctx=nullptr: 평문 모드
-                                             false,
-                                             "",
-                                             make_policy_engine(),
-                                             make_logger(),
-                                             make_stats());
+    const auto session = std::make_shared<Session>(20ULL,
+                                                   std::move(client_stream),
+                                                   server_ep,
+                                                   nullptr,  // backend_ssl_ctx=nullptr: 평문 모드
+                                                   false,
+                                                   "",
+                                                   make_policy_engine(),
+                                                   make_logger(),
+                                                   make_stats());
 
     EXPECT_EQ(session->state(), SessionState::kHandshaking);
 }
@@ -524,7 +534,7 @@ TEST(SessionSslModeTest, ValidBackendSslCtx_InitialStateIsHandshaking) {
     const auto server_ep =
         boost::asio::ip::tcp::endpoint{boost::asio::ip::address_v4::loopback(), 3306};
 
-    auto session =
+    const auto session =
         std::make_shared<Session>(21ULL,
                                   std::move(client_stream),
                                   server_ep,
@@ -544,7 +554,7 @@ TEST(SessionSslModeTest, ValidBackendSslCtx_InitialStateIsHandshaking) {
 // ---------------------------------------------------------------------------
 TEST(SessionSslModeTest, TcpClientStream_IsNotSsl) {
     boost::asio::io_context ioc;
-    AsyncStream client_stream{boost::asio::ip::tcp::socket{ioc}};
+    const AsyncStream client_stream{boost::asio::ip::tcp::socket{ioc}};
 
     EXPECT_FALSE(client_stream.is_ssl());
 }
@@ -557,7 +567,7 @@ TEST(SessionSslModeTest, SslClientStream_IsSsl) {
     boost::asio::ssl::context ssl_ctx{boost::asio::ssl::context::tls_server};
 
     AsyncStream::ssl_socket ssl_sock{boost::asio::ip::tcp::socket{ioc}, ssl_ctx};
-    AsyncStream client_stream{std::move(ssl_sock)};
+    const AsyncStream client_stream{std::move(ssl_sock)};
 
     EXPECT_TRUE(client_stream.is_ssl());
 }
@@ -575,15 +585,15 @@ TEST(SessionSslModeTest, ValidBackendSslCtx_CloseIdempotent) {
     const auto server_ep =
         boost::asio::ip::tcp::endpoint{boost::asio::ip::address_v4::loopback(), 3306};
 
-    auto session = std::make_shared<Session>(22ULL,
-                                             std::move(client_stream),
-                                             server_ep,
-                                             &backend_ssl_ctx,
-                                             false,
-                                             "",
-                                             make_policy_engine(),
-                                             make_logger(),
-                                             make_stats());
+    const auto session = std::make_shared<Session>(22ULL,
+                                                   std::move(client_stream),
+                                                   server_ep,
+                                                   &backend_ssl_ctx,
+                                                   false,
+                                                   "",
+                                                   make_policy_engine(),
+                                                   make_logger(),
+                                                   make_stats());
 
     // close()는 idempotent — SSL ctx 포인터가 유효해도 크래시 없어야 함
     EXPECT_NO_THROW({

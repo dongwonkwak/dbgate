@@ -33,7 +33,7 @@ boost::asio::ip::tcp::socket make_tcp_socket(boost::asio::io_context& ioc) {
 
 TEST(AsyncStreamTest, ConstructFromTcpSocket) {
     boost::asio::io_context ioc;
-    AsyncStream stream{make_tcp_socket(ioc)};
+    const AsyncStream stream{make_tcp_socket(ioc)};
 
     EXPECT_FALSE(stream.is_ssl());
 }
@@ -43,7 +43,7 @@ TEST(AsyncStreamTest, ConstructFromSslSocket) {
     boost::asio::ssl::context ssl_ctx{boost::asio::ssl::context::tls_client};
 
     AsyncStream::ssl_socket ssl_sock{make_tcp_socket(ioc), ssl_ctx};
-    AsyncStream stream{std::move(ssl_sock)};
+    const AsyncStream stream{std::move(ssl_sock)};
 
     EXPECT_TRUE(stream.is_ssl());
 }
@@ -58,7 +58,7 @@ TEST(AsyncStreamTest, MoveConstructorTcpSocket) {
 
     EXPECT_FALSE(stream1.is_ssl());
 
-    AsyncStream stream2{std::move(stream1)};
+    const AsyncStream stream2{std::move(stream1)};
     EXPECT_FALSE(stream2.is_ssl());
 }
 
@@ -71,7 +71,7 @@ TEST(AsyncStreamTest, MoveConstructorSslSocket) {
 
     EXPECT_TRUE(stream1.is_ssl());
 
-    AsyncStream stream2{std::move(stream1)};
+    const AsyncStream stream2{std::move(stream1)};
     EXPECT_TRUE(stream2.is_ssl());
 }
 
@@ -120,7 +120,7 @@ TEST(AsyncStreamTest, MoveAssignTcpToSsl) {
 
 TEST(AsyncStreamTest, IsSslFalseForTcp) {
     boost::asio::io_context ioc;
-    AsyncStream stream{make_tcp_socket(ioc)};
+    const AsyncStream stream{make_tcp_socket(ioc)};
     EXPECT_FALSE(stream.is_ssl());
 }
 
@@ -129,7 +129,7 @@ TEST(AsyncStreamTest, IsSslTrueForSsl) {
     boost::asio::ssl::context ssl_ctx{boost::asio::ssl::context::tls_client};
 
     AsyncStream::ssl_socket ssl_sock{make_tcp_socket(ioc), ssl_ctx};
-    AsyncStream stream{std::move(ssl_sock)};
+    const AsyncStream stream{std::move(ssl_sock)};
     EXPECT_TRUE(stream.is_ssl());
 }
 
@@ -142,7 +142,7 @@ TEST(AsyncStreamTest, LowestLayerReturnsTcpSocketForPlain) {
     AsyncStream stream{make_tcp_socket(ioc)};
 
     // lowest_layer()가 tcp::socket& 를 반환해야 함 (컴파일 검증)
-    boost::asio::ip::tcp::socket& tcp_sock = stream.lowest_layer();
+    const boost::asio::ip::tcp::socket& tcp_sock = stream.lowest_layer();
 
     // 기본 상태에서 소켓은 열려 있지 않아야 함
     EXPECT_FALSE(tcp_sock.is_open());
@@ -155,7 +155,7 @@ TEST(AsyncStreamTest, LowestLayerReturnsTcpSocketForSsl) {
     AsyncStream::ssl_socket ssl_sock{make_tcp_socket(ioc), ssl_ctx};
     AsyncStream stream{std::move(ssl_sock)};
 
-    boost::asio::ip::tcp::socket& tcp_sock = stream.lowest_layer();
+    const boost::asio::ip::tcp::socket& tcp_sock = stream.lowest_layer();
     EXPECT_FALSE(tcp_sock.is_open());
 }
 
@@ -168,7 +168,7 @@ TEST(AsyncStreamTest, GetExecutorFromTcpSocket) {
     AsyncStream stream{make_tcp_socket(ioc)};
 
     // executor가 반환되면 성공 (타입 확인)
-    auto ex = stream.get_executor();
+    const auto ex = stream.get_executor();
     EXPECT_TRUE(static_cast<bool>(ex));
 }
 
@@ -179,7 +179,7 @@ TEST(AsyncStreamTest, GetExecutorFromSslSocket) {
     AsyncStream::ssl_socket ssl_sock{make_tcp_socket(ioc), ssl_ctx};
     AsyncStream stream{std::move(ssl_sock)};
 
-    auto ex = stream.get_executor();
+    const auto ex = stream.get_executor();
     EXPECT_TRUE(static_cast<bool>(ex));
 }
 
@@ -194,7 +194,7 @@ TEST(AsyncStreamTest, CloseViaLowestLayerNoThrow) {
     // 연결되지 않은 소켓 닫기는 에러를 무시하면 crashing하지 않아야 함
     EXPECT_NO_THROW({
         boost::system::error_code ec;
-        stream.lowest_layer().close(ec);
+        stream.lowest_layer().close(ec);  // NOLINT(bugprone-unused-return-value,cert-err33-c)
         // ec가 설정돼도 크래시 없음
     });
 }
@@ -218,7 +218,7 @@ TEST(AsyncStreamTest, AsyncHandshakeNoOpForTcp) {
                            });
 
     // no-op은 post()를 통해 비동기로 완료되므로 io_context를 실행해야 함
-    ioc.run();
+    (void)ioc.run();  // NOLINT(bugprone-unused-return-value,cert-err33-c)
 
     EXPECT_TRUE(called);
     EXPECT_FALSE(result_ec);  // 성공 (ec == 0)
@@ -240,7 +240,7 @@ TEST(AsyncStreamTest, AsyncShutdownNoOpForTcp) {
         result_ec = ec;
     });
 
-    ioc.run();
+    (void)ioc.run();  // NOLINT(bugprone-unused-return-value,cert-err33-c)
 
     EXPECT_TRUE(called);
     EXPECT_FALSE(result_ec);
