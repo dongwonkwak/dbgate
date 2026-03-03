@@ -1,0 +1,1 @@
+CALL sp_get_user(1)

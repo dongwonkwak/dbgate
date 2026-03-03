@@ -132,19 +132,19 @@ cd build/tsan && ctest --output-on-failure
 ### 4.3 빌드 및 실행
 
 ```bash
-# Clang + libFuzzer + ASan 빌드 (퍼징 전용)
-# CMake 퍼징 프리셋 사용 (추후 추가)
-cmake -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
-      -DFUZZING=ON -DCMAKE_BUILD_TYPE=Debug \
-      -DCMAKE_CXX_FLAGS="-fsanitize=fuzzer,address" \
-      -B build/fuzz
-cmake --build build/fuzz --target fuzz_mysql_packet fuzz_sql_parser fuzz_policy_engine
+# CMake fuzz 프리셋 사용 (clang++-19 + libFuzzer + ASan)
+# DBGATE_ENABLE_FUZZING=ON 이 자동 설정되어 퍼즈 타겟만 빌드됨
+cmake --preset fuzz
+cmake --build build/fuzz
 
 # 퍼저 실행 (60초, 시드 코퍼스 사용)
 ./build/fuzz/fuzz_mysql_packet tests/fuzz/corpus/mysql_packet/ -max_total_time=60
 ./build/fuzz/fuzz_sql_parser tests/fuzz/corpus/sql_parser/ -max_total_time=60
 ./build/fuzz/fuzz_policy_engine tests/fuzz/corpus/policy_engine/ -max_total_time=60
 ```
+
+> **참고**: `fuzz` 프리셋은 `clang++-19`을 컴파일러로 사용한다.
+> 로컬 실행 시 LLVM 19 패키지가 설치되어 있어야 한다.
 
 ### 4.4 시드 코퍼스
 - `tests/fuzz/corpus/mysql_packet/` — 정상 MySQL 패킷 바이너리 샘플

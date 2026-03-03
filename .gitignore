@@ -50,6 +50,9 @@ docker-compose.override.yaml
 crash-*
 leak-*
 corpus/
+# Allow seed corpus checked into the repo
+!tests/fuzz/corpus/
+!tests/fuzz/corpus/**
 
 .claude/settings.local.json
 .claude/agent-memory/
