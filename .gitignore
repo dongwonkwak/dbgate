@@ -30,6 +30,7 @@ CTestTestfile.cmake
 
 # ─── Go ─────────────────────────────────────────────────────────────────────
 tools/cmd/dbgate-cli/dbgate-cli
+tools/dbgate-cli
 tools/vendor/
 
 # ─── Environment ────────────────────────────────────────────────────────────

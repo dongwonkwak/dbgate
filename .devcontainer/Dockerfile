@@ -2,7 +2,10 @@ FROM ubuntu:24.04
 
 ARG DEBIAN_FRONTEND=noninteractive
 ARG CLAUDE_CODE_VERSION=latest
-ARG GO_VERSION=1.22.10
+ARG GO_VERSION=1.26.0
+ARG GOPLS_VERSION=v0.21.1
+ARG GOLANGCI_LINT_VERSION=v1.64.8
+ARG GO_TOOLS_GOPROXY=https://proxy.golang.org,direct
 ARG ZSH_IN_DOCKER_VERSION=1.2.1
 
 # -----------------------------
@@ -110,20 +113,34 @@ RUN set -eux; \
     *) echo "Unsupported arch: $ARCH" >&2; exit 1 ;; \
   esac; \
   curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-${GO_ARCH}.tar.gz" | tar -C /usr/local -xz
-ENV GOPATH=/root/go \
-    PATH=/usr/local/go/bin:/root/go/bin:${PATH}
+ENV GOPATH=/workspace/.cache/go \
+    GOCACHE=/workspace/.cache/go-build \
+    GOMODCACHE=/workspace/.cache/go-mod \
+    GOLANGCI_LINT_CACHE=/workspace/.cache/golangci-lint \
+    GOPROXY=https://proxy.golang.org,direct \
+    GOSUMDB=sum.golang.org \
+    PATH=/usr/local/go/bin:/workspace/.cache/go/bin:${PATH}
 
 # -----------------------------
-# Go tools (pin versions for reproducible devcontainer builds)
+# Go tools (version managed by build args)
 # -----------------------------
-RUN go install golang.org/x/tools/gopls@v0.16.2
+RUN GOPROXY=${GO_TOOLS_GOPROXY} GOBIN=/usr/local/bin go install \
+  golang.org/x/tools/gopls@${GOPLS_VERSION}
+RUN GOPROXY=${GO_TOOLS_GOPROXY} GOBIN=/usr/local/bin go install \
+  github.com/golangci/golangci-lint/cmd/golangci-lint@${GOLANGCI_LINT_VERSION}
 
 # -----------------------------
 # Devcontainer marker + workspace
 # -----------------------------
 ENV DEVCONTAINER=true
 RUN set -eux; \
-  mkdir -p /workspace /root/.claude
+  mkdir -p \
+    /workspace \
+    /workspace/.cache/go \
+    /workspace/.cache/go-build \
+    /workspace/.cache/go-mod \
+    /workspace/.cache/golangci-lint \
+    /root/.claude
 
 WORKDIR /workspace
 

@@ -24,12 +24,13 @@ jobs:
         with:
           go-version-file: tools/go.mod
 
+      - name: Install golangci-lint
+        run: go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.64.8
+
       - name: Run golangci-lint
-        uses: golangci/golangci-lint-action@55c2c1448f86e01eaae002a5a3a9624417608d84 # v6
-        with:
-          version: v1.64.8
-          working-directory: tools
-          args: --timeout=5m
+        working-directory: tools
+        run: |
+          "$(go env GOPATH)/bin/golangci-lint" run --timeout=5m
 
   test:
     name: Test (go test -race)
