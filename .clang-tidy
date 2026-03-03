@@ -23,7 +23,7 @@ Checks: >
   -readability-identifier-length,
   -readability-redundant-member-init,
 
-WarningsAsErrors: ''
+WarningsAsErrors: '*,-clang-analyzer-core.NullDereference'
 
 HeaderFilterRegex: 'src/.*\.hpp$'
 
