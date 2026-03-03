@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# pre-commit hook: staged 파일에 대해 C++/Go 포맷 검사를 수행한다.
+# pre-commit hook: staged 파일에 대해 C++/Go 포맷 및 빠른 Go lint 검사를 수행한다.
 # scripts/install-hooks.sh 로 설치한다.
 set -euo pipefail
 
@@ -82,6 +82,25 @@ if [[ ${#GO_FILES[@]} -gt 0 ]]; then
         echo "[pre-commit] ✅ Go imports OK"
       fi
     fi
+  fi
+fi
+
+# ③ Go 빠른 린트 검사 (staged tools/**/*.go 또는 .golangci.yml)
+RUN_GO_LINT=0
+if [[ ${#GO_FILES[@]} -gt 0 ]]; then
+  RUN_GO_LINT=1
+elif echo "$STAGED" | grep -qE '^\.golangci\.yml$'; then
+  RUN_GO_LINT=1
+fi
+
+if [[ $RUN_GO_LINT -eq 1 ]]; then
+  if ! command -v golangci-lint >/dev/null 2>&1; then
+    echo "[pre-commit] ⚠️  golangci-lint 미설치 — Go 린트 skip (CI가 최종 검증)"
+  elif ! (cd tools && golangci-lint run --fast --timeout=2m); then
+    echo "[pre-commit] ❌ golangci-lint(--fast) 실패"
+    HAS_ERROR=1
+  else
+    echo "[pre-commit] ✅ golangci-lint(--fast) OK"
   fi
 fi
 
