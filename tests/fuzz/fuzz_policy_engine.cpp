@@ -92,8 +92,11 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
         // Evaluate policy with parsed query
         [[maybe_unused]] auto result = engine.evaluate(parse_result.value(), session);
     } else {
-        // Exercise the error path (must always return kBlock)
-        [[maybe_unused]] auto result = engine.evaluate_error(parse_result.error(), session);
+        // Exercise the error path — fail-close invariant: must always return kBlock
+        auto result = engine.evaluate_error(parse_result.error(), session);
+        if (result.action != PolicyAction::kBlock) {
+            __builtin_trap();  // fail-close 위반: 퍼저/CI가 즉시 실패해야 함
+        }
     }
 
     return 0;
