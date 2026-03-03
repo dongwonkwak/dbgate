@@ -68,7 +68,10 @@ auto handle_connection(boost::asio::ip::tcp::socket    socket,
     std::array<char, 512> buf{};
     boost::system::error_code ec;
 
-    std::size_t n = co_await socket.async_read_some(
+    // Boost.Asio coroutine 내부 경로에서 clang-analyzer가 오탐을 내는 케이스가 있어
+    // 해당 라인에 한해 경고를 제한한다.
+    // NOLINTNEXTLINE(clang-analyzer-core.NullDereference)
+    const std::size_t n = co_await socket.async_read_some(
         boost::asio::buffer(buf),
         boost::asio::redirect_error(boost::asio::use_awaitable, ec)
     );
@@ -130,8 +133,18 @@ auto handle_connection(boost::asio::ip::tcp::socket    socket,
     }
 
     // 소켓 즉시 close
-    socket.shutdown(boost::asio::ip::tcp::socket::shutdown_both, ec);
-    socket.close(ec);
+    const auto shutdown_ec =
+        socket.shutdown(boost::asio::ip::tcp::socket::shutdown_both, ec);
+    if (shutdown_ec) {
+        spdlog::debug("[health_check] shutdown error: {}", shutdown_ec.message());
+    }
+
+    const auto close_ec = socket.close(ec);
+    if (close_ec) {
+        spdlog::debug("[health_check] close error: {}", close_ec.message());
+    }
+
+    co_return;
 }
 
 }  // namespace

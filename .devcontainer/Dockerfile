@@ -57,6 +57,7 @@ RUN set -eux; \
     clang-tools-19 \
     clang-format-19 \
     clang-tidy-19 \
+    cppcheck \
     # Debugging / networking
     gdb \
     valgrind \
