@@ -51,7 +51,7 @@ std::shared_ptr<StatsCollector> make_stats() {
 // ProxyConfig 기본값 테스트
 // ---------------------------------------------------------------------------
 TEST(ProxyConfigTest, DefaultValues) {
-    ProxyConfig cfg;
+    const ProxyConfig cfg;
     EXPECT_EQ(cfg.listen_port, 0);
     EXPECT_EQ(cfg.upstream_port, 0);
     EXPECT_EQ(cfg.max_connections, 0U);
@@ -82,7 +82,7 @@ TEST(ProxyServerTest, ConstructionWithConfig) {
     cfg.policy_path = "/tmp/nonexistent_policy.yaml";
 
     // 생성만 검증 (run() 호출 없음)
-    EXPECT_NO_THROW({ ProxyServer server{cfg}; });
+    EXPECT_NO_THROW({ const ProxyServer server{cfg}; });
 }
 
 // ---------------------------------------------------------------------------
@@ -90,15 +90,15 @@ TEST(ProxyServerTest, ConstructionWithConfig) {
 // ---------------------------------------------------------------------------
 TEST(HealthCheckTest, InitialStateIsHealthy) {
     boost::asio::io_context ioc;
-    auto stats = make_stats();
-    HealthCheck hc{18081, stats, ioc};
+    const auto stats = make_stats();
+    const HealthCheck hc{18081, stats, ioc};
 
     EXPECT_EQ(hc.status(), HealthStatus::kHealthy);
 }
 
 TEST(HealthCheckTest, SetUnhealthyTransition) {
     boost::asio::io_context ioc;
-    auto stats = make_stats();
+    const auto stats = make_stats();
     HealthCheck hc{18082, stats, ioc};
 
     hc.set_unhealthy("overloaded");
@@ -107,7 +107,7 @@ TEST(HealthCheckTest, SetUnhealthyTransition) {
 
 TEST(HealthCheckTest, SetHealthyRecovery) {
     boost::asio::io_context ioc;
-    auto stats = make_stats();
+    const auto stats = make_stats();
     HealthCheck hc{18083, stats, ioc};
 
     hc.set_unhealthy("test");
@@ -119,7 +119,7 @@ TEST(HealthCheckTest, SetHealthyRecovery) {
 
 TEST(HealthCheckTest, SetUnhealthyEmptyReason) {
     boost::asio::io_context ioc;
-    auto stats = make_stats();
+    const auto stats = make_stats();
     HealthCheck hc{18084, stats, ioc};
 
     hc.set_unhealthy("");
@@ -128,7 +128,7 @@ TEST(HealthCheckTest, SetUnhealthyEmptyReason) {
 
 TEST(HealthCheckTest, MultipleSetUnhealthyCalls) {
     boost::asio::io_context ioc;
-    auto stats = make_stats();
+    const auto stats = make_stats();
     HealthCheck hc{18085, stats, ioc};
 
     hc.set_unhealthy("reason1");
@@ -231,7 +231,7 @@ TEST(SessionStateTest, EnumValues) {
 // ---------------------------------------------------------------------------
 TEST(StatsHealthIntegrationTest, OverloadDetectionLogic) {
     boost::asio::io_context ioc;
-    auto stats = make_stats();
+    const auto stats = make_stats();
     HealthCheck hc{18086, stats, ioc};
 
     // 초기 상태: healthy
@@ -283,7 +283,7 @@ TEST(ProxyServerSignalHandlerTest, SigstopLifetimeExtended) {
     cfg.policy_path = "/tmp/nonexistent_policy.yaml";
 
     // 생성 성공 확인 (신호 핸들러 설정 포함)
-    EXPECT_NO_THROW({ ProxyServer server{cfg}; });
+    EXPECT_NO_THROW({ const ProxyServer server{cfg}; });
 }
 
 // ---------------------------------------------------------------------------
@@ -308,7 +308,7 @@ TEST(ProxyServerSignalHandlerTest, SighupLifetimeSafe) {
     cfg.policy_path = "/tmp/nonexistent_policy.yaml";
 
     // 생성 성공 확인
-    EXPECT_NO_THROW({ ProxyServer server{cfg}; });
+    EXPECT_NO_THROW({ const ProxyServer server{cfg}; });
 }
 
 // ---------------------------------------------------------------------------
@@ -335,7 +335,7 @@ TEST(ProxyServerUpstreamResolverTest, HostnameAndIPSupport) {
     cfg.uds_socket_path = "/tmp/test_proxy_resolver_ip.sock";
     cfg.policy_path = "/tmp/nonexistent_policy.yaml";
 
-    EXPECT_NO_THROW({ ProxyServer server{cfg}; });
+    EXPECT_NO_THROW({ const ProxyServer server{cfg}; });
 
     // 호스트명으로 설정 (localhost)
     ProxyConfig cfg2;
@@ -349,5 +349,5 @@ TEST(ProxyServerUpstreamResolverTest, HostnameAndIPSupport) {
     cfg2.policy_path = "/tmp/nonexistent_policy.yaml";
 
     // resolver가 호스트명을 처리할 수 있도록 accept 루프 내부에서 사용됨
-    EXPECT_NO_THROW({ ProxyServer server{cfg2}; });
+    EXPECT_NO_THROW({ const ProxyServer server{cfg2}; });
 }

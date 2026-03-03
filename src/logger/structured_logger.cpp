@@ -6,26 +6,30 @@
 
 #include "logger/structured_logger.hpp"
 
-#include <chrono>
-#include <ctime>
-#include <iomanip>
-#include <sstream>
-
 #include <spdlog/common.h>
 #include <spdlog/sinks/rotating_file_sink.h>
 #include <spdlog/sinks/stdout_sinks.h>
 #include <spdlog/spdlog.h>
 
+#include <array>
+#include <chrono>
+#include <cstdio>
+#include <ctime>
+#include <iomanip>
+#include <sstream>
+
+namespace {
+
 // ---------------------------------------------------------------------------
 // Helper: ISO8601 timestamp 포맷
 // ---------------------------------------------------------------------------
-static std::string format_iso8601(const std::chrono::system_clock::time_point& tp) {
+std::string format_iso8601(const std::chrono::system_clock::time_point& tp) {
     const auto duration = tp.time_since_epoch();
-    const auto seconds  = std::chrono::duration_cast<std::chrono::seconds>(duration);
-    const auto millis   = std::chrono::duration_cast<std::chrono::milliseconds>(duration) - seconds;
+    const auto seconds = std::chrono::duration_cast<std::chrono::seconds>(duration);
+    const auto millis = std::chrono::duration_cast<std::chrono::milliseconds>(duration) - seconds;
 
-    std::time_t time_t_val = std::chrono::system_clock::to_time_t(tp);
-    std::tm     tm_val{};
+    const std::time_t time_t_val = std::chrono::system_clock::to_time_t(tp);
+    std::tm tm_val{};
 #if defined(_WIN32)
     if (gmtime_s(&tm_val, &time_t_val) != 0) {
         return "1970-01-01T00:00:00.000Z";
@@ -45,11 +49,11 @@ static std::string format_iso8601(const std::chrono::system_clock::time_point& t
 // ---------------------------------------------------------------------------
 // Helper: JSON 문자열 이스케이프 (기본적인 구현)
 // ---------------------------------------------------------------------------
-static std::string escape_json_string(const std::string& str) {
+std::string escape_json_string(const std::string& str) {
     std::string result;
     result.reserve(str.size() + 16);
 
-    for (char ch : str) {
+    for (const char ch : str) {
         switch (ch) {
             case '"':
                 result += "\\\"";
@@ -74,9 +78,12 @@ static std::string escape_json_string(const std::string& str) {
                 break;
             default:
                 if (static_cast<unsigned char>(ch) < 0x20) {
-                    char buf[8]{};
-                    snprintf(buf, sizeof(buf), "\\u%04x", static_cast<unsigned int>(static_cast<unsigned char>(ch)));
-                    result += buf;
+                    std::array<char, 8> buf{};
+                    (void)std::snprintf(buf.data(),  // NOLINT(cppcoreguidelines-pro-type-vararg)
+                                        buf.size(),
+                                        "\\u%04x",
+                                        static_cast<unsigned int>(static_cast<unsigned char>(ch)));
+                    result += buf.data();
                 } else {
                     result += ch;
                 }
@@ -87,10 +94,13 @@ static std::string escape_json_string(const std::string& str) {
     return result;
 }
 
+}  // namespace
+
 // ---------------------------------------------------------------------------
 // Helper: spdlog 로그 레벨 변환
 // ---------------------------------------------------------------------------
-int StructuredLogger::to_spdlog_level(LogLevel level) const {
+int StructuredLogger::to_spdlog_level(  // NOLINT(readability-convert-member-functions-to-static)
+    LogLevel level) const {
     switch (level) {
         case LogLevel::kDebug:
             return static_cast<int>(spdlog::level::debug);
@@ -108,10 +118,10 @@ int StructuredLogger::to_spdlog_level(LogLevel level) const {
 // ---------------------------------------------------------------------------
 // StructuredLogger 생성자
 // ---------------------------------------------------------------------------
-StructuredLogger::StructuredLogger(LogLevel min_level, const std::filesystem::path& log_path)
-    : min_level_(min_level)
-    , log_path_(log_path)
-{
+StructuredLogger::StructuredLogger(
+    LogLevel min_level,
+    const std::filesystem::path& log_path)  // NOLINT(modernize-pass-by-value)
+    : min_level_(min_level), log_path_(log_path) {
     try {
         // 로그 디렉터리 생성
         std::filesystem::create_directories(log_path_.parent_path());
@@ -124,8 +134,8 @@ StructuredLogger::StructuredLogger(LogLevel min_level, const std::filesystem::pa
         sinks.push_back(stdout_sink);
 
         // Rotating file sink (100MB, 3개 파일 유지)
-        const size_t max_file_size   = 100 * 1024 * 1024;  // 100MB
-        const size_t max_files       = 3;
+        const size_t max_file_size = std::size_t{100} * 1024 * 1024;  // 100MB
+        const size_t max_files = 3;
         auto file_sink = std::make_shared<spdlog::sinks::rotating_file_sink_mt>(
             log_path_.string(), max_file_size, max_files);
         sinks.push_back(file_sink);
@@ -153,8 +163,8 @@ StructuredLogger::~StructuredLogger() {
         if (logger_) {
             spdlog::drop("dbgate");
         }
-    } catch (...) {
-        // 소멸자에서 예외 무시
+    } catch (...) {  // NOLINT(bugprone-empty-catch)
+        // Destructor must not throw — swallow all exceptions from spdlog cleanup
     }
 }
 
@@ -190,8 +200,8 @@ void StructuredLogger::log_query(const QueryLog& entry) {
     json << R"({"event":"query","session_id":)" << entry.session_id << R"(,"db_user":")"
          << escape_json_string(entry.db_user) << R"(","client_ip":")"
          << escape_json_string(entry.client_ip) << R"(","raw_sql":")"
-         << escape_json_string(entry.raw_sql) << R"(","command_raw":)" << static_cast<int>(entry.command_raw)
-         << R"(,"tables":[)";
+         << escape_json_string(entry.raw_sql) << R"(","command_raw":)"
+         << static_cast<int>(entry.command_raw) << R"(,"tables":[)";
 
     for (size_t i = 0; i < entry.tables.size(); ++i) {
         if (i > 0) {
@@ -200,9 +210,9 @@ void StructuredLogger::log_query(const QueryLog& entry) {
         json << R"(")" << escape_json_string(entry.tables[i]) << R"(")";
     }
 
-    json << R"(],"action_raw":)" << static_cast<int>(entry.action_raw)
-         << R"(,"timestamp":")" << format_iso8601(entry.timestamp)
-         << R"(","duration_us":)" << entry.duration.count() << R"(})";
+    json << R"(],"action_raw":)" << static_cast<int>(entry.action_raw) << R"(,"timestamp":")"
+         << format_iso8601(entry.timestamp) << R"(","duration_us":)" << entry.duration.count()
+         << R"(})";
 
     logger_->info(json.str());
 }
@@ -217,8 +227,8 @@ void StructuredLogger::log_block(const BlockLog& entry) {
 
     // JSON 구성
     std::ostringstream json;
-    json << R"({"event":"query_blocked","session_id":)" << entry.session_id
-         << R"(,"db_user":")" << escape_json_string(entry.db_user) << R"(","client_ip":")"
+    json << R"({"event":"query_blocked","session_id":)" << entry.session_id << R"(,"db_user":")"
+         << escape_json_string(entry.db_user) << R"(","client_ip":")"
          << escape_json_string(entry.client_ip) << R"(","raw_sql":")"
          << escape_json_string(entry.raw_sql) << R"(","matched_rule":")"
          << escape_json_string(entry.matched_rule) << R"(","reason":")"

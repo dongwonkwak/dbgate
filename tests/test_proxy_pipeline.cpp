@@ -29,19 +29,19 @@
 // - ProcedureDetector 는 PREPARE @var 패턴의 변수 간접 참조를 탐지하지 못함.
 // ---------------------------------------------------------------------------
 
-#include "parser/injection_detector.hpp"
-#include "parser/procedure_detector.hpp"
-#include "parser/sql_parser.hpp"
-#include "policy/policy_engine.hpp"
-#include "policy/rule.hpp"
-#include "stats/stats_collector.hpp"
-
 #include <gtest/gtest.h>
 
 #include <memory>
 #include <string>
 #include <string_view>
 #include <vector>
+
+#include "parser/injection_detector.hpp"
+#include "parser/procedure_detector.hpp"
+#include "parser/sql_parser.hpp"
+#include "policy/policy_engine.hpp"
+#include "policy/rule.hpp"
+#include "stats/stats_collector.hpp"
 
 // ---------------------------------------------------------------------------
 // 헬퍼: 기본 인젝션 탐지 패턴 (test_injection_detector.cpp 와 동일)
@@ -51,7 +51,7 @@ namespace {
 std::vector<std::string> default_injection_patterns() {
     return {
         "UNION\\s+SELECT",
-        "'\\s*OR\\s+['\"\\d]",
+        R"('\s*OR\s+['"\d])",
         "SLEEP\\s*\\(",
         "BENCHMARK\\s*\\(",
         "LOAD_FILE\\s*\\(",
@@ -77,20 +77,20 @@ std::shared_ptr<PolicyConfig> make_default_config() {
 
     // SQL 구문 차단 규칙
     cfg->sql_rules.block_statements = {"DROP", "TRUNCATE", "ALTER"};
-    cfg->sql_rules.block_patterns   = default_injection_patterns();
+    cfg->sql_rules.block_patterns = default_injection_patterns();
 
     // 기본 사용자 접근 규칙: * 사용자에게 SELECT/INSERT/UPDATE/DELETE 허용
     AccessRule allow_rule;
-    allow_rule.user               = "*";
-    allow_rule.source_ip_cidr     = "";  // 모든 IP 허용
-    allow_rule.allowed_tables     = {"*"};
+    allow_rule.user = "*";
+    allow_rule.source_ip_cidr = "";  // 모든 IP 허용
+    allow_rule.allowed_tables = {"*"};
     allow_rule.allowed_operations = {"SELECT", "INSERT", "UPDATE", "DELETE", "CALL"};
     allow_rule.blocked_operations = {};
     cfg->access_control.push_back(std::move(allow_rule));
 
     // 프로시저 제어: whitelist 모드, 동적 SQL 차단
-    cfg->procedure_control.mode             = "whitelist";
-    cfg->procedure_control.whitelist        = {"safe_proc"};  // 허용 프로시저
+    cfg->procedure_control.mode = "whitelist";
+    cfg->procedure_control.whitelist = {"safe_proc"};  // 허용 프로시저
     cfg->procedure_control.block_dynamic_sql = true;
     cfg->procedure_control.block_create_alter = true;
 
@@ -101,14 +101,14 @@ std::shared_ptr<PolicyConfig> make_default_config() {
 // make_session
 //   테스트용 기본 SessionContext 생성.
 // ---------------------------------------------------------------------------
-SessionContext make_session(const std::string& user  = "testuser",
-                            const std::string& ip    = "127.0.0.1") {
+SessionContext make_session(const std::string& user = "testuser",
+                            const std::string& ip = "127.0.0.1") {
     SessionContext ctx;
-    ctx.session_id    = 1;
-    ctx.client_ip     = ip;
-    ctx.client_port   = 12345;
-    ctx.db_user       = user;
-    ctx.db_name       = "testdb";
+    ctx.session_id = 1;
+    ctx.client_ip = ip;
+    ctx.client_port = 12345;
+    ctx.db_user = user;
+    ctx.db_name = "testdb";
     ctx.handshake_done = true;
     return ctx;
 }
@@ -118,10 +118,10 @@ SessionContext make_session(const std::string& user  = "testuser",
 //   simulate_pipeline() 의 반환값.
 // ---------------------------------------------------------------------------
 struct PipelineResult {
-    PolicyAction     action;
-    std::string      reason;
-    bool             injection_detected{false};
-    bool             procedure_detected{false};
+    PolicyAction action;
+    std::string reason;
+    bool injection_detected{false};
+    bool procedure_detected{false};
 };
 
 // ---------------------------------------------------------------------------
@@ -136,15 +136,13 @@ struct PipelineResult {
 //   5. PolicyEngine::evaluate(query, session) → 최종 판정
 //   6. StatsCollector::on_query(blocked) 호출
 // ---------------------------------------------------------------------------
-PipelineResult simulate_pipeline(
-    std::string_view               sql,
-    const PolicyEngine&            engine,
-    const InjectionDetector&       injection_det,
-    const ProcedureDetector&       proc_det,
-    const SessionContext&          session,
-    StatsCollector&                stats)
-{
-    SqlParser parser;
+PipelineResult simulate_pipeline(std::string_view sql,
+                                 const PolicyEngine& engine,
+                                 const InjectionDetector& injection_det,
+                                 const ProcedureDetector& proc_det,
+                                 const SessionContext& session,
+                                 StatsCollector& stats) {
+    const SqlParser parser;
     const auto parse_result = parser.parse(sql);
 
     if (!parse_result.has_value()) {
@@ -152,8 +150,8 @@ PipelineResult simulate_pipeline(
         const auto policy_result = engine.evaluate_error(parse_result.error(), session);
         stats.on_query(true);  // 파싱 실패는 차단으로 기록
         return PipelineResult{
-            .action             = policy_result.action,
-            .reason             = policy_result.reason,
+            .action = policy_result.action,
+            .reason = policy_result.reason,
             .injection_detected = false,
             .procedure_detected = false,
         };
@@ -166,8 +164,8 @@ PipelineResult simulate_pipeline(
     if (inj_result.detected) {
         stats.on_query(true);
         return PipelineResult{
-            .action             = PolicyAction::kBlock,
-            .reason             = inj_result.reason,
+            .action = PolicyAction::kBlock,
+            .reason = inj_result.reason,
             .injection_detected = true,
             .procedure_detected = false,
         };
@@ -183,14 +181,14 @@ PipelineResult simulate_pipeline(
     stats.on_query(is_blocked);
 
     return PipelineResult{
-        .action             = policy_result.action,
-        .reason             = policy_result.reason,
+        .action = policy_result.action,
+        .reason = policy_result.reason,
         .injection_detected = false,
         .procedure_detected = proc_found,
     };
 }
 
-} // namespace
+}  // namespace
 
 // ---------------------------------------------------------------------------
 // 테스트 픽스처
@@ -198,12 +196,12 @@ PipelineResult simulate_pipeline(
 class ProxyPipeline : public ::testing::Test {
 protected:
     void SetUp() override {
-        config_    = make_default_config();
-        engine_    = std::make_unique<PolicyEngine>(config_);
-        inj_det_   = std::make_unique<InjectionDetector>(default_injection_patterns());
-        proc_det_  = std::make_unique<ProcedureDetector>();
-        stats_     = std::make_unique<StatsCollector>();
-        session_   = make_session();
+        config_ = make_default_config();
+        engine_ = std::make_unique<PolicyEngine>(config_);
+        inj_det_ = std::make_unique<InjectionDetector>(default_injection_patterns());
+        proc_det_ = std::make_unique<ProcedureDetector>();
+        stats_ = std::make_unique<StatsCollector>();
+        session_ = make_session();
     }
 
     // run_pipeline: 편의 래퍼
@@ -211,12 +209,18 @@ protected:
         return simulate_pipeline(sql, *engine_, *inj_det_, *proc_det_, session_, *stats_);
     }
 
-    std::shared_ptr<PolicyConfig>     config_;
-    std::unique_ptr<PolicyEngine>     engine_;
-    std::unique_ptr<InjectionDetector> inj_det_;
-    std::unique_ptr<ProcedureDetector> proc_det_;
-    std::unique_ptr<StatsCollector>   stats_;
-    SessionContext                    session_;
+    std::shared_ptr<PolicyConfig>
+        config_;  // NOLINT(cppcoreguidelines-non-private-member-variables-in-classes,readability-identifier-naming)
+    std::unique_ptr<PolicyEngine>
+        engine_;  // NOLINT(cppcoreguidelines-non-private-member-variables-in-classes,readability-identifier-naming)
+    std::unique_ptr<InjectionDetector>
+        inj_det_;  // NOLINT(cppcoreguidelines-non-private-member-variables-in-classes,readability-identifier-naming)
+    std::unique_ptr<ProcedureDetector>
+        proc_det_;  // NOLINT(cppcoreguidelines-non-private-member-variables-in-classes,readability-identifier-naming)
+    std::unique_ptr<StatsCollector>
+        stats_;  // NOLINT(cppcoreguidelines-non-private-member-variables-in-classes,readability-identifier-naming)
+    SessionContext
+        session_;  // NOLINT(cppcoreguidelines-non-private-member-variables-in-classes,readability-identifier-naming)
 };
 
 // ---------------------------------------------------------------------------
@@ -263,8 +267,7 @@ TEST_F(ProxyPipeline, InjectionSql_IsBlocked) {
 
     EXPECT_EQ(result.action, PolicyAction::kBlock)
         << "SQL injection (OR tautology) must be blocked";
-    EXPECT_TRUE(result.injection_detected)
-        << "InjectionDetector must flag OR tautology";
+    EXPECT_TRUE(result.injection_detected) << "InjectionDetector must flag OR tautology";
 }
 
 // ---------------------------------------------------------------------------
@@ -274,10 +277,8 @@ TEST_F(ProxyPipeline, InjectionSql_IsBlocked) {
 TEST_F(ProxyPipeline, UnionInjection_IsBlocked) {
     const auto result = run("SELECT * FROM users UNION SELECT 1,2,3");
 
-    EXPECT_EQ(result.action, PolicyAction::kBlock)
-        << "UNION SELECT injection must be blocked";
-    EXPECT_TRUE(result.injection_detected)
-        << "InjectionDetector must flag UNION SELECT";
+    EXPECT_EQ(result.action, PolicyAction::kBlock) << "UNION SELECT injection must be blocked";
+    EXPECT_TRUE(result.injection_detected) << "InjectionDetector must flag UNION SELECT";
 }
 
 // ---------------------------------------------------------------------------
@@ -287,10 +288,8 @@ TEST_F(ProxyPipeline, UnionInjection_IsBlocked) {
 TEST_F(ProxyPipeline, SleepInjection_IsBlocked) {
     const auto result = run("SELECT * FROM users WHERE id = 1 AND SLEEP(5)");
 
-    EXPECT_EQ(result.action, PolicyAction::kBlock)
-        << "SLEEP() injection must be blocked";
-    EXPECT_TRUE(result.injection_detected)
-        << "InjectionDetector must flag SLEEP()";
+    EXPECT_EQ(result.action, PolicyAction::kBlock) << "SLEEP() injection must be blocked";
+    EXPECT_TRUE(result.injection_detected) << "InjectionDetector must flag SLEEP()";
 }
 
 // ---------------------------------------------------------------------------
@@ -330,24 +329,24 @@ TEST_F(ProxyPipeline, WhitespaceOnly_IsBlocked) {
 TEST_F(ProxyPipeline, ComQuery_StatsUpdated) {
     // 초기 상태 확인
     auto snap0 = stats_->snapshot();
-    EXPECT_EQ(snap0.total_queries,   0u);
-    EXPECT_EQ(snap0.blocked_queries, 0u);
+    EXPECT_EQ(snap0.total_queries, 0U);
+    EXPECT_EQ(snap0.blocked_queries, 0U);
 
     // 허용 쿼리 처리
     const auto allow_result = run("SELECT 1");
     EXPECT_EQ(allow_result.action, PolicyAction::kAllow);
 
     auto snap1 = stats_->snapshot();
-    EXPECT_EQ(snap1.total_queries,   1u) << "total_queries must increment after allowed query";
-    EXPECT_EQ(snap1.blocked_queries, 0u) << "blocked_queries must not increment for allowed query";
+    EXPECT_EQ(snap1.total_queries, 1U) << "total_queries must increment after allowed query";
+    EXPECT_EQ(snap1.blocked_queries, 0U) << "blocked_queries must not increment for allowed query";
 
     // 차단 쿼리 처리 (DROP)
     const auto block_result = run("DROP TABLE users");
     EXPECT_EQ(block_result.action, PolicyAction::kBlock);
 
     auto snap2 = stats_->snapshot();
-    EXPECT_EQ(snap2.total_queries,   2u) << "total_queries must increment after blocked query";
-    EXPECT_EQ(snap2.blocked_queries, 1u) << "blocked_queries must increment for blocked query";
+    EXPECT_EQ(snap2.total_queries, 2U) << "total_queries must increment after blocked query";
+    EXPECT_EQ(snap2.blocked_queries, 1U) << "blocked_queries must increment for blocked query";
 
     // block_rate 검증: 1 / 2 = 0.5
     EXPECT_NEAR(snap2.block_rate, 0.5, 1e-9);
@@ -373,8 +372,7 @@ TEST_F(ProxyPipeline, ProcedureCall_Detection) {
     const auto result = run("CALL safe_proc()");
 
     // ProcedureDetector 가 CALL 을 탐지해야 함
-    EXPECT_TRUE(result.procedure_detected)
-        << "ProcedureDetector must detect CALL statement";
+    EXPECT_TRUE(result.procedure_detected) << "ProcedureDetector must detect CALL statement";
 
     // [버그 재현] proc_name 추출 실패로 whitelist 체크가 작동하지 않음:
     // "safe_proc" 이 whitelist 에 있음에도 kBlock 이 반환된다.
@@ -399,8 +397,7 @@ TEST_F(ProxyPipeline, ProcedureCall_Detection) {
 TEST_F(ProxyPipeline, UnknownProcedure_IsBlocked) {
     const auto result = run("CALL dangerous_proc()");
 
-    EXPECT_TRUE(result.procedure_detected)
-        << "ProcedureDetector must detect CALL statement";
+    EXPECT_TRUE(result.procedure_detected) << "ProcedureDetector must detect CALL statement";
     EXPECT_EQ(result.action, PolicyAction::kBlock)
         << "Non-whitelisted procedure 'dangerous_proc' must be blocked";
 }
@@ -424,8 +421,7 @@ TEST_F(ProxyPipeline, DynamicSql_PrepareExecute_IsBlocked) {
 TEST_F(ProxyPipeline, NormalInsert_IsAllowed) {
     const auto result = run("INSERT INTO logs (msg) VALUES ('test message')");
 
-    EXPECT_EQ(result.action, PolicyAction::kAllow)
-        << "Normal INSERT should be allowed";
+    EXPECT_EQ(result.action, PolicyAction::kAllow) << "Normal INSERT should be allowed";
     EXPECT_FALSE(result.injection_detected)
         << "Normal INSERT should not trigger injection detection";
 }
@@ -437,8 +433,7 @@ TEST_F(ProxyPipeline, NormalInsert_IsAllowed) {
 TEST_F(ProxyPipeline, NormalUpdate_IsAllowed) {
     const auto result = run("UPDATE config SET value = 'new' WHERE key = 'timeout'");
 
-    EXPECT_EQ(result.action, PolicyAction::kAllow)
-        << "Normal UPDATE should be allowed";
+    EXPECT_EQ(result.action, PolicyAction::kAllow) << "Normal UPDATE should be allowed";
 }
 
 // ---------------------------------------------------------------------------
@@ -447,14 +442,14 @@ TEST_F(ProxyPipeline, NormalUpdate_IsAllowed) {
 //   [fail-close] nullptr config → 정책 없음 → 차단.
 // ---------------------------------------------------------------------------
 TEST_F(ProxyPipeline, FailClose_NullConfig_IsBlocked) {
-    PolicyEngine null_engine(nullptr);
-    InjectionDetector inj_det(default_injection_patterns());
-    ProcedureDetector proc_det;
+    const PolicyEngine null_engine(nullptr);
+    const InjectionDetector inj_det(default_injection_patterns());
+    const ProcedureDetector proc_det;
     StatsCollector stats;
     const auto session = make_session();
 
-    const auto result = simulate_pipeline(
-        "SELECT * FROM users", null_engine, inj_det, proc_det, session, stats);
+    const auto result =
+        simulate_pipeline("SELECT * FROM users", null_engine, inj_det, proc_det, session, stats);
 
     EXPECT_EQ(result.action, PolicyAction::kBlock)
         << "Null config PolicyEngine must block all queries (fail-close)";
@@ -487,8 +482,7 @@ TEST_F(ProxyPipeline, CommentInSql_SelectAllowed) {
     // 동작을 문서화하는 테스트: 어느 쪽이든 크래시/hang 없이 처리되어야 함
     SUCCEED() << "Inline comment in SELECT is handled without crash. "
               << "Action=" << static_cast<int>(result.action)
-              << " injection=" << result.injection_detected
-              << " reason=" << result.reason;
+              << " injection=" << result.injection_detected << " reason=" << result.reason;
 }
 
 // ---------------------------------------------------------------------------

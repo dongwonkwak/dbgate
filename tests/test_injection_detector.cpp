@@ -17,11 +17,12 @@
 // - 인코딩 우회(URL, hex)는 탐지하지 못함 (알려진 미탐).
 // ---------------------------------------------------------------------------
 
-#include "parser/injection_detector.hpp"
-
 #include <gtest/gtest.h>
+
 #include <string>
 #include <vector>
+
+#include "parser/injection_detector.hpp"
 
 // ---------------------------------------------------------------------------
 // 기본 탐지 패턴 (config에서 로드될 기본 패턴)
@@ -38,31 +39,35 @@
 // - 미탐(false negative): 세미콜론 없이 인라인으로 결합된 PREPARE/EXECUTE
 //   우회는 별도 procedure_detector 와 조합하여 탐지해야 한다.
 // ---------------------------------------------------------------------------
-static std::vector<std::string> default_patterns() {
+namespace {
+
+std::vector<std::string> default_patterns() {
     return {
         // 1. UNION 기반 인젝션
-        "UNION\\s+SELECT",
+        R"(UNION\s+SELECT)",
         // 2. tautology (OR 기반)
-        "'\\s*OR\\s+['\"\\d]",
+        R"('\s*OR\s+['"\d])",
         // 3. time-based blind: SLEEP
-        "SLEEP\\s*\\(",
+        R"(SLEEP\s*\()",
         // 4. time-based blind: BENCHMARK
-        "BENCHMARK\\s*\\(",
+        R"(BENCHMARK\s*\()",
         // 5. 파일 읽기
-        "LOAD_FILE\\s*\\(",
+        R"(LOAD_FILE\s*\()",
         // 6. 파일 쓰기
-        "INTO\\s+OUTFILE",
+        R"(INTO\s+OUTFILE)",
         // 7. 파일 덤프
-        "INTO\\s+DUMPFILE",
+        R"(INTO\s+DUMPFILE)",
         // 8. piggyback 공격 (CALL/PREPARE/EXECUTE/TRUNCATE 포함)
         //    [DON-25] CALL, PREPARE, EXECUTE, TRUNCATE 추가
-        ";\\s*(DROP|DELETE|UPDATE|INSERT|ALTER|CREATE|CALL|PREPARE|EXECUTE|TRUNCATE)",
+        R"(;\s*(DROP|DELETE|UPDATE|INSERT|ALTER|CREATE|CALL|PREPARE|EXECUTE|TRUNCATE))",
         // 9. 주석 꼬리 무력화
-        "--\\s*$",
+        R"(--\s*$)",
         // 10. 인라인 주석 우회
-        "/\\*.*\\*/",
+        R"(/\*.*\*/)",
     };
 }
+
+}  // namespace
 
 // ---------------------------------------------------------------------------
 // 기본 패턴 10가지 — 탐지 성공 테스트
@@ -70,117 +75,102 @@ static std::vector<std::string> default_patterns() {
 
 TEST(InjectionDetector, UnionSelect) {
     // [오탐 가능성] 합법적인 UNION ALL 페이징 쿼리에서도 탐지될 수 있음
-    InjectionDetector detector(default_patterns());
+    const InjectionDetector detector(default_patterns());
     const auto result = detector.check("SELECT * FROM t UNION SELECT 1,2,3");
-    EXPECT_TRUE(result.detected)
-        << "UNION SELECT should be detected as injection";
+    EXPECT_TRUE(result.detected) << "UNION SELECT should be detected as injection";
     EXPECT_FALSE(result.matched_pattern.empty());
     EXPECT_FALSE(result.reason.empty());
 }
 
 TEST(InjectionDetector, Tautology) {
-    InjectionDetector detector(default_patterns());
+    const InjectionDetector detector(default_patterns());
     const auto result = detector.check("SELECT * FROM t WHERE id='1' OR '1'='1'");
-    EXPECT_TRUE(result.detected)
-        << "OR tautology should be detected";
+    EXPECT_TRUE(result.detected) << "OR tautology should be detected";
 }
 
 TEST(InjectionDetector, SleepCall) {
-    InjectionDetector detector(default_patterns());
+    const InjectionDetector detector(default_patterns());
     const auto result = detector.check("SELECT SLEEP(5)");
-    EXPECT_TRUE(result.detected)
-        << "SLEEP() should be detected as time-based injection";
+    EXPECT_TRUE(result.detected) << "SLEEP() should be detected as time-based injection";
 }
 
 TEST(InjectionDetector, BenchmarkCall) {
-    InjectionDetector detector(default_patterns());
+    const InjectionDetector detector(default_patterns());
     const auto result = detector.check("SELECT BENCHMARK(1000000, SHA1('test'))");
-    EXPECT_TRUE(result.detected)
-        << "BENCHMARK() should be detected as time-based injection";
+    EXPECT_TRUE(result.detected) << "BENCHMARK() should be detected as time-based injection";
 }
 
 TEST(InjectionDetector, LoadFile) {
-    InjectionDetector detector(default_patterns());
+    const InjectionDetector detector(default_patterns());
     const auto result = detector.check("SELECT LOAD_FILE('/etc/passwd')");
-    EXPECT_TRUE(result.detected)
-        << "LOAD_FILE() should be detected";
+    EXPECT_TRUE(result.detected) << "LOAD_FILE() should be detected";
 }
 
 TEST(InjectionDetector, IntoOutfile) {
-    InjectionDetector detector(default_patterns());
+    const InjectionDetector detector(default_patterns());
     const auto result = detector.check("SELECT * FROM t INTO OUTFILE '/tmp/out'");
-    EXPECT_TRUE(result.detected)
-        << "INTO OUTFILE should be detected";
+    EXPECT_TRUE(result.detected) << "INTO OUTFILE should be detected";
 }
 
 TEST(InjectionDetector, IntoDumpfile) {
-    InjectionDetector detector(default_patterns());
+    const InjectionDetector detector(default_patterns());
     const auto result = detector.check("SELECT * FROM t INTO DUMPFILE '/tmp/d'");
-    EXPECT_TRUE(result.detected)
-        << "INTO DUMPFILE should be detected";
+    EXPECT_TRUE(result.detected) << "INTO DUMPFILE should be detected";
 }
 
 TEST(InjectionDetector, Piggyback) {
-    InjectionDetector detector(default_patterns());
+    const InjectionDetector detector(default_patterns());
     const auto result = detector.check("SELECT 1; DROP TABLE users");
-    EXPECT_TRUE(result.detected)
-        << "Piggyback DROP after semicolon should be detected";
+    EXPECT_TRUE(result.detected) << "Piggyback DROP after semicolon should be detected";
 }
 
 TEST(InjectionDetector, PiggybackDelete) {
-    InjectionDetector detector(default_patterns());
+    const InjectionDetector detector(default_patterns());
     const auto result = detector.check("SELECT 1; DELETE FROM users");
-    EXPECT_TRUE(result.detected)
-        << "Piggyback DELETE after semicolon should be detected";
+    EXPECT_TRUE(result.detected) << "Piggyback DELETE after semicolon should be detected";
 }
 
 // [DON-25] piggyback 패턴 확장 — CALL, PREPARE, EXECUTE, TRUNCATE
 TEST(InjectionDetector, PiggybackCall) {
     // CALL 로 관리자 프로시저를 숨기는 piggyback 공격
-    InjectionDetector detector(default_patterns());
+    const InjectionDetector detector(default_patterns());
     const auto result = detector.check("SELECT 1; CALL admin_proc()");
-    EXPECT_TRUE(result.detected)
-        << "Piggyback CALL after semicolon should be detected";
+    EXPECT_TRUE(result.detected) << "Piggyback CALL after semicolon should be detected";
 }
 
 TEST(InjectionDetector, PiggybackPrepare) {
     // PREPARE 로 동적 SQL 을 숨기는 piggyback 공격
-    InjectionDetector detector(default_patterns());
+    const InjectionDetector detector(default_patterns());
     const auto result = detector.check("SELECT 1; PREPARE stmt FROM 'SELECT 1'");
-    EXPECT_TRUE(result.detected)
-        << "Piggyback PREPARE after semicolon should be detected";
+    EXPECT_TRUE(result.detected) << "Piggyback PREPARE after semicolon should be detected";
 }
 
 TEST(InjectionDetector, PiggybackExecute) {
     // EXECUTE 로 사전 준비된 동적 SQL 을 실행하는 piggyback 공격
-    InjectionDetector detector(default_patterns());
+    const InjectionDetector detector(default_patterns());
     const auto result = detector.check("SELECT 1; EXECUTE stmt");
-    EXPECT_TRUE(result.detected)
-        << "Piggyback EXECUTE after semicolon should be detected";
+    EXPECT_TRUE(result.detected) << "Piggyback EXECUTE after semicolon should be detected";
 }
 
 TEST(InjectionDetector, PiggybackTruncate) {
     // TRUNCATE 로 테이블 전체 삭제를 시도하는 piggyback 공격
-    InjectionDetector detector(default_patterns());
+    const InjectionDetector detector(default_patterns());
     const auto result = detector.check("SELECT 1; TRUNCATE users");
-    EXPECT_TRUE(result.detected)
-        << "Piggyback TRUNCATE after semicolon should be detected";
+    EXPECT_TRUE(result.detected) << "Piggyback TRUNCATE after semicolon should be detected";
 }
 
 TEST(InjectionDetector, TrailingComment) {
-    InjectionDetector detector(default_patterns());
+    const InjectionDetector detector(default_patterns());
     // -- 주석 꼬리: 뒤의 조건을 무력화하는 인젝션 기법
     const auto result = detector.check("SELECT * FROM t WHERE id=1 --");
-    EXPECT_TRUE(result.detected)
-        << "Trailing -- comment should be detected";
+    EXPECT_TRUE(result.detected) << "Trailing -- comment should be detected";
 }
 
 TEST(InjectionDetector, InlineComment) {
-    InjectionDetector detector(default_patterns());
+    const InjectionDetector detector(default_patterns());
     // 인라인 주석으로 키워드 분할 우회 시도
     const auto result = detector.check("DROP/**/TABLE users");
-    EXPECT_TRUE(result.detected)
-        << "Inline comment /* */ should be detected";
+    EXPECT_TRUE(result.detected) << "Inline comment /* */ should be detected";
 }
 
 // ---------------------------------------------------------------------------
@@ -192,39 +182,34 @@ TEST(InjectionDetector, InlineComment) {
 // ---------------------------------------------------------------------------
 
 TEST(InjectionDetector, NormalSelect) {
-    InjectionDetector detector(default_patterns());
+    const InjectionDetector detector(default_patterns());
     const auto result = detector.check("SELECT id, name FROM users WHERE id=1");
-    EXPECT_FALSE(result.detected)
-        << "Normal SELECT should NOT be flagged as injection";
+    EXPECT_FALSE(result.detected) << "Normal SELECT should NOT be flagged as injection";
 }
 
 TEST(InjectionDetector, NormalInsert) {
-    InjectionDetector detector(default_patterns());
+    const InjectionDetector detector(default_patterns());
     const auto result = detector.check("INSERT INTO logs(msg) VALUES('test')");
-    EXPECT_FALSE(result.detected)
-        << "Normal INSERT should NOT be flagged as injection";
+    EXPECT_FALSE(result.detected) << "Normal INSERT should NOT be flagged as injection";
 }
 
 TEST(InjectionDetector, NormalUpdate) {
-    InjectionDetector detector(default_patterns());
+    const InjectionDetector detector(default_patterns());
     const auto result = detector.check("UPDATE config SET val='new' WHERE key='k'");
-    EXPECT_FALSE(result.detected)
-        << "Normal UPDATE should NOT be flagged as injection";
+    EXPECT_FALSE(result.detected) << "Normal UPDATE should NOT be flagged as injection";
 }
 
 TEST(InjectionDetector, NormalJoin) {
-    InjectionDetector detector(default_patterns());
+    const InjectionDetector detector(default_patterns());
     const auto result = detector.check(
         "SELECT u.id, o.total FROM users u JOIN orders o ON u.id = o.user_id WHERE u.active = 1");
-    EXPECT_FALSE(result.detected)
-        << "Normal JOIN query should NOT be flagged";
+    EXPECT_FALSE(result.detected) << "Normal JOIN query should NOT be flagged";
 }
 
 TEST(InjectionDetector, NormalDeleteWithWhere) {
-    InjectionDetector detector(default_patterns());
+    const InjectionDetector detector(default_patterns());
     const auto result = detector.check("DELETE FROM sessions WHERE expired_at < NOW()");
-    EXPECT_FALSE(result.detected)
-        << "Normal DELETE with WHERE should NOT be flagged";
+    EXPECT_FALSE(result.detected) << "Normal DELETE with WHERE should NOT be flagged";
 }
 
 // ---------------------------------------------------------------------------
@@ -245,7 +230,7 @@ TEST(InjectionDetector, NormalDeleteWithWhere) {
 
 TEST(InjectionDetector, EmptyPatterns) {
     // [DON-25] fail-close: 빈 패턴 목록 → 항상 detected=true
-    InjectionDetector detector({});
+    const InjectionDetector detector({});
     const auto result = detector.check("SELECT * FROM t UNION SELECT 1,2,3");
     EXPECT_TRUE(result.detected)
         << "With empty pattern list, fail-close should block all SQL (detected=true)";
@@ -258,7 +243,7 @@ TEST(InjectionDetector, EmptyPatterns) {
 // ---------------------------------------------------------------------------
 
 TEST(InjectionDetector, CaseInsensitive) {
-    InjectionDetector detector(default_patterns());
+    const InjectionDetector detector(default_patterns());
     // 소문자 "union select" → 탐지되어야 함
     const auto result = detector.check("union select 1");
     EXPECT_TRUE(result.detected)
@@ -266,17 +251,15 @@ TEST(InjectionDetector, CaseInsensitive) {
 }
 
 TEST(InjectionDetector, CaseInsensitiveSleep) {
-    InjectionDetector detector(default_patterns());
+    const InjectionDetector detector(default_patterns());
     const auto result = detector.check("SELECT sleep(5)");
-    EXPECT_TRUE(result.detected)
-        << "Lowercase 'sleep()' should be detected";
+    EXPECT_TRUE(result.detected) << "Lowercase 'sleep()' should be detected";
 }
 
 TEST(InjectionDetector, CaseInsensitiveMixed) {
-    InjectionDetector detector(default_patterns());
+    const InjectionDetector detector(default_patterns());
     const auto result = detector.check("SeLeCt * FrOm t UnIoN SeLeCt 1");
-    EXPECT_TRUE(result.detected)
-        << "Mixed case UNION SELECT should be detected";
+    EXPECT_TRUE(result.detected) << "Mixed case UNION SELECT should be detected";
 }
 
 // ---------------------------------------------------------------------------
@@ -290,11 +273,11 @@ TEST(InjectionDetector, CaseInsensitiveMixed) {
 TEST(InjectionDetector, InvalidPatternSkipped) {
     // 잘못된 패턴 "[invalid" + 유효한 패턴 "UNION\\s+SELECT"
     std::vector<std::string> patterns = {
-        "[invalid_regex",        // 잘못된 패턴: 건너뜀
-        "UNION\\s+SELECT",       // 유효한 패턴: 적용됨
+        "[invalid_regex",     // 잘못된 패턴: 건너뜀
+        R"(UNION\s+SELECT)",  // 유효한 패턴: 적용됨
     };
     // 생성자에서 로그 경고 후 잘못된 패턴 건너뜀 (예외 미발생)
-    InjectionDetector detector(std::move(patterns));
+    const InjectionDetector detector(std::move(patterns));
 
     // 유효한 패턴으로 탐지 동작
     const auto result = detector.check("SELECT 1 UNION SELECT 2");
@@ -309,7 +292,7 @@ TEST(InjectionDetector, AllInvalidPatterns) {
         "[bad1",
         "[bad2",
     };
-    InjectionDetector detector(std::move(patterns));
+    const InjectionDetector detector(std::move(patterns));
     // 유효한 패턴 없음 → fail-close → 모든 SQL 차단
     const auto result = detector.check("SELECT 1 UNION SELECT 2");
     EXPECT_TRUE(result.detected)
@@ -323,7 +306,7 @@ TEST(InjectionDetector, AllInvalidPatterns) {
 // ---------------------------------------------------------------------------
 
 TEST(InjectionDetector, MatchedPatternField) {
-    InjectionDetector detector(default_patterns());
+    const InjectionDetector detector(default_patterns());
     const auto result = detector.check("SELECT * FROM t UNION SELECT 1,2,3");
     ASSERT_TRUE(result.detected);
     // matched_pattern은 실제 패턴 문자열이어야 함 (로깅/감사용)
@@ -332,16 +315,15 @@ TEST(InjectionDetector, MatchedPatternField) {
 }
 
 TEST(InjectionDetector, ReasonField) {
-    InjectionDetector detector(default_patterns());
+    const InjectionDetector detector(default_patterns());
     const auto result = detector.check("SELECT SLEEP(5)");
     ASSERT_TRUE(result.detected);
     // reason은 사람이 읽을 수 있는 설명이어야 함
-    EXPECT_FALSE(result.reason.empty())
-        << "reason should be set for human-readable description";
+    EXPECT_FALSE(result.reason.empty()) << "reason should be set for human-readable description";
 }
 
 TEST(InjectionDetector, NotDetectedEmptyFields) {
-    InjectionDetector detector(default_patterns());
+    const InjectionDetector detector(default_patterns());
     const auto result = detector.check("SELECT id FROM users WHERE id=1");
     EXPECT_FALSE(result.detected);
     // 탐지 안 됨 → matched_pattern, reason은 빈 문자열
@@ -357,7 +339,7 @@ TEST(InjectionDetector, NotDetectedEmptyFields) {
 // 이 형태는 현재 탐지하지 못한다 (false negative).
 // 전처리 단계에서 주석 제거가 필요하나 InjectionDetector 자체는 미구현.
 TEST(InjectionDetector, CommentSplitBypass_KnownFalseNegative) {
-    InjectionDetector detector(default_patterns());
+    const InjectionDetector detector(default_patterns());
     // [의도된 false negative] 주석 분할은 탐지 불가
     const auto result = detector.check("UN/**/ION SEL/**/ECT 1,2,3");
     // 이 테스트는 현재 false negative 상태임을 문서화
@@ -369,10 +351,9 @@ TEST(InjectionDetector, CommentSplitBypass_KnownFalseNegative) {
 
 // [알려진 미탐] 인코딩 우회: 0x55... (hex 리터럴) 또는 CHAR() 함수
 TEST(InjectionDetector, EncodingBypass_KnownFalseNegative) {
-    InjectionDetector detector(default_patterns());
+    const InjectionDetector detector(default_patterns());
     // hex 리터럴이나 CHAR() 함수를 통한 우회는 탐지 불가
-    const auto result = detector.check(
-        "SELECT CHAR(85,78,73,79,78,32,83,69,76,69,67,84)");
+    const auto result = detector.check("SELECT CHAR(85,78,73,79,78,32,83,69,76,69,67,84)");
     (void)result;
     SUCCEED() << "Encoding bypass via CHAR() is a known false negative. "
                  "String literal evaluation is not in scope.";

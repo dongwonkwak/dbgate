@@ -1,6 +1,7 @@
 #include "protocol/mysql_packet.hpp"
 
 #include <format>
+#include <ranges>
 
 // ---------------------------------------------------------------------------
 // MysqlPacket — 구현
@@ -48,30 +49,26 @@ auto detect_packet_type(std::span<const std::uint8_t> payload) noexcept -> Packe
 
 // static
 auto MysqlPacket::parse(std::span<const std::uint8_t> data)
-    -> std::expected<MysqlPacket, ParseError>
-{
+    -> std::expected<MysqlPacket, ParseError> {
     // 헤더 최소 4바이트 검증
     if (data.size() < 4) {
-        return std::unexpected(ParseError{
-            ParseErrorCode::kMalformedPacket,
-            "packet too short",
-            std::format("received {} bytes, need at least 4", data.size())
-        });
+        return std::unexpected(
+            ParseError{.code = ParseErrorCode::kMalformedPacket,
+                       .message = "packet too short",
+                       .context = std::format("received {} bytes, need at least 4", data.size())});
     }
 
     // payload 길이: 3바이트 리틀 엔디언
-    const std::uint32_t length =
-        static_cast<std::uint32_t>(data[0])
-        | (static_cast<std::uint32_t>(data[1]) << 8U)
-        | (static_cast<std::uint32_t>(data[2]) << 16U);
+    const std::uint32_t length = static_cast<std::uint32_t>(data[0]) |
+                                 (static_cast<std::uint32_t>(data[1]) << 8U) |
+                                 (static_cast<std::uint32_t>(data[2]) << 16U);
 
     // 실제 데이터가 헤더(4) + payload 길이만큼 있어야 한다
     if (data.size() < static_cast<std::size_t>(4) + length) {
         return std::unexpected(ParseError{
-            ParseErrorCode::kMalformedPacket,
-            "incomplete payload",
-            std::format("declared length={}, available={}", length, data.size() - 4)
-        });
+            .code = ParseErrorCode::kMalformedPacket,
+            .message = "incomplete payload",
+            .context = std::format("declared length={}, available={}", length, data.size() - 4)});
     }
 
     MysqlPacket pkt;
@@ -107,8 +104,8 @@ auto MysqlPacket::serialize() const -> std::vector<std::uint8_t> {
     const std::uint32_t len = payload_length();
 
     // MySQL 와이어 프로토콜: payload 길이 필드는 3바이트 = 최대 0xFFFFFF(16MB-1)
-    static constexpr std::uint32_t kMaxPayloadLen = 0x00FFFFFFU;
-    if (len > kMaxPayloadLen) {
+    static constexpr std::uint32_t max_payload_len = 0x00FFFFFFU;
+    if (len > max_payload_len) {
         // 상한 초과 시 빈 벡터 반환 (호출자가 에러로 처리해야 함)
         return {};
     }
@@ -126,37 +123,36 @@ auto MysqlPacket::serialize() const -> std::vector<std::uint8_t> {
 
     // payload
     if (len > 0) {
-        std::copy(payload_.begin(), payload_.end(), result.begin() + 4);
+        std::ranges::copy(payload_, result.begin() + 4);
     }
 
     return result;
 }
 
 // static
-auto MysqlPacket::make_error(std::uint16_t    error_code,
+auto MysqlPacket::make_error(std::uint16_t error_code,
                              std::string_view message,
-                             std::uint8_t     sequence_id) -> MysqlPacket
-{
+                             std::uint8_t sequence_id) -> MysqlPacket {
     // MySQL ERR Packet payload 포맷:
     //   [0xFF][2바이트 error_code LE][#][5바이트 sql_state]["message"]
-    static constexpr std::string_view kSqlState = "HY000";
+    static constexpr std::string_view sql_state = "HY000";
 
     // MySQL 와이어 프로토콜: payload 길이 필드는 3바이트 = 최대 0xFFFFFF(16MB-1)
     // 고정 헤더(9바이트) + message가 0xFFFFFF를 초과하지 않도록 message를 잘라낸다.
-    static constexpr std::size_t kMaxPayloadLen  = 0x00FFFFFFU;
-    static constexpr std::size_t kFixedHeaderLen = 9U;  // 1(0xFF) + 2(code) + 1('#') + 5(state)
+    static constexpr std::size_t max_payload_len = 0x00FFFFFFU;
+    static constexpr std::size_t fixed_header_len = 9U;  // 1(0xFF) + 2(code) + 1('#') + 5(state)
 
     // message를 최대 허용 길이로 truncation
-    const std::size_t max_msg_len = kMaxPayloadLen - kFixedHeaderLen;
+    const std::size_t max_msg_len = max_payload_len - fixed_header_len;
     const std::string_view safe_message =
         (message.size() > max_msg_len) ? message.substr(0, max_msg_len) : message;
 
     // payload 크기: 1 + 2 + 1 + 5 + safe_message.size()
-    const std::size_t payload_size = kFixedHeaderLen + safe_message.size();
+    const std::size_t payload_size = fixed_header_len + safe_message.size();
 
     MysqlPacket pkt;
     pkt.sequence_id_ = sequence_id;
-    pkt.type_        = PacketType::kError;
+    pkt.type_ = PacketType::kError;
     pkt.payload_.resize(payload_size);
 
     std::size_t pos = 0;
@@ -170,12 +166,12 @@ auto MysqlPacket::make_error(std::uint16_t    error_code,
 
     // '#' + sql_state (5바이트)
     pkt.payload_[pos++] = static_cast<std::uint8_t>('#');
-    for (char c : kSqlState) {
+    for (const char c : sql_state) {
         pkt.payload_[pos++] = static_cast<std::uint8_t>(c);
     }
 
     // message (safe_message: truncated to fit within 0xFFFFFF payload limit)
-    for (char c : safe_message) {
+    for (const char c : safe_message) {
         pkt.payload_[pos++] = static_cast<std::uint8_t>(c);
     }
 

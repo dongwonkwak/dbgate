@@ -10,15 +10,15 @@
 //   Major 3: serialize() 상한 검증, make_error() truncation
 // ---------------------------------------------------------------------------
 
-#include "protocol/handshake_detail.hpp"
-#include "protocol/mysql_packet.hpp"
-
 #include <gtest/gtest.h>
 
 #include <cstdint>
 #include <span>
 #include <string>
 #include <vector>
+
+#include "protocol/handshake_detail.hpp"
+#include "protocol/mysql_packet.hpp"
 
 // ===========================================================================
 // Major 1: classify_auth_response — 순수 함수 직접 테스트
@@ -29,9 +29,7 @@
 // ---------------------------------------------------------------------------
 TEST(ClassifyAuthResponse, X00_IsOk) {
     const std::vector<std::uint8_t> payload = {0x00, 0x00, 0x00};
-    const auto result = detail::classify_auth_response(
-        std::span<const std::uint8_t>{payload}
-    );
+    const auto result = detail::classify_auth_response(std::span<const std::uint8_t>{payload});
     EXPECT_EQ(result, detail::AuthResponseType::kOk);
 }
 
@@ -40,9 +38,7 @@ TEST(ClassifyAuthResponse, X00_IsOk) {
 // ---------------------------------------------------------------------------
 TEST(ClassifyAuthResponse, XFF_IsError) {
     const std::vector<std::uint8_t> payload = {0xFF, 0x15, 0x04};
-    const auto result = detail::classify_auth_response(
-        std::span<const std::uint8_t>{payload}
-    );
+    const auto result = detail::classify_auth_response(std::span<const std::uint8_t>{payload});
     EXPECT_EQ(result, detail::AuthResponseType::kError);
 }
 
@@ -51,13 +47,9 @@ TEST(ClassifyAuthResponse, XFF_IsError) {
 // ---------------------------------------------------------------------------
 TEST(ClassifyAuthResponse, XFE_8bytes_IsEof) {
     // payload[0]=0xFE, 총 8바이트 (< 9) → kEof
-    std::vector<std::uint8_t> payload = {
-        0xFE, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07
-    };
+    std::vector<std::uint8_t> payload = {0xFE, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07};
     ASSERT_EQ(payload.size(), 8U);
-    const auto result = detail::classify_auth_response(
-        std::span<const std::uint8_t>{payload}
-    );
+    const auto result = detail::classify_auth_response(std::span<const std::uint8_t>{payload});
     EXPECT_EQ(result, detail::AuthResponseType::kEof);
 }
 
@@ -66,13 +58,9 @@ TEST(ClassifyAuthResponse, XFE_8bytes_IsEof) {
 // ---------------------------------------------------------------------------
 TEST(ClassifyAuthResponse, XFE_9bytes_IsAuthSwitch) {
     // payload[0]=0xFE, 총 9바이트 (== 9) → kAuthSwitch
-    std::vector<std::uint8_t> payload = {
-        0xFE, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08
-    };
+    std::vector<std::uint8_t> payload = {0xFE, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08};
     ASSERT_EQ(payload.size(), 9U);
-    const auto result = detail::classify_auth_response(
-        std::span<const std::uint8_t>{payload}
-    );
+    const auto result = detail::classify_auth_response(std::span<const std::uint8_t>{payload});
     EXPECT_EQ(result, detail::AuthResponseType::kAuthSwitch);
 }
 
@@ -81,9 +69,7 @@ TEST(ClassifyAuthResponse, XFE_9bytes_IsAuthSwitch) {
 // ---------------------------------------------------------------------------
 TEST(ClassifyAuthResponse, X01_IsAuthMoreData) {
     const std::vector<std::uint8_t> payload = {0x01, 0xAA, 0xBB};
-    const auto result = detail::classify_auth_response(
-        std::span<const std::uint8_t>{payload}
-    );
+    const auto result = detail::classify_auth_response(std::span<const std::uint8_t>{payload});
     EXPECT_EQ(result, detail::AuthResponseType::kAuthMoreData);
 }
 
@@ -92,9 +78,7 @@ TEST(ClassifyAuthResponse, X01_IsAuthMoreData) {
 // ---------------------------------------------------------------------------
 TEST(ClassifyAuthResponse, X02_IsUnknown) {
     const std::vector<std::uint8_t> payload = {0x02, 0x00};
-    const auto result = detail::classify_auth_response(
-        std::span<const std::uint8_t>{payload}
-    );
+    const auto result = detail::classify_auth_response(std::span<const std::uint8_t>{payload});
     EXPECT_EQ(result, detail::AuthResponseType::kUnknown);
 }
 
@@ -103,9 +87,7 @@ TEST(ClassifyAuthResponse, X02_IsUnknown) {
 // ---------------------------------------------------------------------------
 TEST(ClassifyAuthResponse, Empty_IsUnknown) {
     const std::vector<std::uint8_t> payload;
-    const auto result = detail::classify_auth_response(
-        std::span<const std::uint8_t>{payload}
-    );
+    const auto result = detail::classify_auth_response(std::span<const std::uint8_t>{payload});
     EXPECT_EQ(result, detail::AuthResponseType::kUnknown);
 }
 
@@ -114,9 +96,7 @@ TEST(ClassifyAuthResponse, Empty_IsUnknown) {
 // ---------------------------------------------------------------------------
 TEST(ClassifyAuthResponse, XFE_1byte_IsEof) {
     const std::vector<std::uint8_t> payload = {0xFE};
-    const auto result = detail::classify_auth_response(
-        std::span<const std::uint8_t>{payload}
-    );
+    const auto result = detail::classify_auth_response(std::span<const std::uint8_t>{payload});
     EXPECT_EQ(result, detail::AuthResponseType::kEof);
 }
 
@@ -126,9 +106,7 @@ TEST(ClassifyAuthResponse, XFE_1byte_IsEof) {
 TEST(ClassifyAuthResponse, XFE_10bytes_IsAuthSwitch) {
     std::vector<std::uint8_t> payload(10, 0x00);
     payload[0] = 0xFE;
-    const auto result = detail::classify_auth_response(
-        std::span<const std::uint8_t>{payload}
-    );
+    const auto result = detail::classify_auth_response(std::span<const std::uint8_t>{payload});
     EXPECT_EQ(result, detail::AuthResponseType::kAuthSwitch);
 }
 
@@ -136,16 +114,18 @@ TEST(ClassifyAuthResponse, XFE_10bytes_IsAuthSwitch) {
 // Major 1: process_handshake_packet — 상태 머신 전이 순수 함수 직접 테스트
 // ===========================================================================
 
+namespace {
+
 // 헬퍼: 주어진 first_byte로 N바이트 payload 생성
-static std::vector<std::uint8_t> make_payload(std::uint8_t first_byte,
-                                               std::size_t  total_size = 1)
-{
-    std::vector<std::uint8_t> payload(total_size, 0x00);
-    if (!payload.empty()) {
-        payload[0] = first_byte;
+std::vector<std::uint8_t> make_payload(std::uint8_t first_byte, std::size_t total_size = 1) {
+    std::vector<std::uint8_t> p(total_size, 0x00);
+    if (!p.empty()) {
+        p[0] = first_byte;
     }
-    return payload;
+    return p;
 }
+
+}  // namespace
 
 // ---------------------------------------------------------------------------
 // PP-1. 정상 흐름: kWaitServerGreeting → RelayToClient
@@ -153,10 +133,7 @@ static std::vector<std::uint8_t> make_payload(std::uint8_t first_byte,
 TEST(ProcessHandshakePacket, ServerGreeting_RelaysToClient) {
     const auto payload = make_payload(0x0A, 77);  // Initial Handshake
     const auto result = detail::process_handshake_packet(
-        detail::HandshakeState::kWaitServerGreeting,
-        std::span<const std::uint8_t>{payload},
-        0
-    );
+        detail::HandshakeState::kWaitServerGreeting, std::span<const std::uint8_t>{payload}, 0);
     ASSERT_TRUE(result.has_value());
     EXPECT_EQ(result->next_state, detail::HandshakeState::kWaitClientResponse);
     EXPECT_EQ(result->action, detail::HandshakeAction::kRelayToClient);
@@ -168,10 +145,7 @@ TEST(ProcessHandshakePacket, ServerGreeting_RelaysToClient) {
 TEST(ProcessHandshakePacket, ClientResponse_RelaysToServer) {
     const auto payload = make_payload(0x00, 50);  // HandshakeResponse
     const auto result = detail::process_handshake_packet(
-        detail::HandshakeState::kWaitClientResponse,
-        std::span<const std::uint8_t>{payload},
-        0
-    );
+        detail::HandshakeState::kWaitClientResponse, std::span<const std::uint8_t>{payload}, 0);
     ASSERT_TRUE(result.has_value());
     EXPECT_EQ(result->next_state, detail::HandshakeState::kWaitServerAuth);
     EXPECT_EQ(result->action, detail::HandshakeAction::kRelayToServer);
@@ -183,10 +157,7 @@ TEST(ProcessHandshakePacket, ClientResponse_RelaysToServer) {
 TEST(ProcessHandshakePacket, ServerAuth_OK_IsComplete) {
     const auto payload = make_payload(0x00);  // OK
     const auto result = detail::process_handshake_packet(
-        detail::HandshakeState::kWaitServerAuth,
-        std::span<const std::uint8_t>{payload},
-        0
-    );
+        detail::HandshakeState::kWaitServerAuth, std::span<const std::uint8_t>{payload}, 0);
     ASSERT_TRUE(result.has_value());
     EXPECT_EQ(result->next_state, detail::HandshakeState::kDone);
     EXPECT_EQ(result->action, detail::HandshakeAction::kComplete);
@@ -198,10 +169,7 @@ TEST(ProcessHandshakePacket, ServerAuth_OK_IsComplete) {
 TEST(ProcessHandshakePacket, ServerAuth_ERR_IsTerminate) {
     const auto payload = make_payload(0xFF, 3);  // ERR
     const auto result = detail::process_handshake_packet(
-        detail::HandshakeState::kWaitServerAuth,
-        std::span<const std::uint8_t>{payload},
-        0
-    );
+        detail::HandshakeState::kWaitServerAuth, std::span<const std::uint8_t>{payload}, 0);
     ASSERT_TRUE(result.has_value());
     EXPECT_EQ(result->next_state, detail::HandshakeState::kFailed);
     EXPECT_EQ(result->action, detail::HandshakeAction::kTerminate);
@@ -213,10 +181,7 @@ TEST(ProcessHandshakePacket, ServerAuth_ERR_IsTerminate) {
 TEST(ProcessHandshakePacket, ServerAuth_EOF_IsTerminate) {
     const auto payload = make_payload(0xFE, 5);  // EOF (payload < 9)
     const auto result = detail::process_handshake_packet(
-        detail::HandshakeState::kWaitServerAuth,
-        std::span<const std::uint8_t>{payload},
-        0
-    );
+        detail::HandshakeState::kWaitServerAuth, std::span<const std::uint8_t>{payload}, 0);
     ASSERT_TRUE(result.has_value());
     EXPECT_EQ(result->next_state, detail::HandshakeState::kFailed);
     EXPECT_EQ(result->action, detail::HandshakeAction::kTerminate);
@@ -228,10 +193,7 @@ TEST(ProcessHandshakePacket, ServerAuth_EOF_IsTerminate) {
 TEST(ProcessHandshakePacket, ServerAuth_AuthSwitch_RelaysToClient) {
     const auto payload = make_payload(0xFE, 20);  // AuthSwitchRequest (payload >= 9)
     const auto result = detail::process_handshake_packet(
-        detail::HandshakeState::kWaitServerAuth,
-        std::span<const std::uint8_t>{payload},
-        0
-    );
+        detail::HandshakeState::kWaitServerAuth, std::span<const std::uint8_t>{payload}, 0);
     ASSERT_TRUE(result.has_value());
     EXPECT_EQ(result->next_state, detail::HandshakeState::kWaitClientAuthSwitch);
     EXPECT_EQ(result->action, detail::HandshakeAction::kRelayToClient);
@@ -243,10 +205,7 @@ TEST(ProcessHandshakePacket, ServerAuth_AuthSwitch_RelaysToClient) {
 TEST(ProcessHandshakePacket, ServerAuth_AuthMoreData_RelaysToClient) {
     const auto payload = make_payload(0x01, 5);  // AuthMoreData
     const auto result = detail::process_handshake_packet(
-        detail::HandshakeState::kWaitServerAuth,
-        std::span<const std::uint8_t>{payload},
-        0
-    );
+        detail::HandshakeState::kWaitServerAuth, std::span<const std::uint8_t>{payload}, 0);
     ASSERT_TRUE(result.has_value());
     EXPECT_EQ(result->next_state, detail::HandshakeState::kWaitClientMoreData);
     EXPECT_EQ(result->action, detail::HandshakeAction::kRelayToClient);
@@ -258,10 +217,7 @@ TEST(ProcessHandshakePacket, ServerAuth_AuthMoreData_RelaysToClient) {
 TEST(ProcessHandshakePacket, ServerAuth_Unknown_TerminatesNoRelay) {
     const auto payload = make_payload(0xAB, 2);  // unknown
     const auto result = detail::process_handshake_packet(
-        detail::HandshakeState::kWaitServerAuth,
-        std::span<const std::uint8_t>{payload},
-        0
-    );
+        detail::HandshakeState::kWaitServerAuth, std::span<const std::uint8_t>{payload}, 0);
     ASSERT_TRUE(result.has_value());
     EXPECT_EQ(result->next_state, detail::HandshakeState::kFailed);
     EXPECT_EQ(result->action, detail::HandshakeAction::kTerminateNoRelay);
@@ -274,10 +230,7 @@ TEST(ProcessHandshakePacket, ServerAuth_Unknown_TerminatesNoRelay) {
 TEST(ProcessHandshakePacket, ClientAuthSwitch_RelaysToServer) {
     const auto payload = make_payload(0xAA, 10);  // client auth switch response
     const auto result = detail::process_handshake_packet(
-        detail::HandshakeState::kWaitClientAuthSwitch,
-        std::span<const std::uint8_t>{payload},
-        1
-    );
+        detail::HandshakeState::kWaitClientAuthSwitch, std::span<const std::uint8_t>{payload}, 1);
     ASSERT_TRUE(result.has_value());
     EXPECT_EQ(result->next_state, detail::HandshakeState::kWaitServerAuthSwitch);
     EXPECT_EQ(result->action, detail::HandshakeAction::kRelayToServer);
@@ -289,10 +242,7 @@ TEST(ProcessHandshakePacket, ClientAuthSwitch_RelaysToServer) {
 TEST(ProcessHandshakePacket, ServerAuthSwitch_OK_IsComplete) {
     const auto payload = make_payload(0x00);  // OK
     const auto result = detail::process_handshake_packet(
-        detail::HandshakeState::kWaitServerAuthSwitch,
-        std::span<const std::uint8_t>{payload},
-        1
-    );
+        detail::HandshakeState::kWaitServerAuthSwitch, std::span<const std::uint8_t>{payload}, 1);
     ASSERT_TRUE(result.has_value());
     EXPECT_EQ(result->next_state, detail::HandshakeState::kDone);
     EXPECT_EQ(result->action, detail::HandshakeAction::kComplete);
@@ -304,10 +254,7 @@ TEST(ProcessHandshakePacket, ServerAuthSwitch_OK_IsComplete) {
 TEST(ProcessHandshakePacket, ServerAuthSwitch_ERR_IsTerminate) {
     const auto payload = make_payload(0xFF, 3);  // ERR
     const auto result = detail::process_handshake_packet(
-        detail::HandshakeState::kWaitServerAuthSwitch,
-        std::span<const std::uint8_t>{payload},
-        1
-    );
+        detail::HandshakeState::kWaitServerAuthSwitch, std::span<const std::uint8_t>{payload}, 1);
     ASSERT_TRUE(result.has_value());
     EXPECT_EQ(result->next_state, detail::HandshakeState::kFailed);
     EXPECT_EQ(result->action, detail::HandshakeAction::kTerminate);
@@ -320,10 +267,7 @@ TEST(ProcessHandshakePacket, ServerAuthSwitch_ERR_IsTerminate) {
 TEST(ProcessHandshakePacket, ServerAuthSwitch_AuthMoreData_Chains) {
     const auto payload = make_payload(0x01, 5);  // AuthMoreData
     const auto result = detail::process_handshake_packet(
-        detail::HandshakeState::kWaitServerAuthSwitch,
-        std::span<const std::uint8_t>{payload},
-        1
-    );
+        detail::HandshakeState::kWaitServerAuthSwitch, std::span<const std::uint8_t>{payload}, 1);
     ASSERT_TRUE(result.has_value());
     EXPECT_EQ(result->next_state, detail::HandshakeState::kWaitClientMoreData);
     EXPECT_EQ(result->action, detail::HandshakeAction::kRelayToClient);
@@ -336,10 +280,7 @@ TEST(ProcessHandshakePacket, ServerAuthSwitch_AuthMoreData_Chains) {
 TEST(ProcessHandshakePacket, ClientMoreData_RelaysToServer) {
     const auto payload = make_payload(0xBB, 8);  // client more data
     const auto result = detail::process_handshake_packet(
-        detail::HandshakeState::kWaitClientMoreData,
-        std::span<const std::uint8_t>{payload},
-        1
-    );
+        detail::HandshakeState::kWaitClientMoreData, std::span<const std::uint8_t>{payload}, 1);
     ASSERT_TRUE(result.has_value());
     EXPECT_EQ(result->next_state, detail::HandshakeState::kWaitServerMoreData);
     EXPECT_EQ(result->action, detail::HandshakeAction::kRelayToServer);
@@ -351,10 +292,7 @@ TEST(ProcessHandshakePacket, ClientMoreData_RelaysToServer) {
 TEST(ProcessHandshakePacket, ServerMoreData_OK_IsComplete) {
     const auto payload = make_payload(0x00);  // OK
     const auto result = detail::process_handshake_packet(
-        detail::HandshakeState::kWaitServerMoreData,
-        std::span<const std::uint8_t>{payload},
-        1
-    );
+        detail::HandshakeState::kWaitServerMoreData, std::span<const std::uint8_t>{payload}, 1);
     ASSERT_TRUE(result.has_value());
     EXPECT_EQ(result->next_state, detail::HandshakeState::kDone);
     EXPECT_EQ(result->action, detail::HandshakeAction::kComplete);
@@ -366,10 +304,7 @@ TEST(ProcessHandshakePacket, ServerMoreData_OK_IsComplete) {
 TEST(ProcessHandshakePacket, ServerMoreData_ERR_IsTerminate) {
     const auto payload = make_payload(0xFF, 3);  // ERR
     const auto result = detail::process_handshake_packet(
-        detail::HandshakeState::kWaitServerMoreData,
-        std::span<const std::uint8_t>{payload},
-        1
-    );
+        detail::HandshakeState::kWaitServerMoreData, std::span<const std::uint8_t>{payload}, 1);
     ASSERT_TRUE(result.has_value());
     EXPECT_EQ(result->next_state, detail::HandshakeState::kFailed);
     EXPECT_EQ(result->action, detail::HandshakeAction::kTerminate);
@@ -381,11 +316,11 @@ TEST(ProcessHandshakePacket, ServerMoreData_ERR_IsTerminate) {
 // ---------------------------------------------------------------------------
 TEST(ProcessHandshakePacket, ServerMoreData_AuthMoreData_Repeats) {
     const auto payload = make_payload(0x01, 5);  // AuthMoreData
-    const auto result = detail::process_handshake_packet(
-        detail::HandshakeState::kWaitServerMoreData,
-        std::span<const std::uint8_t>{payload},
-        2  // round_trips=2, < kMaxRoundTrips(10)
-    );
+    const auto result =
+        detail::process_handshake_packet(detail::HandshakeState::kWaitServerMoreData,
+                                         std::span<const std::uint8_t>{payload},
+                                         2  // round_trips=2, < kMaxRoundTrips(10)
+        );
     ASSERT_TRUE(result.has_value());
     EXPECT_EQ(result->next_state, detail::HandshakeState::kWaitClientMoreData);
     EXPECT_EQ(result->action, detail::HandshakeAction::kRelayToClient);
@@ -397,11 +332,11 @@ TEST(ProcessHandshakePacket, ServerMoreData_AuthMoreData_Repeats) {
 TEST(ProcessHandshakePacket, ServerMoreData_MaxRoundTrips_IsError) {
     const auto payload = make_payload(0x01, 5);  // AuthMoreData
     // round_trips=10 == kMaxRoundTrips → 에러 반환
-    const auto result = detail::process_handshake_packet(
-        detail::HandshakeState::kWaitServerMoreData,
-        std::span<const std::uint8_t>{payload},
-        10  // == kMaxRoundTrips
-    );
+    const auto result =
+        detail::process_handshake_packet(detail::HandshakeState::kWaitServerMoreData,
+                                         std::span<const std::uint8_t>{payload},
+                                         10  // == kMaxRoundTrips
+        );
     ASSERT_FALSE(result.has_value());
     EXPECT_EQ(result.error().code, ParseErrorCode::kMalformedPacket);
     EXPECT_FALSE(result.error().message.empty());
@@ -412,11 +347,11 @@ TEST(ProcessHandshakePacket, ServerMoreData_MaxRoundTrips_IsError) {
 // ---------------------------------------------------------------------------
 TEST(ProcessHandshakePacket, ServerAuthSwitch_MaxRoundTrips_IsError) {
     const auto payload = make_payload(0x01, 5);  // AuthMoreData
-    const auto result = detail::process_handshake_packet(
-        detail::HandshakeState::kWaitServerAuthSwitch,
-        std::span<const std::uint8_t>{payload},
-        10  // == kMaxRoundTrips
-    );
+    const auto result =
+        detail::process_handshake_packet(detail::HandshakeState::kWaitServerAuthSwitch,
+                                         std::span<const std::uint8_t>{payload},
+                                         10  // == kMaxRoundTrips
+        );
     ASSERT_FALSE(result.has_value());
     EXPECT_EQ(result.error().code, ParseErrorCode::kMalformedPacket);
 }
@@ -427,10 +362,7 @@ TEST(ProcessHandshakePacket, ServerAuthSwitch_MaxRoundTrips_IsError) {
 TEST(ProcessHandshakePacket, ServerMoreData_AuthSwitch_IsError) {
     const auto payload = make_payload(0xFE, 20);  // AuthSwitch (payload >= 9)
     const auto result = detail::process_handshake_packet(
-        detail::HandshakeState::kWaitServerMoreData,
-        std::span<const std::uint8_t>{payload},
-        1
-    );
+        detail::HandshakeState::kWaitServerMoreData, std::span<const std::uint8_t>{payload}, 1);
     ASSERT_FALSE(result.has_value());
     EXPECT_EQ(result.error().code, ParseErrorCode::kMalformedPacket);
 }
@@ -441,10 +373,7 @@ TEST(ProcessHandshakePacket, ServerMoreData_AuthSwitch_IsError) {
 TEST(ProcessHandshakePacket, ServerAuthSwitch_NestedAuthSwitch_IsError) {
     const auto payload = make_payload(0xFE, 20);  // AuthSwitch (payload >= 9)
     const auto result = detail::process_handshake_packet(
-        detail::HandshakeState::kWaitServerAuthSwitch,
-        std::span<const std::uint8_t>{payload},
-        1
-    );
+        detail::HandshakeState::kWaitServerAuthSwitch, std::span<const std::uint8_t>{payload}, 1);
     ASSERT_FALSE(result.has_value());
     EXPECT_EQ(result.error().code, ParseErrorCode::kMalformedPacket);
 }
@@ -455,10 +384,7 @@ TEST(ProcessHandshakePacket, ServerAuthSwitch_NestedAuthSwitch_IsError) {
 TEST(ProcessHandshakePacket, TerminalState_Done_IsError) {
     const auto payload = make_payload(0x00);
     const auto result = detail::process_handshake_packet(
-        detail::HandshakeState::kDone,
-        std::span<const std::uint8_t>{payload},
-        0
-    );
+        detail::HandshakeState::kDone, std::span<const std::uint8_t>{payload}, 0);
     ASSERT_FALSE(result.has_value());
     EXPECT_EQ(result.error().code, ParseErrorCode::kInternalError);
 }
@@ -469,10 +395,7 @@ TEST(ProcessHandshakePacket, TerminalState_Done_IsError) {
 TEST(ProcessHandshakePacket, TerminalState_Failed_IsError) {
     const auto payload = make_payload(0xFF, 3);
     const auto result = detail::process_handshake_packet(
-        detail::HandshakeState::kFailed,
-        std::span<const std::uint8_t>{payload},
-        0
-    );
+        detail::HandshakeState::kFailed, std::span<const std::uint8_t>{payload}, 0);
     ASSERT_FALSE(result.has_value());
     EXPECT_EQ(result.error().code, ParseErrorCode::kInternalError);
 }
@@ -483,10 +406,7 @@ TEST(ProcessHandshakePacket, TerminalState_Failed_IsError) {
 TEST(ProcessHandshakePacket, ServerGreeting_EmptyPayload_IsError) {
     const std::vector<std::uint8_t> payload;
     const auto result = detail::process_handshake_packet(
-        detail::HandshakeState::kWaitServerGreeting,
-        std::span<const std::uint8_t>{payload},
-        0
-    );
+        detail::HandshakeState::kWaitServerGreeting, std::span<const std::uint8_t>{payload}, 0);
     ASSERT_FALSE(result.has_value());
     EXPECT_EQ(result.error().code, ParseErrorCode::kMalformedPacket);
 }
@@ -495,13 +415,13 @@ TEST(ProcessHandshakePacket, ServerGreeting_EmptyPayload_IsError) {
 // Major 2: extract_handshake_response_fields — 강화된 검증 직접 테스트
 // ===========================================================================
 
+namespace {
+
 // 유효한 HandshakeResponse41 payload 빌더
 // CLIENT_PROTOCOL_41 | CLIENT_SECURE_CONNECTION 기준
-static std::vector<std::uint8_t> build_handshake_response(
-    const std::string& username,
-    const std::string& db_name,
-    bool               with_db = true)
-{
+std::vector<std::uint8_t> build_handshake_response(const std::string& username,
+                                                   const std::string& db_name,
+                                                   bool with_db = true) {
     // capability flags:
     //   CLIENT_LONG_PASSWORD(0x01) | CLIENT_PROTOCOL_41(0x0200) |
     //   CLIENT_SECURE_CONNECTION(0x8000)
@@ -517,8 +437,10 @@ static std::vector<std::uint8_t> build_handshake_response(
     payload.push_back(static_cast<std::uint8_t>((cap_flags >> 24U) & 0xFF));
 
     // max_packet_size (4바이트)
-    payload.push_back(0x00); payload.push_back(0x00);
-    payload.push_back(0x00); payload.push_back(0x01);
+    payload.push_back(0x00);
+    payload.push_back(0x00);
+    payload.push_back(0x00);
+    payload.push_back(0x01);
 
     // charset (1바이트)
     payload.push_back(0x21);  // utf8
@@ -553,6 +475,8 @@ static std::vector<std::uint8_t> build_handshake_response(
     return payload;
 }
 
+}  // namespace
+
 // ---------------------------------------------------------------------------
 // EX-1. 정상 payload → db_user, db_name 정상 추출
 // ---------------------------------------------------------------------------
@@ -562,10 +486,7 @@ TEST(ExtractHandshakeResponseFields, Normal_ExtractsUserAndDb) {
     std::string out_user;
     std::string out_db;
     const auto result = detail::extract_handshake_response_fields(
-        std::span<const std::uint8_t>{payload},
-        out_user,
-        out_db
-    );
+        std::span<const std::uint8_t>{payload}, out_user, out_db);
 
     ASSERT_TRUE(result.has_value());
     EXPECT_EQ(out_user, "testuser");
@@ -582,10 +503,7 @@ TEST(ExtractHandshakeResponseFields, ShortPayload_IsError) {
     std::string out_user;
     std::string out_db;
     const auto result = detail::extract_handshake_response_fields(
-        std::span<const std::uint8_t>{payload},
-        out_user,
-        out_db
-    );
+        std::span<const std::uint8_t>{payload}, out_user, out_db);
 
     ASSERT_FALSE(result.has_value());
     EXPECT_EQ(result.error().code, ParseErrorCode::kMalformedPacket);
@@ -600,10 +518,7 @@ TEST(ExtractHandshakeResponseFields, EmptyPayload_IsError) {
     std::string out_user;
     std::string out_db;
     const auto result = detail::extract_handshake_response_fields(
-        std::span<const std::uint8_t>{payload},
-        out_user,
-        out_db
-    );
+        std::span<const std::uint8_t>{payload}, out_user, out_db);
 
     ASSERT_FALSE(result.has_value());
     EXPECT_EQ(result.error().code, ParseErrorCode::kMalformedPacket);
@@ -626,10 +541,7 @@ TEST(ExtractHandshakeResponseFields, UsernameNoNullTerminator_IsError) {
     std::string out_user;
     std::string out_db;
     const auto result = detail::extract_handshake_response_fields(
-        std::span<const std::uint8_t>{payload},
-        out_user,
-        out_db
-    );
+        std::span<const std::uint8_t>{payload}, out_user, out_db);
 
     ASSERT_FALSE(result.has_value());
     EXPECT_EQ(result.error().code, ParseErrorCode::kMalformedPacket);
@@ -650,22 +562,23 @@ TEST(ExtractHandshakeResponseFields, AuthResponseLenencFE_IsError) {
     payload.push_back(static_cast<std::uint8_t>((cap_flags >> 16U) & 0xFF));
     payload.push_back(static_cast<std::uint8_t>((cap_flags >> 24U) & 0xFF));
     // max_packet_size + charset + reserved (28바이트)
-    for (int i = 0; i < 28; ++i) { payload.push_back(0x00); }
+    for (int i = 0; i < 28; ++i) {
+        payload.push_back(0x00);
+    }
     // username: "u\0"
     payload.push_back(static_cast<std::uint8_t>('u'));
     payload.push_back(0x00);
     // auth_response: 0xFE (잘못된 lenenc 변형)
     payload.push_back(0xFE);
     // 뒤에 8바이트 더미 (0xFE 뒤 파싱 전에 에러 반환)
-    for (int i = 0; i < 8; ++i) { payload.push_back(0x00); }
+    for (int i = 0; i < 8; ++i) {
+        payload.push_back(0x00);
+    }
 
     std::string out_user;
     std::string out_db;
     const auto result = detail::extract_handshake_response_fields(
-        std::span<const std::uint8_t>{payload},
-        out_user,
-        out_db
-    );
+        std::span<const std::uint8_t>{payload}, out_user, out_db);
 
     ASSERT_FALSE(result.has_value());
     EXPECT_EQ(result.error().code, ParseErrorCode::kMalformedPacket);
@@ -684,23 +597,28 @@ TEST(ExtractHandshakeResponseFields, AuthResponseLengthExceedsPayload_IsError) {
     payload.push_back(static_cast<std::uint8_t>((cap_flags >> 16U) & 0xFF));
     payload.push_back(static_cast<std::uint8_t>((cap_flags >> 24U) & 0xFF));
     // max_packet_size + charset + reserved (28바이트)
-    for (int i = 0; i < 28; ++i) { payload.push_back(0x00); }
+    for (int i = 0; i < 28; ++i) {
+        payload.push_back(0x00);
+    }
     // username: "root\0"
-    payload.push_back('r'); payload.push_back('o'); payload.push_back('o');
-    payload.push_back('t'); payload.push_back(0x00);
+    payload.push_back('r');
+    payload.push_back('o');
+    payload.push_back('o');
+    payload.push_back('t');
+    payload.push_back(0x00);
     // auth_response: length=200, 실제 데이터는 5바이트만
     payload.push_back(200);  // 길이 200 선언
-    payload.push_back(0xAA); payload.push_back(0xBB);
-    payload.push_back(0xCC); payload.push_back(0xDD); payload.push_back(0xEE);
+    payload.push_back(0xAA);
+    payload.push_back(0xBB);
+    payload.push_back(0xCC);
+    payload.push_back(0xDD);
+    payload.push_back(0xEE);
     // 실제 남은 바이트(5) < 선언 길이(200)
 
     std::string out_user;
     std::string out_db;
     const auto result = detail::extract_handshake_response_fields(
-        std::span<const std::uint8_t>{payload},
-        out_user,
-        out_db
-    );
+        std::span<const std::uint8_t>{payload}, out_user, out_db);
 
     ASSERT_FALSE(result.has_value());
     EXPECT_EQ(result.error().code, ParseErrorCode::kMalformedPacket);
@@ -716,10 +634,7 @@ TEST(ExtractHandshakeResponseFields, NoConnectWithDb_DbNameIsEmpty) {
     std::string out_user;
     std::string out_db;
     const auto result = detail::extract_handshake_response_fields(
-        std::span<const std::uint8_t>{payload},
-        out_user,
-        out_db
-    );
+        std::span<const std::uint8_t>{payload}, out_user, out_db);
 
     ASSERT_TRUE(result.has_value());
     EXPECT_EQ(out_user, "alice");
@@ -739,23 +654,26 @@ TEST(ExtractHandshakeResponseFields, DbNameNoNullTerminator_IsError) {
     payload.push_back(static_cast<std::uint8_t>((cap_flags >> 16U) & 0xFF));
     payload.push_back(static_cast<std::uint8_t>((cap_flags >> 24U) & 0xFF));
     // max_packet_size + charset + reserved (28바이트)
-    for (int i = 0; i < 28; ++i) { payload.push_back(0x00); }
+    for (int i = 0; i < 28; ++i) {
+        payload.push_back(0x00);
+    }
     // username: "u\0"
-    payload.push_back('u'); payload.push_back(0x00);
+    payload.push_back('u');
+    payload.push_back(0x00);
     // auth_response (CLIENT_SECURE_CONNECTION): length=1, data=0xAA
-    payload.push_back(0x01); payload.push_back(0xAA);
+    payload.push_back(0x01);
+    payload.push_back(0xAA);
     // db_name: "mydb" without null terminator
-    payload.push_back('m'); payload.push_back('y');
-    payload.push_back('d'); payload.push_back('b');
+    payload.push_back('m');
+    payload.push_back('y');
+    payload.push_back('d');
+    payload.push_back('b');
     // null terminator 없음 — 에러 발생해야 함
 
     std::string out_user;
     std::string out_db;
     const auto result = detail::extract_handshake_response_fields(
-        std::span<const std::uint8_t>{payload},
-        out_user,
-        out_db
-    );
+        std::span<const std::uint8_t>{payload}, out_user, out_db);
 
     ASSERT_FALSE(result.has_value());
     EXPECT_EQ(result.error().code, ParseErrorCode::kMalformedPacket);
@@ -771,10 +689,7 @@ TEST(ExtractHandshakeResponseFields, EmptyUsername_IsOk) {
     std::string out_user;
     std::string out_db;
     const auto result = detail::extract_handshake_response_fields(
-        std::span<const std::uint8_t>{payload},
-        out_user,
-        out_db
-    );
+        std::span<const std::uint8_t>{payload}, out_user, out_db);
 
     ASSERT_TRUE(result.has_value());
     EXPECT_TRUE(out_user.empty());
@@ -793,23 +708,27 @@ TEST(ExtractHandshakeResponseFields, AuthResponseLenencFC_Normal) {
     payload.push_back(static_cast<std::uint8_t>((cap_flags >> 8U) & 0xFF));
     payload.push_back(static_cast<std::uint8_t>((cap_flags >> 16U) & 0xFF));
     payload.push_back(static_cast<std::uint8_t>((cap_flags >> 24U) & 0xFF));
-    for (int i = 0; i < 28; ++i) { payload.push_back(0x00); }
+    for (int i = 0; i < 28; ++i) {
+        payload.push_back(0x00);
+    }
     // username: "bob\0"
-    payload.push_back('b'); payload.push_back('o');
-    payload.push_back('b'); payload.push_back(0x00);
+    payload.push_back('b');
+    payload.push_back('o');
+    payload.push_back('b');
+    payload.push_back(0x00);
     // auth_response: 0xFC + 2바이트 LE length=3, 3바이트 data
     payload.push_back(0xFC);
-    payload.push_back(0x03); payload.push_back(0x00);  // length=3
-    payload.push_back(0x11); payload.push_back(0x22); payload.push_back(0x33);
+    payload.push_back(0x03);
+    payload.push_back(0x00);  // length=3
+    payload.push_back(0x11);
+    payload.push_back(0x22);
+    payload.push_back(0x33);
     // (CLIENT_CONNECT_WITH_DB 없으므로 db_name 파싱 안 함)
 
     std::string out_user;
     std::string out_db;
     const auto result = detail::extract_handshake_response_fields(
-        std::span<const std::uint8_t>{payload},
-        out_user,
-        out_db
-    );
+        std::span<const std::uint8_t>{payload}, out_user, out_db);
 
     ASSERT_TRUE(result.has_value());
     EXPECT_EQ(out_user, "bob");
@@ -825,11 +744,12 @@ TEST(ExtractHandshakeResponseFields, AuthResponseLenencFC_Normal) {
 // ---------------------------------------------------------------------------
 TEST(MysqlPacketSerialize, NormalPayloadSize) {
     // payload = {0x03, 0x41} (COM_QUERY + "A"), seq=0
-    std::vector<std::uint8_t> data = {
-        0x02, 0x00, 0x00,  // length = 2
-        0x00,              // seq = 0
-        0x03, 0x41
-    };
+    std::vector<std::uint8_t> data = {0x02,
+                                      0x00,
+                                      0x00,  // length = 2
+                                      0x00,  // seq = 0
+                                      0x03,
+                                      0x41};
 
     auto result = MysqlPacket::parse(std::span<const std::uint8_t>{data});
     ASSERT_TRUE(result.has_value());
@@ -845,17 +765,16 @@ TEST(MysqlPacketSerialize, NormalPayloadSize) {
 // ---------------------------------------------------------------------------
 TEST(MysqlPacketMakeError, ShortMessageNotTruncated) {
     const std::string short_msg = "short error";
-    MysqlPacket pkt = MysqlPacket::make_error(1000, short_msg, 1);
+    const MysqlPacket pkt = MysqlPacket::make_error(1000, short_msg, 1);
 
     const auto payload = pkt.payload();
     // 9(fixed) + short_msg.size() = 전체 payload
     ASSERT_EQ(payload.size(), 9U + short_msg.size());
 
     // message 부분이 원본과 일치해야 한다
-    const std::string decoded_msg(
-        reinterpret_cast<const char*>(payload.data() + 9),
-        payload.size() - 9
-    );
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
+    const std::string decoded_msg(reinterpret_cast<const char*>(payload.data() + 9),
+                                  payload.size() - 9);
     EXPECT_EQ(decoded_msg, short_msg);
 }
 
@@ -864,10 +783,10 @@ TEST(MysqlPacketMakeError, ShortMessageNotTruncated) {
 // ---------------------------------------------------------------------------
 TEST(MysqlPacketMakeError, MaxLengthMessage) {
     // kMaxPayloadLen(0xFFFFFF) - kFixedHeaderLen(9) = 16776606 바이트
-    static constexpr std::size_t kMaxMsg = 0x00FFFFFFU - 9U;
-    const std::string max_msg(kMaxMsg, 'X');
+    constexpr std::size_t max_msg_size = 0x00FFFFFFU - 9U;
+    const std::string max_msg(max_msg_size, 'X');
 
-    MysqlPacket pkt = MysqlPacket::make_error(9999, max_msg, 0);
+    const MysqlPacket pkt = MysqlPacket::make_error(9999, max_msg, 0);
 
     const auto payload = pkt.payload();
     ASSERT_EQ(payload.size(), 0x00FFFFFFU);  // 정확히 0xFFFFFF
@@ -882,10 +801,10 @@ TEST(MysqlPacketMakeError, MaxLengthMessage) {
 // ---------------------------------------------------------------------------
 TEST(MysqlPacketMakeError, OversizedMessageTruncated) {
     // 0xFFFFFF - 9 + 1 = 상한을 1바이트 초과하는 message
-    static constexpr std::size_t kOverMsg = 0x00FFFFFFU - 9U + 1U;
-    const std::string over_msg(kOverMsg, 'Y');
+    constexpr std::size_t over_msg_size = 0x00FFFFFFU - 9U + 1U;
+    const std::string over_msg(over_msg_size, 'Y');
 
-    MysqlPacket pkt = MysqlPacket::make_error(1234, over_msg, 1);
+    const MysqlPacket pkt = MysqlPacket::make_error(1234, over_msg, 1);
 
     const auto payload = pkt.payload();
     // truncation 후 payload 크기는 정확히 0xFFFFFF
@@ -906,7 +825,7 @@ TEST(MysqlPacketMakeError, OversizedMessageTruncated) {
 // T3-5. make_error(): 빈 message + truncation 로직 — 기존 동작 유지
 // ---------------------------------------------------------------------------
 TEST(MysqlPacketMakeError, EmptyMessageStillWorks) {
-    MysqlPacket pkt = MysqlPacket::make_error(2000, "", 0);
+    const MysqlPacket pkt = MysqlPacket::make_error(2000, "", 0);
     const auto payload = pkt.payload();
     ASSERT_EQ(payload.size(), 9U);  // 고정 9바이트
     EXPECT_EQ(payload[0], 0xFF);
@@ -917,11 +836,7 @@ TEST(MysqlPacketMakeError, EmptyMessageStillWorks) {
 // ---------------------------------------------------------------------------
 TEST(MysqlPacketSerialize, HeaderPayloadConsistency) {
     // payload가 0x03 + "ABC" (총 4바이트)
-    std::vector<std::uint8_t> raw = {
-        0x04, 0x00, 0x00,
-        0x07,
-        0x03, 0x41, 0x42, 0x43
-    };
+    std::vector<std::uint8_t> raw = {0x04, 0x00, 0x00, 0x07, 0x03, 0x41, 0x42, 0x43};
 
     auto result = MysqlPacket::parse(std::span<const std::uint8_t>{raw});
     ASSERT_TRUE(result.has_value());
@@ -930,10 +845,9 @@ TEST(MysqlPacketSerialize, HeaderPayloadConsistency) {
     ASSERT_EQ(serialized.size(), 8U);
 
     // 헤더에서 길이 추출: 3바이트 LE
-    const std::uint32_t hdr_len =
-        static_cast<std::uint32_t>(serialized[0])
-        | (static_cast<std::uint32_t>(serialized[1]) << 8U)
-        | (static_cast<std::uint32_t>(serialized[2]) << 16U);
+    const std::uint32_t hdr_len = static_cast<std::uint32_t>(serialized[0]) |
+                                  (static_cast<std::uint32_t>(serialized[1]) << 8U) |
+                                  (static_cast<std::uint32_t>(serialized[2]) << 16U);
     EXPECT_EQ(hdr_len, 4U);
 
     // seq_id
@@ -949,11 +863,7 @@ TEST(MysqlPacketSerialize, HeaderPayloadConsistency) {
 // ---------------------------------------------------------------------------
 TEST(AuthResponseBranch, FE_SmallPayload_IsEof) {
     // payload = {0xFE, 0x00, 0x00, 0x02, 0x00} (5바이트, < 9)
-    std::vector<std::uint8_t> data = {
-        0x05, 0x00, 0x00,
-        0x02,
-        0xFE, 0x00, 0x00, 0x02, 0x00
-    };
+    std::vector<std::uint8_t> data = {0x05, 0x00, 0x00, 0x02, 0xFE, 0x00, 0x00, 0x02, 0x00};
 
     auto result = MysqlPacket::parse(std::span<const std::uint8_t>{data});
     ASSERT_TRUE(result.has_value());
@@ -971,10 +881,8 @@ TEST(AuthResponseBranch, FE_SmallPayload_IsEof) {
 TEST(AuthResponseBranch, FE_LargePayload_IsAuthSwitchRequest) {
     // payload = 0xFE + 9바이트 more (총 10바이트 payload)
     std::vector<std::uint8_t> payload_body = {
-        0xFE,
-        0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09
-    };
-    const std::uint32_t len = static_cast<std::uint32_t>(payload_body.size());
+        0xFE, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09};
+    auto len = static_cast<std::uint32_t>(payload_body.size());
 
     std::vector<std::uint8_t> data;
     data.push_back(static_cast<std::uint8_t>(len & 0xFF));
@@ -996,11 +904,7 @@ TEST(AuthResponseBranch, FE_LargePayload_IsAuthSwitchRequest) {
 // T1-3. 0x01 → AuthMoreData 마커
 // ---------------------------------------------------------------------------
 TEST(AuthResponseBranch, X01_AuthMoreData_Marker) {
-    std::vector<std::uint8_t> data = {
-        0x05, 0x00, 0x00,
-        0x03,
-        0x01, 0xAA, 0xBB, 0xCC, 0xDD
-    };
+    std::vector<std::uint8_t> data = {0x05, 0x00, 0x00, 0x03, 0x01, 0xAA, 0xBB, 0xCC, 0xDD};
 
     auto result = MysqlPacket::parse(std::span<const std::uint8_t>{data});
     ASSERT_TRUE(result.has_value());
@@ -1014,11 +918,7 @@ TEST(AuthResponseBranch, X01_AuthMoreData_Marker) {
 // T1-4. 0x00 → kOk
 // ---------------------------------------------------------------------------
 TEST(AuthResponseBranch, X00_IsOk) {
-    std::vector<std::uint8_t> data = {
-        0x01, 0x00, 0x00,
-        0x02,
-        0x00
-    };
+    std::vector<std::uint8_t> data = {0x01, 0x00, 0x00, 0x02, 0x00};
 
     auto result = MysqlPacket::parse(std::span<const std::uint8_t>{data});
     ASSERT_TRUE(result.has_value());
@@ -1032,11 +932,7 @@ TEST(AuthResponseBranch, X00_IsOk) {
 // T1-5. 0xFF → kError
 // ---------------------------------------------------------------------------
 TEST(AuthResponseBranch, XFF_IsError) {
-    std::vector<std::uint8_t> data = {
-        0x03, 0x00, 0x00,
-        0x02,
-        0xFF, 0x15, 0x04
-    };
+    std::vector<std::uint8_t> data = {0x03, 0x00, 0x00, 0x02, 0xFF, 0x15, 0x04};
 
     auto result = MysqlPacket::parse(std::span<const std::uint8_t>{data});
     ASSERT_TRUE(result.has_value());
@@ -1050,11 +946,7 @@ TEST(AuthResponseBranch, XFF_IsError) {
 // T1-6. unknown type (0xAB) → kUnknown (else 분기: fail-close)
 // ---------------------------------------------------------------------------
 TEST(AuthResponseBranch, UnknownType_IsUnknown) {
-    std::vector<std::uint8_t> data = {
-        0x02, 0x00, 0x00,
-        0x03,
-        0xAB, 0x01
-    };
+    std::vector<std::uint8_t> data = {0x02, 0x00, 0x00, 0x03, 0xAB, 0x01};
 
     auto result = MysqlPacket::parse(std::span<const std::uint8_t>{data});
     ASSERT_TRUE(result.has_value());
@@ -1068,10 +960,7 @@ TEST(AuthResponseBranch, UnknownType_IsUnknown) {
 // T1-7. 빈 payload → auth 응답에서 빈 payload 감지 경로
 // ---------------------------------------------------------------------------
 TEST(AuthResponseBranch, EmptyPayload_IsUnknown) {
-    std::vector<std::uint8_t> data = {
-        0x00, 0x00, 0x00,
-        0x02
-    };
+    std::vector<std::uint8_t> data = {0x00, 0x00, 0x00, 0x02};
 
     auto result = MysqlPacket::parse(std::span<const std::uint8_t>{data});
     ASSERT_TRUE(result.has_value());
@@ -1084,10 +973,7 @@ TEST(AuthResponseBranch, EmptyPayload_IsUnknown) {
 // ---------------------------------------------------------------------------
 TEST(AuthResponseBranch, FE_Exactly8Bytes_IsEof) {
     std::vector<std::uint8_t> data = {
-        0x08, 0x00, 0x00,
-        0x01,
-        0xFE, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07
-    };
+        0x08, 0x00, 0x00, 0x01, 0xFE, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07};
 
     auto result = MysqlPacket::parse(std::span<const std::uint8_t>{data});
     ASSERT_TRUE(result.has_value());
@@ -1102,10 +988,7 @@ TEST(AuthResponseBranch, FE_Exactly8Bytes_IsEof) {
 // ---------------------------------------------------------------------------
 TEST(AuthResponseBranch, FE_Exactly9Bytes_IsAuthSwitchRequest) {
     std::vector<std::uint8_t> data = {
-        0x09, 0x00, 0x00,
-        0x01,
-        0xFE, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08
-    };
+        0x09, 0x00, 0x00, 0x01, 0xFE, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08};
 
     auto result = MysqlPacket::parse(std::span<const std::uint8_t>{data});
     ASSERT_TRUE(result.has_value());
@@ -1175,7 +1058,9 @@ TEST(ExtractHandshakeResponseFields, SecureConn_AuthLenPrefixMissing_IsError) {
     payload.push_back(static_cast<std::uint8_t>((cap_flags >> 16U) & 0xFF));
     payload.push_back(static_cast<std::uint8_t>((cap_flags >> 24U) & 0xFF));
     // max_packet_size (4바이트) + charset (1바이트) + reserved (23바이트) = 28바이트
-    for (int i = 0; i < 28; ++i) { payload.push_back(0x00); }
+    for (int i = 0; i < 28; ++i) {
+        payload.push_back(0x00);
+    }
     // 여기까지 32바이트
     // username: "alice\0"
     payload.push_back(static_cast<std::uint8_t>('a'));
@@ -1189,10 +1074,7 @@ TEST(ExtractHandshakeResponseFields, SecureConn_AuthLenPrefixMissing_IsError) {
     std::string out_user;
     std::string out_db;
     const auto result = detail::extract_handshake_response_fields(
-        std::span<const std::uint8_t>{payload},
-        out_user,
-        out_db
-    );
+        std::span<const std::uint8_t>{payload}, out_user, out_db);
 
     ASSERT_FALSE(result.has_value());
     EXPECT_EQ(result.error().code, ParseErrorCode::kMalformedPacket);
@@ -1217,7 +1099,9 @@ TEST(ExtractHandshakeResponseFields, ConnectWithDb_DbFieldMissing_IsError) {
     payload.push_back(static_cast<std::uint8_t>((cap_flags >> 16U) & 0xFF));
     payload.push_back(static_cast<std::uint8_t>((cap_flags >> 24U) & 0xFF));
     // max_packet_size (4바이트) + charset (1바이트) + reserved (23바이트) = 28바이트
-    for (int i = 0; i < 28; ++i) { payload.push_back(0x00); }
+    for (int i = 0; i < 28; ++i) {
+        payload.push_back(0x00);
+    }
     // 여기까지 32바이트
     // username: "root\0"
     payload.push_back(static_cast<std::uint8_t>('r'));
@@ -1235,16 +1119,12 @@ TEST(ExtractHandshakeResponseFields, ConnectWithDb_DbFieldMissing_IsError) {
     std::string out_user;
     std::string out_db;
     const auto result = detail::extract_handshake_response_fields(
-        std::span<const std::uint8_t>{payload},
-        out_user,
-        out_db
-    );
+        std::span<const std::uint8_t>{payload}, out_user, out_db);
 
     ASSERT_FALSE(result.has_value());
     EXPECT_EQ(result.error().code, ParseErrorCode::kMalformedPacket);
     // 에러 메시지에 "database field missing" 포함 확인
-    EXPECT_NE(result.error().message.find("database field missing"),
-              std::string::npos);
+    EXPECT_NE(result.error().message.find("database field missing"), std::string::npos);
 }
 
 // ---------------------------------------------------------------------------
@@ -1262,7 +1142,9 @@ TEST(ExtractHandshakeResponseFields, LegacyAuthResponseNoNullTerminator_IsError)
     payload.push_back(static_cast<std::uint8_t>((cap_flags >> 16U) & 0xFF));
     payload.push_back(static_cast<std::uint8_t>((cap_flags >> 24U) & 0xFF));
     // max_packet_size (4바이트) + charset (1바이트) + reserved (23바이트) = 28바이트
-    for (int i = 0; i < 28; ++i) { payload.push_back(0x00); }
+    for (int i = 0; i < 28; ++i) {
+        payload.push_back(0x00);
+    }
     // username: "u\0"
     payload.push_back(static_cast<std::uint8_t>('u'));
     payload.push_back(0x00);
@@ -1274,10 +1156,7 @@ TEST(ExtractHandshakeResponseFields, LegacyAuthResponseNoNullTerminator_IsError)
     std::string out_user;
     std::string out_db;
     const auto result = detail::extract_handshake_response_fields(
-        std::span<const std::uint8_t>{payload},
-        out_user,
-        out_db
-    );
+        std::span<const std::uint8_t>{payload}, out_user, out_db);
 
     ASSERT_FALSE(result.has_value());
     EXPECT_EQ(result.error().code, ParseErrorCode::kMalformedPacket);

@@ -137,7 +137,7 @@ TEST(MysqlPacketEdge, MaxSizeBoundaryHeader) {
 // ---------------------------------------------------------------------------
 TEST(MysqlPacketEdge, NullByteInComQuery) {
     // SQL: {0x03, 'S', 'E', 'L', 'E', 'C', 'T', ' ', 0x00, '1'}
-    std::vector<std::uint8_t> sql_bytes = {'S', 'E', 'L', 'E', 'C', 'T', ' ', 0x00, '1'};
+    const std::vector<std::uint8_t> sql_bytes = {'S', 'E', 'L', 'E', 'C', 'T', ' ', 0x00, '1'};
     const auto data = make_com_query_packet(sql_bytes);
 
     auto parse_result = MysqlPacket::parse(std::span<const std::uint8_t>{data});
@@ -161,7 +161,7 @@ TEST(MysqlPacketEdge, NullByteInComQuery) {
 TEST(MysqlPacketEdge, TabNewlineInQuery) {
     // SQL: "SELECT\t*\nFROM\r\nt"
     const std::string sql_str = "SELECT\t*\nFROM\r\nt";
-    std::vector<std::uint8_t> sql_bytes(sql_str.begin(), sql_str.end());
+    const std::vector<std::uint8_t> sql_bytes(sql_str.begin(), sql_str.end());
     const auto data = make_com_query_packet(sql_bytes);
 
     auto parse_result = MysqlPacket::parse(std::span<const std::uint8_t>{data});
@@ -200,7 +200,7 @@ TEST(SqlParserEdge, VeryLongSelect) {
 
     ASSERT_GT(long_sql.size(), 10000U) << "Test precondition: SQL must be > 10000 chars";
 
-    SqlParser parser;
+    const SqlParser parser;
     const auto result = parser.parse(long_sql);
 
     ASSERT_TRUE(result.has_value()) << "Very long SELECT should parse without error";
@@ -219,9 +219,9 @@ TEST(SqlParserEdge, NullByteInSql) {
     sql_with_null += "FROM t";
 
     // string_view로 전체 길이(NULL 바이트 포함)를 전달
-    std::string_view sv(sql_with_null.data(), sql_with_null.size());
+    const std::string_view sv(sql_with_null.data(), sql_with_null.size());
 
-    SqlParser parser;
+    const SqlParser parser;
     const auto result = parser.parse(sv);
 
     // 성공이든 에러든 이 지점에 도달하면 크래시/무한루프 없음
@@ -246,7 +246,7 @@ TEST(SqlParserEdge, KoreanTableIdentifier) {
         "\xEB\xB8\x94"  // 블
         "`";
 
-    SqlParser parser;
+    const SqlParser parser;
     const auto result = parser.parse(sql);
 
     // 크래시가 없으면 성공. 결과는 성공 또는 에러 모두 허용.
@@ -265,7 +265,7 @@ TEST(SqlParserEdge, EmojiInStringLiteral) {
     // UTF-8 😀 = 0xF0 0x9F 0x98 0x80
     const std::string sql = "SELECT '\xF0\x9F\x98\x80' AS emoji FROM t";
 
-    SqlParser parser;
+    const SqlParser parser;
     const auto result = parser.parse(sql);
 
     ASSERT_TRUE(result.has_value()) << "SQL with emoji in string literal should parse successfully";
@@ -278,13 +278,13 @@ TEST(SqlParserEdge, EmojiInStringLiteral) {
 //   1000자 공백+탭+개행 뒤 SELECT → parse 성공, command == kSelect.
 // ---------------------------------------------------------------------------
 TEST(SqlParserEdge, LeadingWhitespaceHeavy) {
-    std::string sql =
+    const std::string sql =
         std::string(500, ' ') + std::string(250, '\t') + std::string(250, '\n') + "SELECT 1 FROM t";
 
     ASSERT_GT(sql.size(), 1000U)
         << "Test precondition: SQL must be > 1000 chars with leading whitespace";
 
-    SqlParser parser;
+    const SqlParser parser;
     const auto result = parser.parse(sql);
 
     ASSERT_TRUE(result.has_value())
@@ -301,7 +301,7 @@ TEST(SqlParserEdge, LeadingWhitespaceHeavy) {
 TEST(SqlParserEdge, OnlyComment) {
     const std::string sql = "/* just a comment */";
 
-    SqlParser parser;
+    const SqlParser parser;
     const auto result = parser.parse(sql);
 
     if (result.has_value()) {
@@ -397,15 +397,15 @@ TEST(StatsEdge, UnderflowProtection) {
 TEST(StatsEdge, HighVolumeCounting) {
     StatsCollector stats;
 
-    constexpr std::uint64_t kIterations = 100'000ULL;
-    for (std::uint64_t i = 0; i < kIterations; ++i) {
+    constexpr std::uint64_t iterations = 100'000ULL;
+    for (std::uint64_t i = 0; i < iterations; ++i) {
         stats.on_query(false);
     }
 
     const auto snap = stats.snapshot();
-    EXPECT_EQ(snap.total_queries, kIterations)
-        << "After " << kIterations << " on_query(false) calls, "
-        << "total_queries must equal " << kIterations;
+    EXPECT_EQ(snap.total_queries, iterations)
+        << "After " << iterations << " on_query(false) calls, "
+        << "total_queries must equal " << iterations;
     EXPECT_EQ(snap.blocked_queries, 0U)
         << "blocked_queries must remain 0 when all queries are on_query(false)";
 }

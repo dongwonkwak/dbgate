@@ -4,16 +4,17 @@
 // StructuredLogger 단위 테스트
 // ---------------------------------------------------------------------------
 
-#include "logger/log_types.hpp"
-#include "logger/structured_logger.hpp"
+#include <gtest/gtest.h>
 
 #include <chrono>
 #include <filesystem>
 #include <fstream>
-#include <gtest/gtest.h>
 #include <sstream>
 #include <thread>
 #include <vector>
+
+#include "logger/log_types.hpp"
+#include "logger/structured_logger.hpp"
 
 namespace fs = std::filesystem;
 
@@ -22,16 +23,16 @@ namespace fs = std::filesystem;
 // ---------------------------------------------------------------------------
 class JsonLineParser {
 public:
-    explicit JsonLineParser(const std::string& json_str)
+    explicit JsonLineParser(const std::string& json_str)  // NOLINT(modernize-pass-by-value)
         : parsed_(json_str) {}
 
-    bool has_field(const std::string& field) const {
+    [[nodiscard]] bool has_field(const std::string& field) const {
         return parsed_.find("\"" + field + "\"") != std::string::npos;
     }
 
-    std::string get_field(const std::string& field) const {
-        std::string search_key = "\"" + field + "\":";
-        size_t      pos         = parsed_.find(search_key);
+    [[nodiscard]] std::string get_field(const std::string& field) const {
+        const std::string search_key = "\"" + field + "\":";
+        size_t pos = parsed_.find(search_key);
         if (pos == std::string::npos) {
             return "";
         }
@@ -39,7 +40,7 @@ public:
         pos += search_key.length();
 
         // Skip whitespace
-        while (pos < parsed_.size() && std::isspace(parsed_[pos])) {
+        while (pos < parsed_.size() && std::isspace(parsed_[pos]) != 0) {
             ++pos;
         }
 
@@ -94,9 +95,9 @@ public:
             }
         } else {
             // Number or boolean
-            while (pos < parsed_.size() && (std::isdigit(parsed_[pos]) || parsed_[pos] == '-' ||
-                                             parsed_[pos] == '.' || parsed_[pos] == 'e' ||
-                                             parsed_[pos] == 'E' || parsed_[pos] == '+')) {
+            while (pos < parsed_.size() &&
+                   (std::isdigit(parsed_[pos]) != 0 || parsed_[pos] == '-' || parsed_[pos] == '.' ||
+                    parsed_[pos] == 'e' || parsed_[pos] == 'E' || parsed_[pos] == '+')) {
                 oss << parsed_[pos];
                 ++pos;
             }
@@ -116,20 +117,17 @@ class StructuredLoggerTest : public ::testing::Test {
 protected:
     void SetUp() override {
         const auto* info = ::testing::UnitTest::GetInstance()->current_test_info();
-        std::string unique_name =
-            std::string(info->test_suite_name()) + "_" + info->name();
-        log_dir_  = fs::temp_directory_path() / "dbgate_test_logs" / unique_name;
+        const std::string unique_name = std::string(info->test_suite_name()) + "_" + info->name();
+        log_dir_ = fs::temp_directory_path() / "dbgate_test_logs" / unique_name;
         log_file_ = log_dir_ / "test.log";
         fs::create_directories(log_dir_);
     }
 
-    void TearDown() override {
-        fs::remove_all(log_dir_);
-    }
+    void TearDown() override { fs::remove_all(log_dir_); }
 
-    std::vector<std::string> read_log_lines() const {
+    [[nodiscard]] std::vector<std::string> read_log_lines() const {
         std::vector<std::string> lines;
-        std::ifstream            file(log_file_);
+        std::ifstream file(log_file_);
         if (!file.is_open()) {
             return lines;
         }
@@ -137,7 +135,7 @@ protected:
         std::string line;
         while (std::getline(file, line)) {
             // Skip timestamps and keep only JSON part
-            size_t json_start = line.find('{');
+            const size_t json_start = line.find('{');
             if (json_start != std::string::npos) {
                 lines.push_back(line.substr(json_start));
             }
@@ -145,8 +143,10 @@ protected:
         return lines;
     }
 
-    fs::path log_dir_;
-    fs::path log_file_;
+    fs::path
+        log_dir_;  // NOLINT(cppcoreguidelines-non-private-member-variables-in-classes,readability-identifier-naming)
+    fs::path
+        log_file_;  // NOLINT(cppcoreguidelines-non-private-member-variables-in-classes,readability-identifier-naming)
 };
 
 // ---------------------------------------------------------------------------
@@ -155,24 +155,24 @@ protected:
 TEST_F(StructuredLoggerTest, ConnectionLogJsonFormat) {
     StructuredLogger logger(LogLevel::kInfo, log_file_);
 
-    auto                               now = std::chrono::system_clock::now();
-    ConnectionLog                      entry;
-    entry.session_id   = 12345;
-    entry.event        = "connect";
-    entry.client_ip    = "192.168.1.100";
-    entry.client_port  = 54321;
-    entry.db_user      = "testuser";
-    entry.timestamp    = now;
+    const auto now = std::chrono::system_clock::now();
+    ConnectionLog entry;
+    entry.session_id = 12345;
+    entry.event = "connect";
+    entry.client_ip = "192.168.1.100";
+    entry.client_port = 54321;
+    entry.db_user = "testuser";
+    entry.timestamp = now;
 
     logger.log_connection(entry);
 
     // 로그 파일 플러시 대기
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
-    auto lines = read_log_lines();
+    const auto lines = read_log_lines();
     ASSERT_GT(lines.size(), 0) << "No log lines found";
 
-    JsonLineParser parser(lines[0]);
+    const JsonLineParser parser(lines[0]);
     EXPECT_TRUE(parser.has_field("event"));
     EXPECT_TRUE(parser.has_field("session_id"));
     EXPECT_TRUE(parser.has_field("client_ip"));
@@ -193,26 +193,26 @@ TEST_F(StructuredLoggerTest, ConnectionLogJsonFormat) {
 TEST_F(StructuredLoggerTest, QueryLogJsonFields) {
     StructuredLogger logger(LogLevel::kInfo, log_file_);
 
-    auto    now = std::chrono::system_clock::now();
+    const auto now = std::chrono::system_clock::now();
     QueryLog entry;
-    entry.session_id   = 67890;
-    entry.db_user      = "app_service";
-    entry.client_ip    = "172.16.1.50";
-    entry.raw_sql      = "SELECT * FROM users WHERE id = 1";
-    entry.command_raw  = 0;  // SELECT
-    entry.action_raw   = 1;  // ALLOW
-    entry.timestamp    = now;
-    entry.duration     = std::chrono::microseconds(1500);
-    entry.tables.push_back("users");
+    entry.session_id = 67890;
+    entry.db_user = "app_service";
+    entry.client_ip = "172.16.1.50";
+    entry.raw_sql = "SELECT * FROM users WHERE id = 1";
+    entry.command_raw = 0;  // SELECT
+    entry.action_raw = 1;   // ALLOW
+    entry.timestamp = now;
+    entry.duration = std::chrono::microseconds(1500);
+    entry.tables.emplace_back("users");
 
     logger.log_query(entry);
 
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
-    auto lines = read_log_lines();
+    const auto lines = read_log_lines();
     ASSERT_GT(lines.size(), 0);
 
-    JsonLineParser parser(lines[0]);
+    const JsonLineParser parser(lines[0]);
     EXPECT_TRUE(parser.has_field("event"));
     EXPECT_TRUE(parser.has_field("session_id"));
     EXPECT_TRUE(parser.has_field("raw_sql"));
@@ -232,24 +232,24 @@ TEST_F(StructuredLoggerTest, QueryLogJsonFields) {
 TEST_F(StructuredLoggerTest, BlockLogMatchedRuleAndReason) {
     StructuredLogger logger(LogLevel::kWarn, log_file_);
 
-    auto    now = std::chrono::system_clock::now();
+    const auto now = std::chrono::system_clock::now();
     BlockLog entry;
-    entry.session_id   = 11111;
-    entry.db_user      = "app_service";
-    entry.client_ip    = "172.16.1.50";
-    entry.raw_sql      = "DROP TABLE users";
+    entry.session_id = 11111;
+    entry.db_user = "app_service";
+    entry.client_ip = "172.16.1.50";
+    entry.raw_sql = "DROP TABLE users";
     entry.matched_rule = "sql_rule:block_statements:DROP";
-    entry.reason       = "DROP statement not allowed";
-    entry.timestamp    = now;
+    entry.reason = "DROP statement not allowed";
+    entry.timestamp = now;
 
     logger.log_block(entry);
 
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
-    auto lines = read_log_lines();
+    const auto lines = read_log_lines();
     ASSERT_GT(lines.size(), 0);
 
-    JsonLineParser parser(lines[0]);
+    const JsonLineParser parser(lines[0]);
     EXPECT_TRUE(parser.has_field("matched_rule"));
     EXPECT_TRUE(parser.has_field("reason"));
 
@@ -265,21 +265,21 @@ TEST_F(StructuredLoggerTest, LogLevelFiltering) {
     StructuredLogger logger(LogLevel::kWarn, log_file_);
 
     // Info 레벨의 로그 (필터되어야 함)
-    auto       now = std::chrono::system_clock::now();
+    const auto now = std::chrono::system_clock::now();
     QueryLog entry;
     entry.session_id = 22222;
-    entry.timestamp  = now;
+    entry.timestamp = now;
     logger.log_query(entry);
 
     // Warn 레벨의 로그 (기록되어야 함)
     BlockLog block_entry;
     block_entry.session_id = 33333;
-    block_entry.timestamp  = now;
+    block_entry.timestamp = now;
     logger.log_block(block_entry);
 
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
-    auto lines = read_log_lines();
+    const auto lines = read_log_lines();
     // BlockLog만 기록되어야 함 (기록된 JSON 라인만 카운트)
     EXPECT_EQ(lines.size(), 1);
     EXPECT_TRUE(lines[0].find("query_blocked") != std::string::npos);
@@ -291,20 +291,22 @@ TEST_F(StructuredLoggerTest, LogLevelFiltering) {
 TEST_F(StructuredLoggerTest, MultithreadedLoggingNoCrash) {
     StructuredLogger logger(LogLevel::kInfo, log_file_);
 
-    const int                      num_threads = 4;
-    const int                      logs_per_thread = 10;
-    std::vector<std::thread>       threads;
+    const int num_threads = 4;
+    const int logs_per_thread = 10;
+    std::vector<std::thread> threads;
+    threads.reserve(static_cast<std::size_t>(num_threads));
 
     for (int t = 0; t < num_threads; ++t) {
         threads.emplace_back([&logger, t]() {
-            auto now = std::chrono::system_clock::now();
+            const auto now = std::chrono::system_clock::now();
             for (int i = 0; i < logs_per_thread; ++i) {
                 QueryLog entry;
-                entry.session_id = static_cast<std::uint64_t>(t) * 1000U + static_cast<std::uint64_t>(i);
-                entry.db_user    = "user_" + std::to_string(t);
-                entry.client_ip  = "192.168.1." + std::to_string(i);
-                entry.raw_sql    = "SELECT * FROM table_" + std::to_string(i);
-                entry.timestamp  = now;
+                entry.session_id =
+                    static_cast<std::uint64_t>(t) * 1000U + static_cast<std::uint64_t>(i);
+                entry.db_user = "user_" + std::to_string(t);
+                entry.client_ip = "192.168.1." + std::to_string(i);
+                entry.raw_sql = "SELECT * FROM table_" + std::to_string(i);
+                entry.timestamp = now;
                 logger.log_query(entry);
             }
         });
@@ -316,7 +318,7 @@ TEST_F(StructuredLoggerTest, MultithreadedLoggingNoCrash) {
 
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
-    auto lines = read_log_lines();
+    const auto lines = read_log_lines();
     // 일부 로그가 기록되었는지 확인 (정확한 개수는 보장 안 함, 기록되었는지만 확인)
     EXPECT_GT(lines.size(), 0);
 }
@@ -327,22 +329,22 @@ TEST_F(StructuredLoggerTest, MultithreadedLoggingNoCrash) {
 TEST_F(StructuredLoggerTest, JsonEscaping) {
     StructuredLogger logger(LogLevel::kInfo, log_file_);
 
-    auto    now = std::chrono::system_clock::now();
+    const auto now = std::chrono::system_clock::now();
     QueryLog entry;
     entry.session_id = 44444;
-    entry.db_user    = "user\"with\\quotes";
-    entry.raw_sql    = "SELECT * FROM users\nWHERE id=1";
-    entry.timestamp  = now;
+    entry.db_user = "user\"with\\quotes";
+    entry.raw_sql = "SELECT * FROM users\nWHERE id=1";
+    entry.timestamp = now;
 
     logger.log_query(entry);
 
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
-    auto lines = read_log_lines();
+    const auto lines = read_log_lines();
     ASSERT_GT(lines.size(), 0);
 
     // JSON이 유효한지 확인 (escape가 제대로 되었으므로 파싱 가능)
-    JsonLineParser parser(lines[0]);
+    const JsonLineParser parser(lines[0]);
     EXPECT_TRUE(parser.has_field("db_user"));
     EXPECT_TRUE(parser.has_field("raw_sql"));
 }
@@ -365,7 +367,7 @@ TEST_F(StructuredLoggerTest, DiagnosticLogging) {
     EXPECT_TRUE(file.is_open()) << "Log file was not created";
 
     file.seekg(0, std::ios::end);
-    std::streamsize file_size = file.tellg();
+    const std::streamsize file_size = file.tellg();
     EXPECT_GT(file_size, 0) << "Log file is empty";
 }
 

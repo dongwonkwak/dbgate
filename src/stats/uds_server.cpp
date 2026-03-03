@@ -22,12 +22,11 @@
 
 #include <spdlog/spdlog.h>
 
+#include <array>
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
 #include <boost/asio/read.hpp>
 #include <boost/asio/write.hpp>
-
-#include <array>
 #include <chrono>
 #include <cstdint>
 #include <string>
@@ -43,21 +42,38 @@ namespace {
 std::string json_escape(std::string_view sv) {
     std::string out;
     out.reserve(sv.size() + 8);
-    for (char c : sv) {
+    for (const char c : sv) {
         switch (c) {
-            case '"':  out += "\\\""; break;
-            case '\\': out += "\\\\"; break;
-            case '\b': out += "\\b";  break;
-            case '\f': out += "\\f";  break;
-            case '\n': out += "\\n";  break;
-            case '\r': out += "\\r";  break;
-            case '\t': out += "\\t";  break;
+            case '"':
+                out += "\\\"";
+                break;
+            case '\\':
+                out += "\\\\";
+                break;
+            case '\b':
+                out += "\\b";
+                break;
+            case '\f':
+                out += "\\f";
+                break;
+            case '\n':
+                out += "\\n";
+                break;
+            case '\r':
+                out += "\\r";
+                break;
+            case '\t':
+                out += "\\t";
+                break;
             default:
                 if (static_cast<unsigned char>(c) < 0x20) {
-                    char buf[8]{};
+                    std::array<char, 8> buf{};
                     // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg)
-                    snprintf(buf, sizeof(buf), "\\u%04x", static_cast<unsigned>(static_cast<unsigned char>(c)));
-                    out += buf;
+                    (void)snprintf(buf.data(),
+                                   buf.size(),
+                                   "\\u%04x",
+                                   static_cast<unsigned>(static_cast<unsigned char>(c)));
+                    out += buf.data();
                 } else {
                     out += c;
                 }
@@ -73,8 +89,9 @@ std::string json_escape(std::string_view sv) {
 //   captured_at는 Unix epoch 밀리초로 직렬화한다.
 // ---------------------------------------------------------------------------
 std::string serialize_snapshot(const StatsSnapshot& s) {
-    const auto epoch_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-        s.captured_at.time_since_epoch()).count();
+    const auto epoch_ms =
+        std::chrono::duration_cast<std::chrono::milliseconds>(s.captured_at.time_since_epoch())
+            .count();
 
     return fmt::format(
         R"({{"total_connections":{},"active_sessions":{},"total_queries":{},"blocked_queries":{},"qps":{:.4f},"block_rate":{:.4f},"captured_at_ms":{}}})",
@@ -84,8 +101,7 @@ std::string serialize_snapshot(const StatsSnapshot& s) {
         s.blocked_queries,
         s.qps,
         s.block_rate,
-        epoch_ms
-    );
+        epoch_ms);
 }
 
 // ---------------------------------------------------------------------------
@@ -109,10 +125,8 @@ std::string make_error_response(std::string_view msg) {
 //   {"ok":false,"error":"not implemented","code":501}
 // ---------------------------------------------------------------------------
 std::string make_not_implemented_response(std::string_view cmd) {
-    return fmt::format(
-        R"({{"ok":false,"error":"not implemented","code":501,"command":"{}"}})",
-        json_escape(cmd)
-    );
+    return fmt::format(R"({{"ok":false,"error":"not implemented","code":501,"command":"{}"}})",
+                       json_escape(cmd));
 }
 
 // ---------------------------------------------------------------------------
@@ -133,10 +147,8 @@ std::array<uint8_t, 4> encode_le4(uint32_t val) {
 //   4바이트 LE 배열 → uint32_t
 // ---------------------------------------------------------------------------
 uint32_t decode_le4(const std::array<uint8_t, 4>& buf) {
-    return static_cast<uint32_t>(buf[0])
-         | (static_cast<uint32_t>(buf[1]) << 8)
-         | (static_cast<uint32_t>(buf[2]) << 16)
-         | (static_cast<uint32_t>(buf[3]) << 24);
+    return static_cast<uint32_t>(buf[0]) | (static_cast<uint32_t>(buf[1]) << 8) |
+           (static_cast<uint32_t>(buf[2]) << 16) | (static_cast<uint32_t>(buf[3]) << 24);
 }
 
 // ---------------------------------------------------------------------------
@@ -153,17 +165,21 @@ std::string parse_command(std::string_view json) {
     }
     auto start = pos + key.size();
     // 공백 건너뜀
-    while (start < json.size() && json[start] == ' ') { ++start; }
+    while (start < json.size() && json[start] == ' ') {
+        ++start;
+    }
     if (start >= json.size() || json[start] != '"') {
         return {};
     }
-    ++start; // 여는 따옴표 건너뜀
+    ++start;  // 여는 따옴표 건너뜀
     std::string cmd;
     while (start < json.size()) {
         const char c = json[start++];
-        if (c == '"') { break; }
+        if (c == '"') {
+            break;
+        }
         if (c == '\\' && start < json.size()) {
-            cmd += json[start++]; // 단순 escape 처리
+            cmd += json[start++];  // 단순 escape 처리
         } else {
             cmd += c;
         }
@@ -172,24 +188,25 @@ std::string parse_command(std::string_view json) {
 }
 
 // 단일 클라이언트에서 수신할 최대 메시지 크기 (4MiB)
-constexpr uint32_t kMaxRequestSize = 4u * 1024u * 1024u;
+constexpr uint32_t kMaxRequestSize = 4U * 1024U * 1024U;
 
-} // namespace
+}  // namespace
 
 // ---------------------------------------------------------------------------
 // UdsServer 생성자/소멸자
 // ---------------------------------------------------------------------------
-UdsServer::UdsServer(const std::filesystem::path&    socket_path,
+// NOLINTNEXTLINE(modernize-pass-by-value)
+UdsServer::UdsServer(const std::filesystem::path& socket_path,
                      std::shared_ptr<StatsCollector> stats,
-                     asio::io_context&               ioc)
-    : socket_path_{socket_path}
-    , stats_{std::move(stats)}
-    , ioc_{ioc}
-    , acceptor_{ioc}
-{}
+                     asio::io_context& ioc)
+    : socket_path_{socket_path}, stats_{std::move(stats)}, ioc_{ioc}, acceptor_{ioc} {}
 
 UdsServer::~UdsServer() {
-    stop();
+    try {
+        stop();
+    } catch (...) {  // NOLINT(bugprone-empty-catch)
+        // Destructor must not throw — swallow all exceptions from stop()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -203,13 +220,13 @@ void UdsServer::stop() {
 
     auto close_acceptor = [this]() {
         boost::system::error_code cancel_ec;
-        acceptor_.cancel(cancel_ec);
+        acceptor_.cancel(cancel_ec);  // NOLINT(bugprone-unused-return-value,cert-err33-c)
         if (cancel_ec && cancel_ec != asio::error::bad_descriptor) {
             spdlog::warn("[uds_server] stop: acceptor cancel error: {}", cancel_ec.message());
         }
 
         boost::system::error_code close_ec;
-        acceptor_.close(close_ec);
+        acceptor_.close(close_ec);  // NOLINT(bugprone-unused-return-value,cert-err33-c)
         if (close_ec && close_ec != asio::error::bad_descriptor) {
             spdlog::warn("[uds_server] stop: acceptor close error: {}", close_ec.message());
         }
@@ -240,24 +257,27 @@ asio::awaitable<void> UdsServer::run() {
     std::filesystem::remove(socket_path_, fs_ec);
     if (fs_ec && fs_ec != std::make_error_code(std::errc::no_such_file_or_directory)) {
         spdlog::error("[uds_server] failed to remove old socket {}: {}",
-                      socket_path_.string(), fs_ec.message());
+                      socket_path_.string(),
+                      fs_ec.message());
         co_return;
     }
 
     // acceptor 열기
     boost::system::error_code ec;
-    acceptor_.open(stream_protocol(), ec);
+    acceptor_.open(stream_protocol(), ec);  // NOLINT(bugprone-unused-return-value,cert-err33-c)
     if (ec) {
         spdlog::error("[uds_server] open error: {}", ec.message());
         co_return;
     }
 
+    // NOLINTNEXTLINE(bugprone-unused-return-value,cert-err33-c)
     acceptor_.bind(stream_protocol::endpoint{socket_path_.string()}, ec);
     if (ec) {
         spdlog::error("[uds_server] bind error on {}: {}", socket_path_.string(), ec.message());
         co_return;
     }
 
+    // NOLINTNEXTLINE(bugprone-unused-return-value,cert-err33-c)
     acceptor_.listen(asio::socket_base::max_listen_connections, ec);
     if (ec) {
         spdlog::error("[uds_server] listen error: {}", ec.message());
@@ -273,8 +293,8 @@ asio::awaitable<void> UdsServer::run() {
         }
 
         stream_protocol::socket client_socket{ioc_};
-        auto [accept_ec] = co_await acceptor_.async_accept(
-            client_socket, asio::as_tuple(asio::use_awaitable));
+        auto [accept_ec] =
+            co_await acceptor_.async_accept(client_socket, asio::as_tuple(asio::use_awaitable));
 
         if (accept_ec) {
             if (accept_ec == asio::error::operation_aborted ||
@@ -288,11 +308,7 @@ asio::awaitable<void> UdsServer::run() {
         }
 
         // 클라이언트 처리 코루틴을 독립적으로 spawn (실패가 서버에 영향 없음)
-        asio::co_spawn(
-            ioc_,
-            handle_client(std::move(client_socket)),
-            asio::detached
-        );
+        asio::co_spawn(ioc_, handle_client(std::move(client_socket)), asio::detached);
     }
 }
 
@@ -306,14 +322,11 @@ asio::awaitable<void> UdsServer::run() {
 //
 //   오류 발생 시 로그 후 co_return (데이터패스 비전파).
 // ---------------------------------------------------------------------------
-asio::awaitable<void> UdsServer::handle_client(
-    asio::local::stream_protocol::socket socket)
-{
+asio::awaitable<void> UdsServer::handle_client(asio::local::stream_protocol::socket socket) {
     // ── 요청 헤더 읽기 ──────────────────────────────────────────────────
     std::array<uint8_t, 4> req_hdr{};
     auto [hdr_ec, hdr_n] = co_await asio::async_read(
-        socket, asio::buffer(req_hdr),
-        asio::as_tuple(asio::use_awaitable));
+        socket, asio::buffer(req_hdr), asio::as_tuple(asio::use_awaitable));
 
     if (hdr_ec) {
         if (hdr_ec != asio::error::eof) {
@@ -335,8 +348,7 @@ asio::awaitable<void> UdsServer::handle_client(
     // ── 요청 바디 읽기 ──────────────────────────────────────────────────
     std::vector<char> body_buf(body_len);
     auto [body_ec, body_n] = co_await asio::async_read(
-        socket, asio::buffer(body_buf),
-        asio::as_tuple(asio::use_awaitable));
+        socket, asio::buffer(body_buf), asio::as_tuple(asio::use_awaitable));
 
     if (body_ec) {
         spdlog::warn("[uds_server] handle_client: read body error: {}", body_ec.message());
@@ -372,16 +384,16 @@ asio::awaitable<void> UdsServer::handle_client(
     }
 
     // ── 응답 송신 ───────────────────────────────────────────────────────
-    const uint32_t resp_len = static_cast<uint32_t>(response_body.size());
+    const auto resp_len = static_cast<uint32_t>(response_body.size());
     const auto resp_hdr = encode_le4(resp_len);
 
     // 헤더 + 바디를 gather-write
-    std::array<asio::const_buffer, 2> bufs{
+    const std::array<asio::const_buffer, 2> bufs{
         asio::buffer(resp_hdr),
         asio::buffer(response_body),
     };
-    auto [write_ec, write_n] = co_await asio::async_write(
-        socket, bufs, asio::as_tuple(asio::use_awaitable));
+    auto [write_ec, write_n] =
+        co_await asio::async_write(socket, bufs, asio::as_tuple(asio::use_awaitable));
 
     if (write_ec) {
         spdlog::warn("[uds_server] handle_client: write error: {}", write_ec.message());

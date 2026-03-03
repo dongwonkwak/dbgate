@@ -27,20 +27,16 @@
 //   서버가 hang하거나 crash하지 않아야 한다.
 // ---------------------------------------------------------------------------
 
-#include "stats/stats_collector.hpp"
-#include "stats/uds_server.hpp"
-
 #include <gtest/gtest.h>
 
+#include <array>
+#include <atomic>
 #include <boost/asio.hpp>
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
 #include <boost/asio/local/stream_protocol.hpp>
 #include <boost/asio/read.hpp>
 #include <boost/asio/write.hpp>
-
-#include <array>
-#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
@@ -49,6 +45,9 @@
 #include <string_view>
 #include <thread>
 #include <vector>
+
+#include "stats/stats_collector.hpp"
+#include "stats/uds_server.hpp"
 
 namespace asio = boost::asio;
 using stream_protocol = asio::local::stream_protocol;
@@ -62,8 +61,7 @@ namespace {
 std::filesystem::path temp_socket_path(const char* tag) {
     static std::atomic<int> counter{0};
     return std::filesystem::path("/tmp") /
-           ("test_uds_" + std::to_string(::getpid()) +
-            "_" + std::to_string(counter.fetch_add(1)) +
+           ("test_uds_" + std::to_string(::getpid()) + "_" + std::to_string(counter.fetch_add(1)) +
             "_" + tag + ".sock");
 }
 
@@ -79,10 +77,8 @@ std::array<uint8_t, 4> encode_le4(uint32_t v) {
 
 // decode_le4: 4바이트 LE 배열 → uint32_t
 uint32_t decode_le4(const std::array<uint8_t, 4>& b) {
-    return static_cast<uint32_t>(b[0])
-         | (static_cast<uint32_t>(b[1]) << 8)
-         | (static_cast<uint32_t>(b[2]) << 16)
-         | (static_cast<uint32_t>(b[3]) << 24);
+    return static_cast<uint32_t>(b[0]) | (static_cast<uint32_t>(b[1]) << 8) |
+           (static_cast<uint32_t>(b[2]) << 16) | (static_cast<uint32_t>(b[3]) << 24);
 }
 
 // ---------------------------------------------------------------------------
@@ -91,8 +87,9 @@ uint32_t decode_le4(const std::array<uint8_t, 4>& b) {
 //   자체 io_context 를 보유하여 서버 ioc 와 완전히 분리된다.
 // ---------------------------------------------------------------------------
 struct UdsSyncClient {
-    asio::io_context        ioc;
-    stream_protocol::socket sock{ioc};
+    asio::io_context ioc;  // NOLINT(cppcoreguidelines-non-private-member-variables-in-classes)
+    stream_protocol::socket sock{
+        ioc};  // NOLINT(cppcoreguidelines-non-private-member-variables-in-classes)
 
     // connect: 소켓 경로에 동기 연결 (실패 시 예외)
     void connect(const std::filesystem::path& path) {
@@ -102,11 +99,11 @@ struct UdsSyncClient {
     // send: [4LE 헤더][JSON 바디] 형식으로 전송
     void send(std::string_view body) {
         const auto hdr = encode_le4(static_cast<uint32_t>(body.size()));
-        std::array<asio::const_buffer, 2> bufs{
+        const std::array<asio::const_buffer, 2> bufs{
             asio::buffer(hdr),
             asio::buffer(body.data(), body.size()),
         };
-        asio::write(sock, bufs);
+        (void)asio::write(sock, bufs);  // NOLINT(bugprone-unused-return-value,cert-err33-c)
     }
 
     // recv: [4LE 헤더][바디] 형식으로 수신하여 바디 문자열 반환.
@@ -115,15 +112,21 @@ struct UdsSyncClient {
         std::array<uint8_t, 4> hdr{};
         boost::system::error_code ec;
         asio::read(sock, asio::buffer(hdr), ec);
-        if (ec) { return {}; }
+        if (ec) {
+            return {};
+        }
 
         const uint32_t len = decode_le4(hdr);
         // 응답이 0 이거나 비현실적으로 크면 오류로 취급
-        if (len == 0 || len > 16u * 1024u * 1024u) { return {}; }
+        if (len == 0 || len > 16U * 1024U * 1024U) {
+            return {};
+        }
 
         std::string body(len, '\0');
         asio::read(sock, asio::buffer(body), ec);
-        if (ec) { return {}; }
+        if (ec) {
+            return {};
+        }
         return body;
     }
 
@@ -131,11 +134,12 @@ struct UdsSyncClient {
     void send_raw_header(uint32_t fake_len) {
         const auto hdr = encode_le4(fake_len);
         boost::system::error_code ec;
-        asio::write(sock, asio::buffer(hdr), ec);
+        (void)asio::write(
+            sock, asio::buffer(hdr), ec);  // NOLINT(bugprone-unused-return-value,cert-err33-c)
     }
 };
 
-} // namespace
+}  // namespace
 
 // ---------------------------------------------------------------------------
 // UdsServerTest 픽스처
@@ -145,14 +149,15 @@ class UdsServerTest : public ::testing::Test {
 protected:
     void SetUp() override {
         socket_path_ = temp_socket_path("srv");
-        stats_        = std::make_shared<StatsCollector>();
-        ioc_          = std::make_unique<asio::io_context>();
-        server_       = std::make_unique<UdsServer>(socket_path_, stats_, *ioc_);
+        stats_ = std::make_shared<StatsCollector>();
+        ioc_ = std::make_unique<asio::io_context>();
+        server_ = std::make_unique<UdsServer>(socket_path_, stats_, *ioc_);
     }
 
     void TearDown() override {
         stop_server();
-        std::filesystem::remove(socket_path_);
+        (void)std::filesystem::remove(
+            socket_path_);  // NOLINT(bugprone-unused-return-value,cert-err33-c)
     }
 
     // start_server: 백그라운드 스레드에서 서버 io_context 실행
@@ -163,26 +168,37 @@ protected:
 
     // stop_server: 서버를 중단하고 스레드 join
     void stop_server() {
-        if (server_) { server_->stop(); }
+        if (server_) {
+            server_->stop();
+        }
         ioc_->stop();
-        if (server_thread_.joinable()) { server_thread_.join(); }
+        if (server_thread_.joinable()) {
+            server_thread_.join();
+        }
     }
 
     // wait_for_socket: 서버가 소켓 파일을 생성할 때까지 polling 대기
     bool wait_for_socket(std::chrono::milliseconds timeout = std::chrono::seconds{2}) {
         const auto deadline = std::chrono::steady_clock::now() + timeout;
         while (std::chrono::steady_clock::now() < deadline) {
-            if (std::filesystem::exists(socket_path_)) { return true; }
+            if (std::filesystem::exists(socket_path_)) {
+                return true;
+            }
             std::this_thread::sleep_for(std::chrono::milliseconds{10});
         }
         return false;
     }
 
-    std::filesystem::path             socket_path_;
-    std::shared_ptr<StatsCollector>   stats_;
-    std::unique_ptr<asio::io_context> ioc_;
-    std::unique_ptr<UdsServer>        server_;
-    std::thread                       server_thread_;
+    std::filesystem::path
+        socket_path_;  // NOLINT(cppcoreguidelines-non-private-member-variables-in-classes,readability-identifier-naming)
+    std::shared_ptr<StatsCollector>
+        stats_;  // NOLINT(cppcoreguidelines-non-private-member-variables-in-classes,readability-identifier-naming)
+    std::unique_ptr<asio::io_context>
+        ioc_;  // NOLINT(cppcoreguidelines-non-private-member-variables-in-classes,readability-identifier-naming)
+    std::unique_ptr<UdsServer>
+        server_;  // NOLINT(cppcoreguidelines-non-private-member-variables-in-classes,readability-identifier-naming)
+    std::thread
+        server_thread_;  // NOLINT(cppcoreguidelines-non-private-member-variables-in-classes,readability-identifier-naming)
 };
 
 // ---------------------------------------------------------------------------
@@ -210,8 +226,7 @@ TEST_F(UdsServerTest, StatsCommand_ReturnsValidSnapshot) {
     client.send(R"({"command":"stats","version":1})");
 
     const std::string resp = client.recv();
-    ASSERT_FALSE(resp.empty())
-        << "stats command must return a non-empty response";
+    ASSERT_FALSE(resp.empty()) << "stats command must return a non-empty response";
 
     EXPECT_NE(resp.find(R"("ok":true)"), std::string::npos)
         << "stats response must contain \"ok\":true. Got: " << resp;
@@ -245,8 +260,7 @@ TEST_F(UdsServerTest, UnknownCommand_ReturnsError) {
     client.send(R"({"command":"xyz_unknown_command","version":1})");
 
     const std::string resp = client.recv();
-    ASSERT_FALSE(resp.empty())
-        << "Unknown command must return a response (not silence)";
+    ASSERT_FALSE(resp.empty()) << "Unknown command must return a response (not silence)";
 
     EXPECT_NE(resp.find(R"("ok":false)"), std::string::npos)
         << "Unknown command must return ok:false. Got: " << resp;
@@ -271,8 +285,7 @@ TEST_F(UdsServerTest, MissingCommandField_ReturnsError) {
     client.send(R"({"version":1,"data":"no_command_here"})");
 
     const std::string resp = client.recv();
-    ASSERT_FALSE(resp.empty())
-        << "Missing command field must trigger an error response";
+    ASSERT_FALSE(resp.empty()) << "Missing command field must trigger an error response";
 
     EXPECT_NE(resp.find(R"("ok":false)"), std::string::npos)
         << "Missing command must return ok:false. Got: " << resp;
@@ -293,7 +306,7 @@ TEST_F(UdsServerTest, MalformedFrame_ZeroBodyLength_Handled) {
     ASSERT_NO_THROW(client.connect(socket_path_));
 
     // body_len = 0 전송 (프로토콜 위반: 서버는 연결을 끊어야 함)
-    client.send_raw_header(0u);
+    client.send_raw_header(0U);
 
     const std::string resp = client.recv();
     // 서버가 응답 없이 소켓을 닫으므로 빈 문자열 기대
@@ -315,7 +328,7 @@ TEST_F(UdsServerTest, MalformedFrame_OversizedBodyLength_Handled) {
     ASSERT_NO_THROW(client.connect(socket_path_));
 
     // body_len = 0xFFFFFFFF (4GiB - 1, kMaxRequestSize 초과)
-    client.send_raw_header(0xFFFFFFFFu);
+    client.send_raw_header(0xFFFFFFFFU);
 
     const std::string resp = client.recv();
     EXPECT_TRUE(resp.empty())
@@ -332,16 +345,16 @@ TEST_F(UdsServerTest, MalformedFrame_OversizedBodyLength_Handled) {
 //   - 한 클라이언트 오류가 다른 클라이언트에 영향을 주지 않아야 한다.
 // ---------------------------------------------------------------------------
 TEST_F(UdsServerTest, MultipleClients_Concurrent) {
-    constexpr int kClientCount = 4;
+    constexpr int client_count = 4;
 
     start_server();
     ASSERT_TRUE(wait_for_socket()) << "UDS socket not created within 2s";
 
-    std::vector<std::string> responses(static_cast<std::size_t>(kClientCount));
+    std::vector<std::string> responses(static_cast<std::size_t>(client_count));
     std::vector<std::thread> threads;
-    threads.reserve(static_cast<std::size_t>(kClientCount));
+    threads.reserve(static_cast<std::size_t>(client_count));
 
-    for (int i = 0; i < kClientCount; ++i) {
+    for (int i = 0; i < client_count; ++i) {
         threads.emplace_back([this, i, &responses]() {
             UdsSyncClient client;
             try {
@@ -349,19 +362,19 @@ TEST_F(UdsServerTest, MultipleClients_Concurrent) {
                 client.send(R"({"command":"stats","version":1})");
                 responses[static_cast<std::size_t>(i)] = client.recv();
             } catch (const std::exception& ex) {
-                responses[static_cast<std::size_t>(i)] =
-                    std::string("EXCEPTION: ") + ex.what();
+                responses[static_cast<std::size_t>(i)] = std::string("EXCEPTION: ") + ex.what();
             }
         });
     }
 
-    for (auto& t : threads) { t.join(); }
+    for (auto& t : threads) {
+        t.join();
+    }
 
     // 모든 클라이언트가 정상 응답을 받아야 함
-    for (int i = 0; i < kClientCount; ++i) {
+    for (int i = 0; i < client_count; ++i) {
         const auto& resp = responses[static_cast<std::size_t>(i)];
-        EXPECT_FALSE(resp.empty())
-            << "Client " << i << " must receive a non-empty response";
+        EXPECT_FALSE(resp.empty()) << "Client " << i << " must receive a non-empty response";
         EXPECT_NE(resp.find(R"("ok":true)"), std::string::npos)
             << "Client " << i << " must receive ok:true. Got: " << resp;
     }
@@ -375,6 +388,5 @@ TEST_F(UdsServerTest, MultipleClients_Concurrent) {
 // ---------------------------------------------------------------------------
 TEST_F(UdsServerTest, StopBeforeRun_NoCrash) {
     // run() 없이 stop() 만 호출 — acceptor 는 닫혀 있으므로 no-op
-    ASSERT_NO_THROW(server_->stop())
-        << "stop() before run() must not throw or crash";
+    ASSERT_NO_THROW(server_->stop()) << "stop() before run() must not throw or crash";
 }

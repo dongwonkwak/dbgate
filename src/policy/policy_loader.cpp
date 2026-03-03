@@ -31,13 +31,13 @@
 
 #include "policy/policy_loader.hpp"
 
+#include <spdlog/spdlog.h>
+#include <yaml-cpp/yaml.h>
+
 #include <charconv>
+#include <filesystem>
 #include <regex>
 #include <string>
-#include <filesystem>
-
-#include <yaml-cpp/yaml.h>
-#include <spdlog/spdlog.h>
 
 // ---------------------------------------------------------------------------
 // 내부 헬퍼: connection_timeout 문자열("30s")에서 정수(30)를 추출.
@@ -51,13 +51,14 @@ namespace {
     }
     // 숫자 부분만 추출 (선두 공백 허용 안 함)
     const char* begin = raw.data();
-    const char* end   = raw.data() + raw.size();
+    const char* end = raw.data() + raw.size();
 
     std::uint32_t value{0};
     auto [ptr, ec] = std::from_chars(begin, end, value);
     if (ec != std::errc{}) {
         spdlog::warn("policy_loader: cannot parse connection_timeout '{}', using default {}s",
-                     raw, fallback);
+                     raw,
+                     fallback);
         return fallback;
     }
     // 남은 부분이 단위 문자(s, m 등)라면 무시. 파싱 완료.
@@ -72,7 +73,7 @@ namespace {
 void validate_block_patterns(const std::vector<std::string>& patterns) {
     for (const auto& p : patterns) {
         try {
-            std::regex re(p, std::regex_constants::icase | std::regex_constants::ECMAScript);
+            const std::regex re(p, std::regex_constants::icase | std::regex_constants::ECMAScript);
             (void)re;  // 컴파일만 확인
         } catch (const std::regex_error& e) {
             // [오탐/미탐 경보] 잘못된 패턴은 PolicyEngine에서 건너뛰므로
@@ -80,8 +81,8 @@ void validate_block_patterns(const std::vector<std::string>& patterns) {
             spdlog::warn(
                 "policy_loader: block_pattern '{}' is invalid regex and will be skipped by "
                 "PolicyEngine — false negative risk: {}",
-                p, e.what()
-            );
+                p,
+                e.what());
         }
     }
 }
@@ -155,13 +156,13 @@ void validate_block_patterns(const std::vector<std::string>& patterns) {
         return cfg;
     }
 
-    cfg.log_level  = read_string(global_node["log_level"],  cfg.log_level);
+    cfg.log_level = read_string(global_node["log_level"], cfg.log_level);
     cfg.log_format = read_string(global_node["log_format"], cfg.log_format);
     cfg.max_connections = read_uint32(global_node["max_connections"], cfg.max_connections);
 
     // connection_timeout: "30s" → 30 (숫자만 추출)
     if (global_node["connection_timeout"] && global_node["connection_timeout"].IsScalar()) {
-        const std::string raw = global_node["connection_timeout"].as<std::string>();
+        const auto raw = global_node["connection_timeout"].as<std::string>();
         cfg.connection_timeout_sec = parse_timeout_str(raw, cfg.connection_timeout_sec);
     }
 
@@ -174,8 +175,7 @@ void validate_block_patterns(const std::vector<std::string>& patterns) {
 //   allow: "09:00-18:00"
 //   timezone: "Asia/Seoul"
 // ---------------------------------------------------------------------------
-[[nodiscard]] std::optional<TimeRestriction>
-parse_time_restriction(const YAML::Node& tr_node) {
+[[nodiscard]] std::optional<TimeRestriction> parse_time_restriction(const YAML::Node& tr_node) {
     // null 또는 없음 → std::nullopt
     if (!tr_node || tr_node.IsNull()) {
         return std::nullopt;
@@ -187,8 +187,8 @@ parse_time_restriction(const YAML::Node& tr_node) {
 
     TimeRestriction tr{};
     // YAML 키: "allow" → C++ 멤버: allow_range
-    tr.allow_range = read_string(tr_node["allow"],    tr.allow_range);
-    tr.timezone    = read_string(tr_node["timezone"], tr.timezone);
+    tr.allow_range = read_string(tr_node["allow"], tr.allow_range);
+    tr.timezone = read_string(tr_node["timezone"], tr.timezone);
     return tr;
 }
 
@@ -215,8 +215,8 @@ parse_time_restriction(const YAML::Node& tr_node) {
         }
     }
     // allowed_operations: 없으면 빈 벡터 (제한 없음으로 처리)
-    rule.allowed_operations  = read_string_sequence(rule_node["allowed_operations"]);
-    rule.blocked_operations  = read_string_sequence(rule_node["blocked_operations"]);
+    rule.allowed_operations = read_string_sequence(rule_node["allowed_operations"]);
+    rule.blocked_operations = read_string_sequence(rule_node["blocked_operations"]);
 
     // time_restriction 파싱
     rule.time_restriction = parse_time_restriction(rule_node["time_restriction"]);
@@ -234,7 +234,7 @@ parse_time_restriction(const YAML::Node& tr_node) {
     }
 
     rules.block_statements = read_string_sequence(sql_node["block_statements"]);
-    rules.block_patterns   = read_string_sequence(sql_node["block_patterns"]);
+    rules.block_patterns = read_string_sequence(sql_node["block_patterns"]);
 
     return rules;
 }
@@ -248,8 +248,8 @@ parse_time_restriction(const YAML::Node& tr_node) {
         return ctrl;
     }
 
-    ctrl.mode             = read_string(pc_node["mode"], ctrl.mode);
-    ctrl.whitelist        = read_string_sequence(pc_node["whitelist"]);
+    ctrl.mode = read_string(pc_node["mode"], ctrl.mode);
+    ctrl.whitelist = read_string_sequence(pc_node["whitelist"]);
     ctrl.block_dynamic_sql = read_bool(pc_node["block_dynamic_sql"], ctrl.block_dynamic_sql);
     ctrl.block_create_alter = read_bool(pc_node["block_create_alter"], ctrl.block_create_alter);
 
@@ -258,8 +258,7 @@ parse_time_restriction(const YAML::Node& tr_node) {
         spdlog::warn(
             "policy_loader: procedure_control.mode '{}' is not 'whitelist' or 'blacklist', "
             "defaulting to 'whitelist'",
-            ctrl.mode
-        );
+            ctrl.mode);
         ctrl.mode = "whitelist";
     }
 
@@ -275,7 +274,7 @@ parse_time_restriction(const YAML::Node& tr_node) {
         return dp;
     }
 
-    dp.max_result_rows   = read_uint32(dp_node["max_result_rows"], dp.max_result_rows);
+    dp.max_result_rows = read_uint32(dp_node["max_result_rows"], dp.max_result_rows);
     dp.block_schema_access = read_bool(dp_node["block_schema_access"], dp.block_schema_access);
 
     return dp;
@@ -286,16 +285,15 @@ parse_time_restriction(const YAML::Node& tr_node) {
 // ---------------------------------------------------------------------------
 // PolicyLoader::load 구현
 // ---------------------------------------------------------------------------
-std::expected<PolicyConfig, std::string>
-PolicyLoader::load(const std::filesystem::path& config_path) {
+std::expected<PolicyConfig, std::string> PolicyLoader::load(
+    const std::filesystem::path& config_path) {
     // 1. 경로 정규화 (path traversal 방지 목적)
     std::error_code ec;
     const auto canonical_path = std::filesystem::canonical(config_path, ec);
     if (ec) {
-        const std::string err = fmt::format(
-            "policy_loader: cannot resolve config path '{}': {}",
-            config_path.string(), ec.message()
-        );
+        const std::string err = fmt::format("policy_loader: cannot resolve config path '{}': {}",
+                                            config_path.string(),
+                                            ec.message());
         spdlog::error("{}", err);
         return std::unexpected(err);
     }
@@ -308,36 +306,29 @@ PolicyLoader::load(const std::filesystem::path& config_path) {
         root = YAML::LoadFile(canonical_path.string());
     } catch (const YAML::BadFile& e) {
         const std::string err = fmt::format(
-            "policy_loader: cannot open file '{}': {}",
-            canonical_path.string(), e.what()
-        );
+            "policy_loader: cannot open file '{}': {}", canonical_path.string(), e.what());
         spdlog::error("{}", err);
         return std::unexpected(err);
     } catch (const YAML::ParserException& e) {
         // 라인 번호 포함한 상세 에러 메시지
-        const std::string err = fmt::format(
-            "policy_loader: YAML parse error in '{}' at line {}, col {}: {}",
-            canonical_path.string(),
-            e.mark.line + 1,   // yaml-cpp는 0-based
-            e.mark.column + 1,
-            e.what()
-        );
+        const std::string err =
+            fmt::format("policy_loader: YAML parse error in '{}' at line {}, col {}: {}",
+                        canonical_path.string(),
+                        e.mark.line + 1,  // yaml-cpp는 0-based
+                        e.mark.column + 1,
+                        e.what());
         spdlog::error("{}", err);
         return std::unexpected(err);
     } catch (const YAML::Exception& e) {
-        const std::string err = fmt::format(
-            "policy_loader: YAML error in '{}': {}",
-            canonical_path.string(), e.what()
-        );
+        const std::string err =
+            fmt::format("policy_loader: YAML error in '{}': {}", canonical_path.string(), e.what());
         spdlog::error("{}", err);
         return std::unexpected(err);
     }
 
     if (!root || !root.IsMap()) {
         const std::string err = fmt::format(
-            "policy_loader: '{}' is not a valid YAML map (top-level)",
-            canonical_path.string()
-        );
+            "policy_loader: '{}' is not a valid YAML map (top-level)", canonical_path.string());
         spdlog::error("{}", err);
         return std::unexpected(err);
     }
@@ -348,9 +339,8 @@ PolicyLoader::load(const std::filesystem::path& config_path) {
     try {
         cfg.global = parse_global(root["global"]);
     } catch (const YAML::Exception& e) {
-        const std::string err = fmt::format(
-            "policy_loader: error parsing 'global' section: {}", e.what()
-        );
+        const std::string err =
+            fmt::format("policy_loader: error parsing 'global' section: {}", e.what());
         spdlog::error("{}", err);
         return std::unexpected(err);
     }
@@ -364,9 +354,8 @@ PolicyLoader::load(const std::filesystem::path& config_path) {
             }
         }
     } catch (const YAML::Exception& e) {
-        const std::string err = fmt::format(
-            "policy_loader: error parsing 'access_control' section: {}", e.what()
-        );
+        const std::string err =
+            fmt::format("policy_loader: error parsing 'access_control' section: {}", e.what());
         spdlog::error("{}", err);
         return std::unexpected(err);
     }
@@ -374,9 +363,8 @@ PolicyLoader::load(const std::filesystem::path& config_path) {
     try {
         cfg.sql_rules = parse_sql_rules(root["sql_rules"]);
     } catch (const YAML::Exception& e) {
-        const std::string err = fmt::format(
-            "policy_loader: error parsing 'sql_rules' section: {}", e.what()
-        );
+        const std::string err =
+            fmt::format("policy_loader: error parsing 'sql_rules' section: {}", e.what());
         spdlog::error("{}", err);
         return std::unexpected(err);
     }
@@ -384,9 +372,8 @@ PolicyLoader::load(const std::filesystem::path& config_path) {
     try {
         cfg.procedure_control = parse_procedure_control(root["procedure_control"]);
     } catch (const YAML::Exception& e) {
-        const std::string err = fmt::format(
-            "policy_loader: error parsing 'procedure_control' section: {}", e.what()
-        );
+        const std::string err =
+            fmt::format("policy_loader: error parsing 'procedure_control' section: {}", e.what());
         spdlog::error("{}", err);
         return std::unexpected(err);
     }
@@ -394,9 +381,8 @@ PolicyLoader::load(const std::filesystem::path& config_path) {
     try {
         cfg.data_protection = parse_data_protection(root["data_protection"]);
     } catch (const YAML::Exception& e) {
-        const std::string err = fmt::format(
-            "policy_loader: error parsing 'data_protection' section: {}", e.what()
-        );
+        const std::string err =
+            fmt::format("policy_loader: error parsing 'data_protection' section: {}", e.what());
         spdlog::error("{}", err);
         return std::unexpected(err);
     }
@@ -424,8 +410,7 @@ PolicyLoader::load(const std::filesystem::path& config_path) {
         "access_rules={}, block_statements={}, block_patterns={}",
         cfg.access_control.size(),
         cfg.sql_rules.block_statements.size(),
-        cfg.sql_rules.block_patterns.size()
-    );
+        cfg.sql_rules.block_patterns.size());
 
     return cfg;
 }

@@ -23,27 +23,27 @@
 // - block_rate 부동소수점 비교는 EXPECT_NEAR 으로 허용 오차 1e-9 이내.
 // ---------------------------------------------------------------------------
 
-#include "stats/stats_collector.hpp"
-
 #include <gtest/gtest.h>
 
 #include <atomic>
 #include <thread>
 #include <vector>
 
+#include "stats/stats_collector.hpp"
+
 // ---------------------------------------------------------------------------
 // InitialState_AllZero
 //   생성 직후 모든 카운터가 0이어야 한다.
 // ---------------------------------------------------------------------------
 TEST(StatsCollector, InitialState_AllZero) {
-    StatsCollector stats;
+    const StatsCollector stats;
     const auto snap = stats.snapshot();
 
-    EXPECT_EQ(snap.total_connections,  0u) << "total_connections must be 0 at init";
-    EXPECT_EQ(snap.active_sessions,    0u) << "active_sessions must be 0 at init";
-    EXPECT_EQ(snap.total_queries,      0u) << "total_queries must be 0 at init";
-    EXPECT_EQ(snap.blocked_queries,    0u) << "blocked_queries must be 0 at init";
-    EXPECT_NEAR(snap.block_rate,       0.0, 1e-9) << "block_rate must be 0.0 at init";
+    EXPECT_EQ(snap.total_connections, 0U) << "total_connections must be 0 at init";
+    EXPECT_EQ(snap.active_sessions, 0U) << "active_sessions must be 0 at init";
+    EXPECT_EQ(snap.total_queries, 0U) << "total_queries must be 0 at init";
+    EXPECT_EQ(snap.blocked_queries, 0U) << "blocked_queries must be 0 at init";
+    EXPECT_NEAR(snap.block_rate, 0.0, 1e-9) << "block_rate must be 0.0 at init";
 }
 
 // ---------------------------------------------------------------------------
@@ -56,13 +56,13 @@ TEST(StatsCollector, OnConnectionOpen_IncrementsBoth) {
 
     stats.on_connection_open();
     auto snap = stats.snapshot();
-    EXPECT_EQ(snap.total_connections, 1u) << "total_connections should be 1 after one open";
-    EXPECT_EQ(snap.active_sessions,   1u) << "active_sessions should be 1 after one open";
+    EXPECT_EQ(snap.total_connections, 1U) << "total_connections should be 1 after one open";
+    EXPECT_EQ(snap.active_sessions, 1U) << "active_sessions should be 1 after one open";
 
     stats.on_connection_open();
     snap = stats.snapshot();
-    EXPECT_EQ(snap.total_connections, 2u) << "total_connections should increment to 2";
-    EXPECT_EQ(snap.active_sessions,   2u) << "active_sessions should increment to 2";
+    EXPECT_EQ(snap.total_connections, 2U) << "total_connections should increment to 2";
+    EXPECT_EQ(snap.active_sessions, 2U) << "active_sessions should increment to 2";
 }
 
 // ---------------------------------------------------------------------------
@@ -78,10 +78,8 @@ TEST(StatsCollector, OnConnectionClose_DecrementsActive) {
     stats.on_connection_close();
 
     const auto snap = stats.snapshot();
-    EXPECT_EQ(snap.total_connections, 2u)
-        << "total_connections must not decrease on close";
-    EXPECT_EQ(snap.active_sessions,   1u)
-        << "active_sessions should decrease to 1 after one close";
+    EXPECT_EQ(snap.total_connections, 2U) << "total_connections must not decrease on close";
+    EXPECT_EQ(snap.active_sessions, 1U) << "active_sessions should decrease to 1 after one close";
 }
 
 // ---------------------------------------------------------------------------
@@ -97,8 +95,7 @@ TEST(StatsCollector, OnConnectionClose_NoUnderflow) {
     stats.on_connection_close();
 
     const auto snap = stats.snapshot();
-    EXPECT_EQ(snap.active_sessions, 0u)
-        << "active_sessions must not underflow below 0";
+    EXPECT_EQ(snap.active_sessions, 0U) << "active_sessions must not underflow below 0";
 }
 
 // ---------------------------------------------------------------------------
@@ -111,8 +108,8 @@ TEST(StatsCollector, OnQuery_Blocked_IncrementsBlockedCount) {
     stats.on_query(true);
     const auto snap = stats.snapshot();
 
-    EXPECT_EQ(snap.total_queries,   1u) << "total_queries should be 1 after one blocked query";
-    EXPECT_EQ(snap.blocked_queries, 1u) << "blocked_queries should be 1 after one blocked query";
+    EXPECT_EQ(snap.total_queries, 1U) << "total_queries should be 1 after one blocked query";
+    EXPECT_EQ(snap.blocked_queries, 1U) << "blocked_queries should be 1 after one blocked query";
 }
 
 // ---------------------------------------------------------------------------
@@ -126,8 +123,8 @@ TEST(StatsCollector, OnQuery_Allowed_IncrementsQueryCount) {
     stats.on_query(false);
     const auto snap = stats.snapshot();
 
-    EXPECT_EQ(snap.total_queries,   1u) << "total_queries should be 1 after one allowed query";
-    EXPECT_EQ(snap.blocked_queries, 0u) << "blocked_queries should stay 0 for allowed query";
+    EXPECT_EQ(snap.total_queries, 1U) << "total_queries should be 1 after one allowed query";
+    EXPECT_EQ(snap.blocked_queries, 0U) << "blocked_queries should stay 0 for allowed query";
 }
 
 // ---------------------------------------------------------------------------
@@ -145,10 +142,9 @@ TEST(StatsCollector, Snapshot_BlockRate_Calculation) {
 
     const auto snap = stats.snapshot();
 
-    EXPECT_EQ(snap.total_queries,   4u) << "total_queries should be 4";
-    EXPECT_EQ(snap.blocked_queries, 2u) << "blocked_queries should be 2";
-    EXPECT_NEAR(snap.block_rate, 0.5, 1e-9)
-        << "block_rate should be 0.5 (2 blocked / 4 total)";
+    EXPECT_EQ(snap.total_queries, 4U) << "total_queries should be 4";
+    EXPECT_EQ(snap.blocked_queries, 2U) << "blocked_queries should be 2";
+    EXPECT_NEAR(snap.block_rate, 0.5, 1e-9) << "block_rate should be 0.5 (2 blocked / 4 total)";
 }
 
 // ---------------------------------------------------------------------------
@@ -172,7 +168,7 @@ TEST(StatsCollector, Snapshot_BlockRate_AllBlocked) {
 //   total_queries == 0 일 때 block_rate == 0.0 이어야 한다 (div-by-zero 방지).
 // ---------------------------------------------------------------------------
 TEST(StatsCollector, Snapshot_BlockRate_ZeroTotal) {
-    StatsCollector stats;
+    const StatsCollector stats;
     const auto snap = stats.snapshot();
 
     EXPECT_NEAR(snap.block_rate, 0.0, 1e-9)
@@ -188,13 +184,13 @@ TEST(StatsCollector, Snapshot_CapturedAt_IsSet) {
     using clock = std::chrono::system_clock;
     const auto before = clock::now();
 
-    StatsCollector stats;
+    const StatsCollector stats;
     const auto snap = stats.snapshot();
 
     const auto after = clock::now();
 
     EXPECT_GE(snap.captured_at, before) << "captured_at should be >= before snapshot call";
-    EXPECT_LE(snap.captured_at, after)  << "captured_at should be <= after snapshot call";
+    EXPECT_LE(snap.captured_at, after) << "captured_at should be <= after snapshot call";
 }
 
 // ---------------------------------------------------------------------------
@@ -216,8 +212,7 @@ TEST(StatsCollector, Snapshot_Qps_PositiveAfterQuery) {
     stats.on_query(false);
 
     const auto snap = stats.snapshot();
-    EXPECT_GT(snap.qps, 0.0)
-        << "qps should be > 0 after at least one query with elapsed > 0";
+    EXPECT_GT(snap.qps, 0.0) << "qps should be > 0 after at least one query with elapsed > 0";
 }
 
 // ---------------------------------------------------------------------------
@@ -236,21 +231,21 @@ TEST(StatsCollector, Snapshot_Qps_PositiveAfterQuery) {
 TEST(StatsCollector, ConcurrentAccess_NoDataRace) {
     StatsCollector stats;
 
-    constexpr int kWriterThreads = 4;
-    constexpr int kOpsPerThread  = 1000;
+    constexpr int writer_threads = 4;
+    constexpr int ops_per_thread = 1000;
 
     std::vector<std::thread> writers;
-    writers.reserve(static_cast<std::size_t>(kWriterThreads));
+    writers.reserve(static_cast<std::size_t>(writer_threads));
 
     // writer 스레드: on_connection_open + on_query 반복
-    for (int i = 0; i < kWriterThreads; ++i) {
+    for (int i = 0; i < writer_threads; ++i) {
         writers.emplace_back([&stats, i]() {
-            for (int j = 0; j < kOpsPerThread; ++j) {
+            for (int j = 0; j < ops_per_thread; ++j) {
                 stats.on_connection_open();
                 stats.on_query(j % 2 == 0);  // 홀짝으로 차단/허용 교번
             }
             // 열었던 연결 닫기
-            for (int j = 0; j < kOpsPerThread; ++j) {
+            for (int j = 0; j < ops_per_thread; ++j) {
                 stats.on_connection_close();
             }
             (void)i;
@@ -268,15 +263,16 @@ TEST(StatsCollector, ConcurrentAccess_NoDataRace) {
         }
     });
 
-    for (auto& t : writers) { t.join(); }
+    for (auto& t : writers) {
+        t.join();
+    }
     stop_reader.store(true, std::memory_order_relaxed);
     reader.join();
 
     // 최종 집계 검증
     const auto snap = stats.snapshot();
     const auto expected_total =
-        static_cast<std::uint64_t>(kWriterThreads) *
-        static_cast<std::uint64_t>(kOpsPerThread);
+        static_cast<std::uint64_t>(writer_threads) * static_cast<std::uint64_t>(ops_per_thread);
 
     EXPECT_EQ(snap.total_connections, expected_total)
         << "total_connections must equal kWriterThreads * kOpsPerThread";
@@ -284,8 +280,7 @@ TEST(StatsCollector, ConcurrentAccess_NoDataRace) {
         << "total_queries must equal kWriterThreads * kOpsPerThread";
 
     // 모든 연결을 닫았으므로 active_sessions == 0
-    EXPECT_EQ(snap.active_sessions, 0u)
-        << "active_sessions should be 0 after all closes";
+    EXPECT_EQ(snap.active_sessions, 0U) << "active_sessions should be 0 after all closes";
 
     // block_rate: 홀짝 교번 → 절반 차단 → 0.5 근방
     EXPECT_NEAR(snap.block_rate, 0.5, 0.01)

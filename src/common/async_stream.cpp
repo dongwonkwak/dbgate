@@ -30,6 +30,7 @@ AsyncStream::AsyncStream(ssl_socket ssl_stream) : stream_{std::move(ssl_stream)}
 
 AsyncStream::AsyncStream(AsyncStream&& other) noexcept : stream_{std::move(other.stream_)} {}
 
+// NOLINTNEXTLINE(bugprone-exception-escape)
 AsyncStream& AsyncStream::operator=(AsyncStream&& other) noexcept {
     if (this != &other) {
         stream_ = std::move(other.stream_);

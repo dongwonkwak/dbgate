@@ -16,14 +16,14 @@
 // 모든 구조체 필드를 snake_case JSON 키로 직렬화한다.
 // ---------------------------------------------------------------------------
 
-#include "log_types.hpp"
-
 #include <filesystem>
 #include <memory>
 #include <string_view>
 
+#include "log_types.hpp"
+
 namespace spdlog {
-class logger;
+class logger;  // NOLINT(readability-identifier-naming)
 }
 
 // ---------------------------------------------------------------------------
@@ -36,17 +36,16 @@ public:
     // 생성자
     //   min_level : 이 레벨 미만의 로그는 기록하지 않는다.
     //   log_path  : 로그 파일 경로 (디렉터리가 아닌 파일 경로)
-    explicit StructuredLogger(LogLevel min_level,
-                              const std::filesystem::path& log_path);
+    explicit StructuredLogger(LogLevel min_level, const std::filesystem::path& log_path);
 
     ~StructuredLogger();
 
     // 복사 금지 (spdlog 인스턴스 소유권 명확화)
-    StructuredLogger(const StructuredLogger&)            = delete;
+    StructuredLogger(const StructuredLogger&) = delete;
     StructuredLogger& operator=(const StructuredLogger&) = delete;
 
     // 이동 허용
-    StructuredLogger(StructuredLogger&&)            = default;
+    StructuredLogger(StructuredLogger&&) = default;
     StructuredLogger& operator=(StructuredLogger&&) = default;
 
     // log_connection
@@ -71,10 +70,11 @@ public:
     void error(std::string_view msg);
 
 private:
-    LogLevel                          min_level_;
-    std::filesystem::path             log_path_;
-    std::shared_ptr<spdlog::logger>   logger_;
+    LogLevel min_level_;
+    std::filesystem::path log_path_;
+    std::shared_ptr<spdlog::logger> logger_;
 
     // Helper: spdlog LogLevel 으로 변환
+    // NOLINTNEXTLINE(modernize-use-nodiscard,readability-convert-member-functions-to-static)
     int to_spdlog_level(LogLevel level) const;
 };
