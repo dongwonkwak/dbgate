@@ -60,6 +60,98 @@ struct ParseError {
 };
 ```
 
+### AsyncStream (common/async_stream.hpp)
+
+TCP 소켓과 TLS(ssl::stream)을 투명하게 추상화하는 타입 소거 래퍼입니다. Frontend(클라이언트↔프록시)와 Backend(프록시↔MySQL) 양쪽에서 평문 또는 TLS 모드를 지원합니다.
+
+#### 설계 원칙
+- **통합 인터페이스**: tcp::socket과 ssl::stream<tcp::socket>을 std::variant로 관리
+- **투명성**: 호출자는 TLS/평문을 구분하지 않고 같은 인터페이스 사용
+- **이동 전용**: 복사 불가능, 소켓 소유권 명확성
+- **비동기**: Boost.Asio awaitable 기반
+
+#### AsyncStream 클래스
+
+```cpp
+class AsyncStream {
+public:
+    using executor_type = boost::asio::any_io_executor;
+    using tcp_socket = boost::asio::ip::tcp::socket;
+    using ssl_socket = boost::asio::ssl::stream<boost::asio::ip::tcp::socket>;
+
+    // 생성자 — tcp::socket (평문 모드)
+    explicit AsyncStream(tcp_socket socket);
+
+    // 생성자 — ssl::stream<tcp::socket> (TLS 모드)
+    explicit AsyncStream(ssl_socket ssl_stream);
+
+    // 이동 생성자 / 이동 대입
+    AsyncStream(AsyncStream&&) noexcept;
+    AsyncStream& operator=(AsyncStream&&) noexcept;
+
+    // 복사 금지
+    AsyncStream(const AsyncStream&) = delete;
+    AsyncStream& operator=(const AsyncStream&) = delete;
+
+    ~AsyncStream();
+
+    // Executor 획득 (Boost.Asio 호환)
+    auto get_executor() -> executor_type;
+
+    // 읽기 (std::visit으로 실제 스트림에 위임)
+    template<typename MutableBufferSequence, typename ReadToken>
+    auto async_read_some(const MutableBufferSequence& buffers, ReadToken&& token);
+
+    // 쓰기
+    template<typename ConstBufferSequence, typename WriteToken>
+    auto async_write_some(const ConstBufferSequence& buffers, WriteToken&& token);
+
+    // TLS 핸드셰이크
+    // 평문 모드: no-op (boost::asio::post로 즉시 성공)
+    // TLS 모드: ssl::stream::async_handshake 위임
+    template<typename Token>
+    auto async_handshake(boost::asio::ssl::stream_base::handshake_type type, Token&& token);
+
+    // TLS 종료
+    // 평문 모드: no-op
+    // TLS 모드: ssl::stream::async_shutdown 위임
+    template<typename Token>
+    auto async_shutdown(Token&& token);
+
+    // TCP 소켓 직접 접근 (connect/close/cancel/remote_endpoint 용)
+    auto lowest_layer() -> tcp_socket&;
+
+    // TLS 모드 여부 확인
+    [[nodiscard]] bool is_ssl() const noexcept;
+
+private:
+    std::variant<tcp_socket, ssl_socket> stream_;
+};
+```
+
+**사용 예시**:
+
+```cpp
+// 평문 모드 생성
+AsyncStream stream{std::move(tcp_socket)};
+
+// TLS 모드 생성
+ssl::stream<tcp::socket> ssl_stream{std::move(tcp_socket), ssl_ctx};
+AsyncStream stream{std::move(ssl_stream)};
+
+// 공통 읽기 (co_await 사용)
+auto bytes = co_await stream.async_read_some(buffer, use_awaitable);
+
+// 공통 쓰기
+co_await stream.async_write_some(buffer, use_awaitable);
+
+// TLS 모드 핸드셰이크 (평문 모드: 즉시 성공)
+co_await stream.async_handshake(ssl::stream_base::server, use_awaitable);
+
+// TCP 소켓 직접 접근 (connect/close 등)
+stream.lowest_layer().async_connect(endpoint, ...);
+```
+
 ---
 
 ## 2. MySQL 프로토콜 (protocol/*)
@@ -134,15 +226,15 @@ class HandshakeRelay {
 public:
     HandshakeRelay() = default;
 
-    // 핸드셰이크 수행
-    // client_sock: accept 된 클라이언트 소켓
-    // server_sock: MySQL 서버에 연결된 소켓
+    // 핸드셰이크 수행 (AsyncStream 인터페이스)
+    // client_stream: 클라이언트 측 AsyncStream (accept 된 소켓, 평문 또는 TLS)
+    // server_stream: MySQL 서버 측 AsyncStream (connect 된 소켓, 평문 또는 TLS)
     // ctx: [out] db_user, db_name, handshake_done 이 채워짐
     // 반환: co_awaitable, 성공 시 expected<void, ParseError>
     static auto relay_handshake(
-        boost::asio::ip::tcp::socket& client_sock,
-        boost::asio::ip::tcp::socket& server_sock,
-        SessionContext&               ctx
+        AsyncStream&           client_stream,
+        AsyncStream&           server_stream,
+        SessionContext&        ctx
     ) -> boost::asio::awaitable<std::expected<void, ParseError>>;
 };
 ```
@@ -1007,10 +1099,30 @@ struct ProxyConfig {
     std::string   log_level{};
 
     std::uint16_t health_check_port{0};
+
+    // SSL/TLS 설정 (DON-31) — Frontend (클라이언트↔프록시)
+    bool        frontend_ssl_enabled{false};
+    std::string frontend_ssl_cert_path{};      // TLS 인증서 파일 경로 (.pem)
+    std::string frontend_ssl_key_path{};       // TLS 개인키 파일 경로 (.pem)
+
+    // SSL/TLS 설정 (DON-31) — Backend (프록시↔MySQL)
+    bool        backend_ssl_enabled{false};
+    std::string backend_ssl_ca_path{};         // CA 인증서 파일 경로 (서버 검증용)
+    bool        backend_ssl_verify{true};      // 서버 인증서 검증 여부
+    std::string upstream_ssl_sni{};            // SNI 호스트명 (backend에서 사용)
 };
 ```
 
-**주의**: 모든 값은 config 파일에서 로드 (하드코딩 금지)
+**주의**: 모든 값은 config 파일 또는 환경변수에서 로드 (하드코딩 금지)
+
+**SSL 설정 유효성**:
+- `frontend_ssl_enabled=true` 시:
+  - `frontend_ssl_cert_path`, `frontend_ssl_key_path` 필수 (빈 문자열 불가)
+  - 파일 읽기/파싱 실패 → fail-close
+- `backend_ssl_enabled=true` 시:
+  - `backend_ssl_verify=true` 시: `backend_ssl_ca_path` 필수
+  - 파일 읽기/파싱 실패 → fail-close
+- 위반 시: ProxyServer::init_ssl() 반환 false → 서버 기동 실패
 
 #### ProxyServer 클래스
 
@@ -1060,12 +1172,13 @@ enum class SessionState : std::uint8_t {
 ```cpp
 class Session : public std::enable_shared_from_this<Session> {
 public:
-    Session(std::uint64_t                    session_id,
-            boost::asio::ip::tcp::socket     client_socket,
-            boost::asio::ip::tcp::endpoint   server_endpoint,
-            std::shared_ptr<PolicyEngine>    policy,
-            std::shared_ptr<StructuredLogger> logger,
-            std::shared_ptr<StatsCollector>  stats);
+    Session(std::uint64_t                      session_id,
+            AsyncStream                        client_stream,
+            boost::asio::ip::tcp::endpoint     server_endpoint,
+            boost::asio::ssl::context*         backend_ssl_ctx,
+            std::shared_ptr<PolicyEngine>      policy,
+            std::shared_ptr<StructuredLogger>  logger,
+            std::shared_ptr<StatsCollector>    stats);
 
     ~Session() = default;
 
@@ -1087,6 +1200,32 @@ public:
     [[nodiscard]] auto context() const noexcept -> const SessionContext&;
 };
 ```
+
+**생성자 파라미터**:
+- `session_id`: 프로세스 범위 유일 ID
+- `client_stream`: 클라이언트 측 AsyncStream (accept 후 평문 또는 TLS로 이미 준비됨)
+  - Frontend SSL 활성화: ssl::stream 래핑된 AsyncStream
+  - Frontend SSL 비활성화: tcp::socket 래핑된 AsyncStream
+- `server_endpoint`: 업스트림 MySQL 서버 엔드포인트
+- `backend_ssl_ctx`: Backend TLS 컨텍스트 포인터
+  - Backend SSL 활성화: ssl::context* (유효한 포인터)
+  - Backend SSL 비활성화: nullptr
+  - Session::run()에서 backend_ssl_ctx 판단 후 AsyncStream 생성
+- `policy`, `logger`, `stats`: shared 소유권 (shared_ptr)
+
+**주요 동작**:
+1. Frontend TLS 핸드셰이크 (필요한 경우):
+   - `co_await client_stream_.async_handshake(ssl::stream_base::server)`
+   - 평문 모드: no-op (즉시 성공)
+
+2. Backend 연결 및 TLS:
+   - TCP connect → backend_ssl_ctx 확인
+   - Backend SSL: ssl::stream 생성 → SSLRequest → TLS 핸드셰이크 → AsyncStream 교체
+   - Backend 평문: tcp::socket → AsyncStream 래핑
+
+3. MySQL 핸드셰이크 (양쪽 AsyncStream 위):
+   - `HandshakeRelay::relay_handshake(client_stream_, server_stream_, ctx)`
+   - CLIENT_SSL 비트 strip (이중 TLS 방지)
 
 **생명주기**:
 1. 생성: kHandshaking 상태

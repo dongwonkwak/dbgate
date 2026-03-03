@@ -36,6 +36,7 @@ find_package(GTest REQUIRED)
 # Will be populated as modules are implemented
 set(DBGATE_SOURCES
     src/main.cpp
+    src/common/async_stream.cpp
     src/protocol/mysql_packet.cpp
     src/protocol/handshake.cpp
     src/protocol/command.cpp
@@ -86,6 +87,9 @@ add_executable(dbgate_tests
     tests/test_proxy_pipeline.cpp
     tests/test_proxy_server.cpp
     tests/test_edge_cases.cpp
+    tests/test_async_stream.cpp
+    tests/test_ssl_tls.cpp
+    src/common/async_stream.cpp
     src/logger/structured_logger.cpp
     src/protocol/mysql_packet.cpp
     src/protocol/command.cpp

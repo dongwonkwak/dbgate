@@ -1,13 +1,14 @@
 #include "proxy/proxy_server.hpp"
 
+#include <spdlog/spdlog.h>
+
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
 #include <boost/asio/redirect_error.hpp>
 #include <boost/asio/signal_set.hpp>
+#include <boost/asio/ssl/context.hpp>
+#include <boost/asio/ssl/stream.hpp>
 #include <boost/asio/use_awaitable.hpp>
-
-#include <spdlog/spdlog.h>
-
 #include <format>
 
 // ---------------------------------------------------------------------------
@@ -15,52 +16,152 @@
 //
 // run() 흐름:
 //   1. io_ctx_ 저장
-//   2. PolicyLoader::load(config_.policy_path)
-//   3. logger_, stats_, policy_engine_ 생성
-//   4. uds_server_ + co_spawn(run)
-//   5. health_check_ + co_spawn(run)
-//   6. SIGTERM/SIGINT 핸들러 + SIGHUP 핸들러
-//   7. accept 루프: 세션 생성 + co_spawn(session->run())
+//   2. SSL context 초기화 (설정에 따라)
+//   3. PolicyLoader::load(config_.policy_path)
+//   4. logger_, stats_, policy_engine_ 생성
+//   5. uds_server_ + co_spawn(run)
+//   6. health_check_ + co_spawn(run)
+//   7. SIGTERM/SIGINT 핸들러 + SIGHUP 핸들러
+//   8. accept 루프: 세션 생성 + co_spawn(session->run())
 //      콜백에서 sessions_.erase()
-//
-// stop() 흐름:
-//   1. stopping_ = true
-//   2. acceptor.close()
-//   3. 활성 세션 각각 session->close()
-//   4. 세션 0개이면 io_ctx_->stop()
 // ---------------------------------------------------------------------------
 
-ProxyServer::ProxyServer(ProxyConfig config)
-    : config_{std::move(config)}
-{}
+ProxyServer::ProxyServer(ProxyConfig config) : config_{std::move(config)} {}
 
 // ---------------------------------------------------------------------------
 // LogLevel 문자열 → LogLevel 변환
 // ---------------------------------------------------------------------------
 namespace {
 
-LogLevel parse_log_level(const std::string& level_str)
-{
-    if (level_str == "debug") { return LogLevel::kDebug; }
-    if (level_str == "warn")  { return LogLevel::kWarn;  }
-    if (level_str == "error") { return LogLevel::kError; }
+LogLevel parse_log_level(const std::string& level_str) {
+    if (level_str == "debug") {
+        return LogLevel::kDebug;
+    }
+    if (level_str == "warn") {
+        return LogLevel::kWarn;
+    }
+    if (level_str == "error") {
+        return LogLevel::kError;
+    }
     return LogLevel::kInfo;
 }
 
 }  // namespace
 
 // ---------------------------------------------------------------------------
+// init_ssl
+//   SSL/TLS context를 초기화한다.
+//   - Frontend SSL: cert/key 로드, TLS 1.2 최소, 약한 cipher 비활성화
+//   - Backend SSL: CA 로드, 서버 인증서 검증, SNI 설정
+//   - 오류 시 false 반환 (fail-close: 서버 기동 실패)
+//   - SSL 비활성화 시 즉시 true 반환 (no-op)
+// ---------------------------------------------------------------------------
+[[nodiscard]] bool ProxyServer::init_ssl() {
+    // ── Frontend SSL ────────────────────────────────────────────────────────
+    if (config_.frontend_ssl_enabled) {
+        spdlog::info("[proxy] frontend SSL enabled, cert={}, key={}",
+                     config_.frontend_ssl_cert_path,
+                     config_.frontend_ssl_key_path);
+
+        // ssl::context 생성 (TLS 1.2 이상)
+        frontend_ssl_ctx_.emplace(boost::asio::ssl::context::tls_server);
+        auto& ctx = *frontend_ssl_ctx_;
+
+        // TLS 1.0, 1.1, SSLv2/v3 비활성화
+        ctx.set_options(
+            boost::asio::ssl::context::default_workarounds | boost::asio::ssl::context::no_sslv2 |
+            boost::asio::ssl::context::no_sslv3 | boost::asio::ssl::context::no_tlsv1 |
+            boost::asio::ssl::context::no_tlsv1_1 | boost::asio::ssl::context::single_dh_use);
+
+        // 약한 cipher 비활성화
+        SSL_CTX_set_cipher_list(ctx.native_handle(),
+                                "ECDHE+AESGCM:ECDHE+CHACHA20:DHE+AESGCM:DHE+CHACHA20:!aNULL:!eNULL:"
+                                "!EXPORT:!DES:!RC4:!3DES:!MD5:!PSK");
+
+        // 인증서 로드
+        boost::system::error_code ec;
+        ctx.use_certificate_chain_file(config_.frontend_ssl_cert_path, ec);
+        if (ec) {
+            spdlog::error("[proxy] frontend SSL: failed to load certificate {}: {}",
+                          config_.frontend_ssl_cert_path,
+                          ec.message());
+            return false;
+        }
+
+        ctx.use_private_key_file(config_.frontend_ssl_key_path, boost::asio::ssl::context::pem, ec);
+        if (ec) {
+            spdlog::error("[proxy] frontend SSL: failed to load private key {}: {}",
+                          config_.frontend_ssl_key_path,
+                          ec.message());
+            return false;
+        }
+
+        spdlog::info("[proxy] frontend SSL context initialized");
+    }
+
+    // ── Backend SSL ─────────────────────────────────────────────────────────
+    if (config_.backend_ssl_enabled) {
+        spdlog::info("[proxy] backend SSL enabled, ca={}, verify_peer={}",
+                     config_.backend_ssl_ca_path,
+                     config_.backend_ssl_verify);
+
+        backend_ssl_ctx_.emplace(boost::asio::ssl::context::tls_client);
+        auto& ctx = *backend_ssl_ctx_;
+
+        ctx.set_options(boost::asio::ssl::context::default_workarounds |
+                        boost::asio::ssl::context::no_sslv2 | boost::asio::ssl::context::no_sslv3 |
+                        boost::asio::ssl::context::no_tlsv1 |
+                        boost::asio::ssl::context::no_tlsv1_1);
+
+        // 서버 인증서 검증 모드 설정
+        if (config_.backend_ssl_verify) {
+            ctx.set_verify_mode(boost::asio::ssl::verify_peer);
+        } else {
+            spdlog::warn("[proxy] backend SSL: peer verification disabled (insecure)");
+            ctx.set_verify_mode(boost::asio::ssl::verify_none);
+        }
+
+        // CA 인증서 로드 (경로 지정 시)
+        if (!config_.backend_ssl_ca_path.empty()) {
+            boost::system::error_code ec;
+            ctx.load_verify_file(config_.backend_ssl_ca_path, ec);
+            if (ec) {
+                spdlog::error("[proxy] backend SSL: failed to load CA file {}: {}",
+                              config_.backend_ssl_ca_path,
+                              ec.message());
+                return false;
+            }
+        } else {
+            // CA 경로 미지정: 시스템 기본 CA 사용
+            boost::system::error_code ec;
+            ctx.set_default_verify_paths(ec);
+            if (ec) {
+                spdlog::warn("[proxy] backend SSL: set_default_verify_paths failed: {}",
+                             ec.message());
+            }
+        }
+
+        // SNI 호스트명 설정
+        if (!config_.upstream_ssl_sni.empty()) {
+            // SNI는 각 ssl::stream 인스턴스에서 설정 (Session에서 처리)
+            spdlog::debug("[proxy] backend SSL: SNI hostname={}", config_.upstream_ssl_sni);
+        }
+
+        spdlog::info("[proxy] backend SSL context initialized");
+    }
+
+    return true;
+}
+
+// ---------------------------------------------------------------------------
 // policy_reload
 // ---------------------------------------------------------------------------
-void ProxyServer::policy_reload()
-{
-    spdlog::info("[proxy] SIGHUP received — reloading policy: {}",
-                 config_.policy_path);
+void ProxyServer::policy_reload() {
+    spdlog::info("[proxy] SIGHUP received — reloading policy: {}", config_.policy_path);
 
     auto result = PolicyLoader::load(config_.policy_path);
     if (!result) {
-        spdlog::warn("[proxy] policy reload failed (keeping current policy): {}",
-                     result.error());
+        spdlog::warn("[proxy] policy reload failed (keeping current policy): {}", result.error());
         return;
     }
 
@@ -72,12 +173,19 @@ void ProxyServer::policy_reload()
 // ---------------------------------------------------------------------------
 // ProxyServer::run
 // ---------------------------------------------------------------------------
-void ProxyServer::run(boost::asio::io_context& io_ctx)
-{
+void ProxyServer::run(boost::asio::io_context& io_ctx) {
     io_ctx_ = &io_ctx;
 
     // -----------------------------------------------------------------------
-    // 2. PolicyLoader::load
+    // 2. SSL context 초기화 (fail-close: 실패 시 기동 중단)
+    // -----------------------------------------------------------------------
+    if (!init_ssl()) {
+        spdlog::error("[proxy] SSL initialization failed — aborting startup");
+        return;
+    }
+
+    // -----------------------------------------------------------------------
+    // 3. PolicyLoader::load
     // -----------------------------------------------------------------------
     std::shared_ptr<PolicyConfig> policy_config;
 
@@ -85,7 +193,6 @@ void ProxyServer::run(boost::asio::io_context& io_ctx)
     if (!load_result) {
         spdlog::warn("[proxy] initial policy load failed (fail-close — all queries blocked): {}",
                      load_result.error());
-        // nullptr → PolicyEngine은 모든 evaluate()에서 kBlock 반환 (fail-close)
         policy_config = nullptr;
     } else {
         policy_config = std::make_shared<PolicyConfig>(std::move(*load_result));
@@ -93,130 +200,103 @@ void ProxyServer::run(boost::asio::io_context& io_ctx)
     }
 
     // -----------------------------------------------------------------------
-    // 3. logger, stats, policy_engine 생성
+    // 4. logger, stats, policy_engine 생성
     // -----------------------------------------------------------------------
     const auto log_level = parse_log_level(config_.log_level);
-    logger_        = std::make_shared<StructuredLogger>(log_level, config_.log_path);
-    stats_         = std::make_shared<StatsCollector>();
+    logger_ = std::make_shared<StructuredLogger>(log_level, config_.log_path);
+    stats_ = std::make_shared<StatsCollector>();
     policy_engine_ = std::make_shared<PolicyEngine>(std::move(policy_config));
 
     // -----------------------------------------------------------------------
-    // 4. UdsServer 생성 + co_spawn
+    // 5. UdsServer 생성 + co_spawn
     // -----------------------------------------------------------------------
-    uds_server_ = std::make_unique<UdsServer>(
-        config_.uds_socket_path,
-        stats_,
-        io_ctx
-    );
+    uds_server_ = std::make_unique<UdsServer>(config_.uds_socket_path, stats_, io_ctx);
 
-    boost::asio::co_spawn(
-        io_ctx,
-        uds_server_->run(),
-        [](std::exception_ptr eptr) {
-            if (eptr) {
-                try { std::rethrow_exception(eptr); }
-                catch (const std::exception& e) {
-                    spdlog::error("[proxy] uds_server error: {}", e.what());
-                }
+    boost::asio::co_spawn(io_ctx, uds_server_->run(), [](std::exception_ptr eptr) {
+        if (eptr) {
+            try {
+                std::rethrow_exception(eptr);
+            } catch (const std::exception& e) {
+                spdlog::error("[proxy] uds_server error: {}", e.what());
             }
         }
-    );
+    });
 
     // -----------------------------------------------------------------------
-    // 5. HealthCheck 생성 + co_spawn
+    // 6. HealthCheck 생성 + co_spawn
     // -----------------------------------------------------------------------
-    health_check_ = std::make_unique<HealthCheck>(
-        config_.health_check_port,
-        stats_,
-        io_ctx
-    );
+    health_check_ = std::make_unique<HealthCheck>(config_.health_check_port, stats_, io_ctx);
 
-    boost::asio::co_spawn(
-        io_ctx,
-        health_check_->run(),
-        [](std::exception_ptr eptr) {
-            if (eptr) {
-                try { std::rethrow_exception(eptr); }
-                catch (const std::exception& e) {
-                    spdlog::error("[proxy] health_check error: {}", e.what());
-                }
+    boost::asio::co_spawn(io_ctx, health_check_->run(), [](std::exception_ptr eptr) {
+        if (eptr) {
+            try {
+                std::rethrow_exception(eptr);
+            } catch (const std::exception& e) {
+                spdlog::error("[proxy] health_check error: {}", e.what());
             }
         }
-    );
+    });
 
     // -----------------------------------------------------------------------
-    // 6. 시그널 핸들러
-    //    SIGTERM / SIGINT → stop()
-    //    SIGHUP           → policy_reload()
+    // 7. 시그널 핸들러
     // -----------------------------------------------------------------------
-    auto signals_stop = std::make_shared<boost::asio::signal_set>(
-        io_ctx, SIGTERM, SIGINT
-    );
+    auto signals_stop = std::make_shared<boost::asio::signal_set>(io_ctx, SIGTERM, SIGINT);
     signals_stop->async_wait(
         [this, signals_stop](const boost::system::error_code& ec, int /*signum*/) {
             if (!ec) {
                 spdlog::info("[proxy] shutdown signal received");
                 stop();
             }
-        }
-    );
+        });
 
     auto signals_hup = std::make_shared<boost::asio::signal_set>(io_ctx, SIGHUP);
-    // SIGHUP 핸들러: 수신 후 재등록하여 반복 감지
-    // shared_ptr로 감싸서 비동기 콜백에서의 수명 보장
     auto setup_hup = std::make_shared<std::function<void()>>();
     *setup_hup = [this, signals_hup, setup_hup]() {
         signals_hup->async_wait(
             [this, setup_hup](const boost::system::error_code& ec, int /*signum*/) {
                 if (!ec) {
                     policy_reload();
-                    (*setup_hup)();  // 다시 대기
+                    (*setup_hup)();
                 }
-            }
-        );
+            });
     };
     (*setup_hup)();
 
     // -----------------------------------------------------------------------
-    // 7. Accept 루프 (co_spawn)
+    // 8. Accept 루프 (co_spawn)
     // -----------------------------------------------------------------------
     const auto listen_addr = boost::asio::ip::make_address(config_.listen_address);
-    const auto listen_ep   = boost::asio::ip::tcp::endpoint{listen_addr, config_.listen_port};
+    const auto listen_ep = boost::asio::ip::tcp::endpoint{listen_addr, config_.listen_port};
 
-    boost::asio::co_spawn(
-        io_ctx,
-        accept_loop(listen_ep),
-        [](std::exception_ptr eptr) {
-            if (eptr) {
-                try { std::rethrow_exception(eptr); }
-                catch (const std::exception& e) {
-                    spdlog::error("[proxy] accept loop exception: {}", e.what());
-                }
+    boost::asio::co_spawn(io_ctx, accept_loop(listen_ep), [](std::exception_ptr eptr) {
+        if (eptr) {
+            try {
+                std::rethrow_exception(eptr);
+            } catch (const std::exception& e) {
+                spdlog::error("[proxy] accept loop exception: {}", e.what());
             }
         }
-    );
+    });
 }
 
 // ---------------------------------------------------------------------------
 // ProxyServer::accept_loop
 //   TCP Accept 루프 코루틴.
-//   listen_ep 는 값으로 받아 코루틴 프레임(힙)에 안전하게 보관한다.
-//   람다 클로저 캡처 대신 멤버 함수로 분리하여 stack-use-after-return 방지.
+//   Frontend SSL이 활성화된 경우 accept 후 TLS 핸드셰이크를 수행한다.
 // ---------------------------------------------------------------------------
-boost::asio::awaitable<void> ProxyServer::accept_loop(
-    boost::asio::ip::tcp::endpoint listen_ep)
-{
+boost::asio::awaitable<void> ProxyServer::accept_loop(boost::asio::ip::tcp::endpoint listen_ep) {
     boost::asio::ip::tcp::acceptor acceptor{*io_ctx_, listen_ep};
     acceptor.set_option(boost::asio::ip::tcp::acceptor::reuse_address(true));
 
-    spdlog::info("[proxy] listening on {}:{}",
-                 config_.listen_address, config_.listen_port);
+    spdlog::info("[proxy] listening on {}:{} (SSL={})",
+                 config_.listen_address,
+                 config_.listen_port,
+                 config_.frontend_ssl_enabled ? "frontend" : "none");
 
     while (!stopping_) {
         boost::system::error_code ec;
         auto client_sock = co_await acceptor.async_accept(
-            boost::asio::redirect_error(boost::asio::use_awaitable, ec)
-        );
+            boost::asio::redirect_error(boost::asio::use_awaitable, ec));
 
         if (ec) {
             if (ec == boost::asio::error::operation_aborted) {
@@ -230,7 +310,6 @@ boost::asio::awaitable<void> ProxyServer::accept_loop(
         }
 
         if (stopping_) {
-            // 이미 종료 중 — 소켓 즉시 닫기
             boost::system::error_code close_ec;
             client_sock.close(close_ec);
             continue;
@@ -240,44 +319,36 @@ boost::asio::awaitable<void> ProxyServer::accept_loop(
         if (config_.max_connections > 0) {
             const auto snap = stats_->snapshot();
             if (snap.active_sessions >= config_.max_connections) {
-                spdlog::warn(
-                    "[proxy] max_connections ({}) reached, rejecting new connection",
-                    config_.max_connections
-                );
+                spdlog::warn("[proxy] max_connections ({}) reached, rejecting new connection",
+                             config_.max_connections);
                 health_check_->set_unhealthy(
-                    std::format("max_connections ({}) reached",
-                                config_.max_connections)
-                );
+                    std::format("max_connections ({}) reached", config_.max_connections));
                 boost::system::error_code close_ec;
                 client_sock.close(close_ec);
                 continue;
             }
 
-            // 세션 수가 회복되면 healthy 전환
             if (health_check_->status() == HealthStatus::kUnhealthy &&
-                snap.active_sessions < config_.max_connections)
-            {
+                snap.active_sessions < config_.max_connections) {
                 health_check_->set_healthy();
             }
         }
 
-        // 세션 생성
-        const std::uint64_t sid = next_session_id_.fetch_add(
-            1, std::memory_order_relaxed
-        );
+        // 세션 ID 할당
+        const std::uint64_t sid = next_session_id_.fetch_add(1, std::memory_order_relaxed);
 
-        // upstream 호스트명 해석 (숫자 IP도 지원)
+        // upstream 호스트명 해석
         boost::asio::ip::tcp::resolver resolver{*io_ctx_};
         boost::system::error_code resolve_ec;
         auto resolve_results = co_await resolver.async_resolve(
             config_.upstream_address,
             std::to_string(config_.upstream_port),
-            boost::asio::redirect_error(boost::asio::use_awaitable, resolve_ec)
-        );
+            boost::asio::redirect_error(boost::asio::use_awaitable, resolve_ec));
 
         if (resolve_ec || resolve_results.empty()) {
             spdlog::error("[proxy] failed to resolve upstream {}: {}",
-                          config_.upstream_address, resolve_ec.message());
+                          config_.upstream_address,
+                          resolve_ec.message());
             boost::system::error_code close_ec;
             client_sock.close(close_ec);
             continue;
@@ -285,55 +356,69 @@ boost::asio::awaitable<void> ProxyServer::accept_loop(
 
         const auto server_ep = *resolve_results.begin();
 
-        auto session = std::make_shared<Session>(
-            sid,
-            std::move(client_sock),
-            server_ep,
-            policy_engine_,
-            logger_,
-            stats_
-        );
+        // ──────────────────────────────────────────────────────────────────
+        // Frontend SSL 처리
+        //   SSL이 활성화된 경우: ssl::stream으로 래핑 (핸드셰이크는 Session::run에서 수행)
+        //   SSL이 비활성화된 경우: tcp::socket → AsyncStream
+        // ──────────────────────────────────────────────────────────────────
+        AsyncStream client_stream{AsyncStream::tcp_socket{client_sock.get_executor()}};
+
+        if (frontend_ssl_ctx_.has_value()) {
+            AsyncStream::ssl_socket ssl_client_sock{std::move(client_sock), *frontend_ssl_ctx_};
+            client_stream = AsyncStream{std::move(ssl_client_sock)};
+        } else {
+            client_stream = AsyncStream{std::move(client_sock)};
+        }
+
+        // Backend SSL context 포인터 (nullptr이면 평문)
+        boost::asio::ssl::context* backend_ssl_ctx_ptr =
+            backend_ssl_ctx_.has_value() ? &(*backend_ssl_ctx_) : nullptr;
+
+        const auto backend_tls_server_name = config_.upstream_ssl_sni.empty()
+                                                 ? config_.upstream_address
+                                                 : config_.upstream_ssl_sni;
+
+        // 세션 생성
+        auto session = std::make_shared<Session>(sid,
+                                                 std::move(client_stream),
+                                                 server_ep,
+                                                 backend_ssl_ctx_ptr,
+                                                 config_.backend_ssl_verify,
+                                                 backend_tls_server_name,
+                                                 policy_engine_,
+                                                 logger_,
+                                                 stats_);
 
         sessions_.emplace(sid, session);
 
         spdlog::debug("[proxy] new session {}", sid);
 
-        // 세션 코루틴 spawn — 완료 시 sessions_ 에서 제거
+        // 세션 코루틴 spawn
         boost::asio::co_spawn(
-            session->executor(),
-            session->run(),
-            [this, sid](std::exception_ptr eptr) {
+            session->executor(), session->run(), [this, sid](std::exception_ptr eptr) {
                 if (eptr) {
-                    try { std::rethrow_exception(eptr); }
-                    catch (const std::exception& e) {
-                        spdlog::error("[proxy] session {} exception: {}",
-                                      sid, e.what());
+                    try {
+                        std::rethrow_exception(eptr);
+                    } catch (const std::exception& e) {
+                        spdlog::error("[proxy] session {} exception: {}", sid, e.what());
                     }
                 }
 
                 sessions_.erase(sid);
-                spdlog::debug("[proxy] session {} removed (active: {})",
-                              sid, sessions_.size());
+                spdlog::debug("[proxy] session {} removed (active: {})", sid, sessions_.size());
 
-                // 모든 세션 종료 + stopping 중 → io_context 중단
                 if (stopping_ && sessions_.empty()) {
                     spdlog::info("[proxy] all sessions closed, stopping io_context");
                     io_ctx_->stop();
                 }
-            }
-        );
+            });
     }
 }
 
 // ---------------------------------------------------------------------------
 // ProxyServer::stop
-//   Graceful Shutdown.
-//   1. stopping_ = true
-//   2. 활성 세션 각각 close()
-//   3. 세션이 없으면 즉시 io_ctx_ stop
 // ---------------------------------------------------------------------------
-void ProxyServer::stop()
-{
+void ProxyServer::stop() {
     if (stopping_) {
         return;
     }
@@ -342,23 +427,19 @@ void ProxyServer::stop()
 
     spdlog::info("[proxy] stopping — active sessions: {}", sessions_.size());
 
-    // HealthCheck를 unhealthy로 전환 (로드밸런서 라우팅 제외)
     if (health_check_) {
         health_check_->set_unhealthy("proxy shutting down");
     }
 
-    // UdsServer 정지
     if (uds_server_) {
         uds_server_->stop();
     }
 
-    // 활성 세션 전체 close()
     for (auto& [sid, session] : sessions_) {
         spdlog::debug("[proxy] closing session {}", sid);
         session->close();
     }
 
-    // 세션이 없으면 즉시 종료
     if (sessions_.empty() && io_ctx_ != nullptr) {
         spdlog::info("[proxy] no active sessions, stopping io_context immediately");
         io_ctx_->stop();

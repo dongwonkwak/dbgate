@@ -350,6 +350,272 @@ while (state != HandshakeState::kDone &&
 - raw socket 접근 없음 — async_read/async_write로 안전성 보장
 - detail::process_handshake_packet은 순수 함수 (상태 머신 로직)
 
+## 시나리오 7: SSL/TLS 양 구간 핸드셰이크 시퀀스
+
+**목적**: Frontend(클라이언트↔프록시)와 Backend(프록시↔MySQL) SSL/TLS 핸드셰이크 흐름을 상세히 설명한다.
+
+**구성**: 두 개의 병렬 TLS 핸드셰이크 + MySQL 핸드셰이크 (양쪽 TLS 위)
+
+```mermaid
+sequenceDiagram
+    participant Client
+    participant Proxy as dbgate<br/>(ProxyServer<br/>+ Session)
+    participant MySQL as MySQL Server
+
+    Note over Proxy: ProxyServer::init_ssl()<br/>frontend/backend context 초기화
+
+    rect rgb(200, 220, 255)
+        Note over Client, Proxy: Phase A: Frontend SSL (클라이언트↔프록시)
+
+        Client->>Proxy: TCP SYN
+        Proxy->>Proxy: TCP accept → tcp::socket
+        Note over Proxy: ProxyServer: Session 생성<br/>frontend_ssl_enabled=true면<br/>ssl::stream 생성 + AsyncStream 래핑
+
+        Proxy->>Client: ServerHello (TLS)
+        Client->>Proxy: ClientHello, ClientKeyExchange (TLS)
+        Proxy->>Client: ChangeCipherSpec, Finished (TLS)
+        Client->>Proxy: ChangeCipherSpec, Finished (TLS)
+
+        Note over Proxy: TLS Handshake Complete<br/>client_stream = AsyncStream(SSL mode)
+    end
+
+    rect rgb(220, 255, 220)
+        Note over Proxy, MySQL: Phase B: Backend TCP + SSL (프록시↔MySQL)
+
+        Proxy->>MySQL: TCP SYN
+        MySQL->>Proxy: TCP SYN-ACK
+        Proxy->>MySQL: TCP ACK
+        Note over Proxy: TCP connect 완료<br/>server_socket = tcp::socket
+
+        alt backend_ssl_enabled = true
+            Note over Proxy: Session: backend SSL 결정<br/>ssl::context로 upgrade 준비
+
+            Proxy->>Proxy: ssl::stream<tcp::socket> 생성
+
+            Proxy->>MySQL: SSLRequest packet<br/>(MySQL: 나 TLS 할래?)
+            MySQL->>Proxy: OK response
+
+            Note over Proxy,MySQL: TLS Handshake 개시
+            Proxy->>MySQL: ClientHello (TLS)
+            MySQL->>Proxy: ServerHello, Certificate (TLS)
+            Proxy->>MySQL: ClientKeyExchange, Finished (TLS)
+            MySQL->>Proxy: Finished (TLS)
+
+            Note over Proxy: TLS Handshake Complete<br/>server_stream = AsyncStream(SSL mode)
+        else backend_ssl_enabled = false
+            Note over Proxy: 평문 모드<br/>server_stream = AsyncStream(TCP mode)
+        end
+    end
+
+    rect rgb(255, 240, 200)
+        Note over Client, MySQL: Phase C: MySQL Handshake (양쪽 TLS 위)
+
+        Note over Proxy: HandshakeRelay::relay_handshake()<br/>client_stream ↔ server_stream<br/>packet relay (투명)
+
+        Proxy->>Client: InitialHandshake packet<br/>(서버 capability 전달)
+        Note over Proxy: Strip CLIENT_SSL bit<br/>이중 TLS 방지
+
+        Client->>Proxy: HandshakeResponse<br/>(username, db_name)
+        Note over Proxy: db_user, db_name 추출<br/>Strip CLIENT_SSL bit
+
+        Proxy->>MySQL: HandshakeResponse<br/>with stripped flags
+
+        alt OK (0x00)
+            MySQL->>Proxy: OK packet
+            Proxy->>Client: OK packet
+
+            Note over Proxy: State: kDone<br/>ctx.handshake_done = true<br/>COM_QUERY 루프 진입
+        else AuthSwitch or AuthMoreData
+            Note over Proxy: Round-trip 처리<br/>(8-state 머신 적용)
+
+            loop Until OK or Error
+                MySQL->>Proxy: Auth response (0xFE or 0x01)
+                Proxy->>Client: Auth challenge
+                Client->>Proxy: Auth reply
+                Proxy->>MySQL: Auth reply
+            end
+
+            MySQL->>Proxy: OK packet
+            Proxy->>Client: OK packet
+
+            Note over Proxy: Handshake Complete
+        else Error or Unknown
+            MySQL->>Proxy: Error (0xFF) or Unknown
+
+            Note over Proxy: Fail-Close: 세션 종료<br/>클라이언트에 ERR 전달 (또는 no-relay)
+        end
+    end
+
+    rect rgb(240, 200, 200)
+        Note over Client, MySQL: Phase D: COM_QUERY 처리<br/>(이후 시나리오 참조)
+
+        Note over Proxy: client_stream, server_stream<br/>양쪽 AsyncStream 투명 I/O<br/>TLS/평문 자동 처리
+    end
+```
+
+### 구현 상세 (Frontend/Backend SSL)
+
+#### ProxyServer::init_ssl() (run() 에서 호출)
+
+```cpp
+bool init_ssl() {
+    // Frontend SSL (클라이언트↔프록시)
+    if (config_.frontend_ssl_enabled) {
+        frontend_ssl_ctx_.emplace(ssl::context::sslv23);
+        // ... cert/key 로드 (frontend_ssl_cert_path, frontend_ssl_key_path)
+        if (!cert_loaded) return false;  // fail-close
+    }
+
+    // Backend SSL (프록시↔MySQL)
+    if (config_.backend_ssl_enabled) {
+        backend_ssl_ctx_.emplace(ssl::context::sslv23);
+        // ... CA 로드 (backend_ssl_ca_path)
+        if (!ca_loaded) return false;  // fail-close
+    }
+
+    return true;
+}
+```
+
+#### Session::run() (Frontend SSL)
+
+```cpp
+// Step 1: Frontend TLS Handshake (클라이언트 수신 후)
+if (client_stream_.is_ssl()) {
+    auto hs_result = co_await client_stream_.async_handshake(
+        ssl::stream_base::server,
+        use_awaitable
+    );
+    if (!hs_result) {
+        // TLS 핸드셰이크 실패 → 세션 종료
+        logger_->error("Frontend TLS handshake failed");
+        return;
+    }
+}
+// 평문 모드면: async_handshake()가 no-op (즉시 성공)
+```
+
+#### Session::run() (Backend SSL)
+
+```cpp
+// Step 1: TCP Connect
+auto server_socket = co_await async_connect(server_endpoint, ...);
+
+// Step 2: Backend SSL 결정 및 업그레이드
+if (backend_ssl_ctx_ != nullptr) {
+    // Backend SSL 활성화
+    auto ssl_stream = ssl::stream<tcp::socket>(
+        std::move(server_socket),
+        *backend_ssl_ctx_
+    );
+
+    // Step 3: SSLRequest 전송 (MySQL 프로토콜)
+    auto ssl_request = make_ssl_request_packet(...);
+    co_await async_write(ssl_stream, ssl_request, ...);
+
+    // Step 4: TLS Handshake
+    auto hs_result = co_await ssl_stream.async_handshake(
+        ssl::stream_base::client,
+        use_awaitable
+    );
+    if (!hs_result) {
+        // TLS 핸드셰이크 실패 → fail-close
+        logger_->error("Backend TLS handshake failed");
+        return;
+    }
+
+    // Step 5: AsyncStream으로 변환
+    server_stream_ = AsyncStream{std::move(ssl_stream)};
+} else {
+    // Backend 평문 모드
+    server_stream_ = AsyncStream{std::move(server_socket)};
+}
+```
+
+#### HandshakeRelay::relay_handshake() (CLIENT_SSL Strip)
+
+```cpp
+// InitialHandshake 수신 후 capability flags 조작
+auto server_greeting = parse_initial_handshake(...);
+server_greeting.capability_flags &= ~CLIENT_SSL;  // Strip CLIENT_SSL
+co_await async_write(client_stream, serialize(server_greeting), ...);
+
+// HandshakeResponse 수신 후 capability flags 조작
+auto client_response = co_await read_packet(client_stream, ...);
+auto resp_flags = extract_capability_flags(client_response);
+resp_flags &= ~CLIENT_SSL;  // Strip CLIENT_SSL
+modify_capability_flags(client_response, resp_flags);
+co_await async_write(server_stream, client_response, ...);
+```
+
+### 구현/운영 주의점
+
+#### SSL 설정 실패 (Fail-Close)
+
+```cpp
+// 서버 기동 시점에 실패
+if (!init_ssl()) {
+    logger_->error("SSL initialization failed");
+    return;  // ProxyServer::run()에서 즉시 반환
+}
+// → HAProxy/로드밸런서가 unhealthy로 감지 → 롤링 재시작
+```
+
+#### Backend SSL 미지원 감지
+
+```cpp
+// MySQL 서버가 TLS 미지원
+// → SSLRequest 전송 후 ERR 패킷 수신
+// → 핸드셰이크 실패 → ParseError → Session 종료 (fail-close)
+
+// 결과: 클라이언트는 연결 거부 받음
+```
+
+#### CLIENT_SSL 비트 Strip 필요 이유
+
+```
+정상 흐름:
+Client [TLS] ↔ dbgate [TLS] ↔ MySQL
+
+위험 흐름 (CLIENT_SSL 비트가 유지된 경우):
+Client: "CLIENT_SSL 플래그 있음 → MySQL도 TLS를 요청"
+→ MySQL: "OK, TLS handshake 시작"
+→ Client (via Proxy) [TLS] ↔ MySQL [TLS]
+→ "이중 TLS": Proxy 입장에서 Inner TLS만 봄 → 외부 Plain이 노출
+
+해결책: Proxy가 CLIENT_SSL 비트를 제거
+→ Client: "CLIENT_SSL 없음 → MySQL은 TLS 불필요"
+→ MySQL: "Client는 TLS 안 함 → Plain 모드"
+→ Proxy ↔ MySQL은 Plain (Proxy ↔ Client는 TLS)
+```
+
+#### 양쪽 모두 TLS인 경우 암호화 보장
+
+```
+Layer 1 (Outer): Client [TLS] ↔ Proxy
+  - 클라이언트 인증서 검증 (선택)
+  - Forward Secrecy 지원
+
+Layer 2 (Inner): Proxy [TLS] ↔ MySQL
+  - MySQL 서버 인증서 검증 (backend_ssl_verify)
+  - SNI hostname 전달 (선택)
+
+결과: 전체 경로 암호화 + 각 구간 독립적 검증
+```
+
+#### AsyncStream 투명성
+
+```cpp
+// COM_QUERY 루프에서:
+co_await client_stream_.async_read_some(buffer, use_awaitable);
+co_await server_stream_.async_write_some(buffer, use_awaitable);
+
+// 내부적으로:
+// - TLS 모드: ssl::stream의 메서드 호출 (암호화)
+// - 평문 모드: tcp::socket의 메서드 호출 (평문)
+// → 호출 코드는 변경 불필요
+```
+
 ## 시나리오 2+: TODO
 - `COM_QUERY` 정상/차단
 - `fail-close` 경로
