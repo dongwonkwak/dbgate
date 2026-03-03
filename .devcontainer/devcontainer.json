@@ -66,7 +66,7 @@
   "otherPortsAttributes": {
     "onAutoForward": "ignore"
   },
-  "postCreateCommand": "/usr/local/bin/init-firewall.sh",
+  "postCreateCommand": "/usr/local/bin/init-firewall.sh && bash scripts/install-hooks.sh && (cd tools && go mod download || echo '[postCreate] go mod download skipped (offline)')",
   "waitFor": "postStartCommand",
   "mounts": [
     "source=${localEnv:HOME}/.codex,target=/root/.codex,type=bind,consistency=cached",

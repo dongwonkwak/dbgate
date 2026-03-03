@@ -139,7 +139,7 @@ Mac(호스트) → VSCode + Claude Code → devcontainer(Ubuntu 24.04) 안에서
 ```
 .devcontainer/
 ├── devcontainer.json
-└── Dockerfile        # Ubuntu 24.04 + g++-14 + cmake + vcpkg + go 1.22 + mysql-client
+└── Dockerfile        # Ubuntu 24.04 + g++-14 + cmake + vcpkg + go 1.26 + mysql-client
 ```
 
 devcontainer.json에서 docker-compose.yaml의 MySQL 컨테이너를 함께 기동하여, 열자마자 개발+테스트 환경 준비.
