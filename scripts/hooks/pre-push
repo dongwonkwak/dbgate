@@ -6,6 +6,8 @@ set -euo pipefail
 BASE_REF="origin/main"
 DOC_SCRIPT="scripts/check-doc-impact.sh"
 INTEGRATION_SCRIPT="tests/integration/test_scenarios.sh"
+CPP_COMPILER_OVERRIDE=""
+RUN_INTEGRATION="${PRE_PUSH_RUN_INTEGRATION:-0}"
 
 # origin/main 이 fetch 되어 있지 않으면 모든 체크 건너뜀
 if ! git rev-parse --verify "$BASE_REF" >/dev/null 2>&1; then
@@ -31,22 +33,67 @@ paths_changed() {
   return 1
 }
 
+prepare_cpp_checks() {
+  if ! command -v cmake >/dev/null 2>&1; then
+    echo "[pre-push] ⚠️  cmake 미설치 — C++ 로컬 체크 skip (CI가 최종 검증)"
+    return 1
+  fi
+  if ! command -v ctest >/dev/null 2>&1; then
+    echo "[pre-push] ⚠️  ctest 미설치 — C++ 로컬 체크 skip (CI가 최종 검증)"
+    return 1
+  fi
+
+  # preset 기본값(g++-14)이 없는 환경에서는 로컬 사용 가능 컴파일러로 override한다.
+  if command -v g++-14 >/dev/null 2>&1; then
+    CPP_COMPILER_OVERRIDE="g++-14"
+  elif command -v g++ >/dev/null 2>&1; then
+    CPP_COMPILER_OVERRIDE="g++"
+  elif command -v clang++ >/dev/null 2>&1; then
+    CPP_COMPILER_OVERRIDE="clang++"
+  else
+    echo "[pre-push] ⚠️  C++ 컴파일러 미설치 — C++ 로컬 체크 skip (CI가 최종 검증)"
+    return 1
+  fi
+
+  # vcpkg는 루트 경로에 lock 파일을 생성하므로 쓰기 권한이 없으면 hook에서 실패한다.
+  if [[ -n "${VCPKG_ROOT:-}" && ! -w "${VCPKG_ROOT}" ]]; then
+    echo "[pre-push] ⚠️  VCPKG_ROOT(${VCPKG_ROOT}) 쓰기 권한 없음 — C++ 로컬 체크 skip (CI가 최종 검증)"
+    return 1
+  fi
+
+  return 0
+}
+
 # ① C++ 빌드 + 테스트 (ci.yml 트리거 경로 기준)
 if paths_changed '^src/' '^tests/' '^CMakeLists\.txt$' '^CMakePresets\.json$' '^vcpkg\.json$' '^\.clang-tidy$'; then
   echo "[pre-push] C++ 변경 감지 — 빌드 + 테스트 실행..."
-  if ! cmake --preset default; then
-    echo "[pre-push] ❌ cmake configure 실패"
-    exit 1
+  if ! prepare_cpp_checks; then
+    :
+  else
+    CPP_CONFIGURE_LOG="$(mktemp)"
+    if ! cmake --preset default -DCMAKE_CXX_COMPILER="$CPP_COMPILER_OVERRIDE" >"$CPP_CONFIGURE_LOG" 2>&1; then
+      cat "$CPP_CONFIGURE_LOG"
+      if grep -qE "take_exclusive_file_lock|Failed to take the filesystem lock|CMAKE_CXX_COMPILER:.*not found|CMAKE_CXX_COMPILER:.+was not found" "$CPP_CONFIGURE_LOG"; then
+        echo "[pre-push] ⚠️  로컬 C++ 빌드 환경 미충족 — C++ 로컬 체크 skip (CI가 최종 검증)"
+      else
+        echo "[pre-push] ❌ cmake configure 실패"
+        rm -f "$CPP_CONFIGURE_LOG"
+        exit 1
+      fi
+      rm -f "$CPP_CONFIGURE_LOG"
+    else
+      rm -f "$CPP_CONFIGURE_LOG"
+      if ! cmake --build build/default -j"$(nproc)"; then
+        echo "[pre-push] ❌ cmake build 실패"
+        exit 1
+      fi
+      if ! ctest --test-dir build/default --output-on-failure -j"$(nproc)"; then
+        echo "[pre-push] ❌ ctest 실패"
+        exit 1
+      fi
+      echo "[pre-push] ✅ C++ 빌드 + 테스트 OK"
+    fi
   fi
-  if ! cmake --build build/default -j"$(nproc)"; then
-    echo "[pre-push] ❌ cmake build 실패"
-    exit 1
-  fi
-  if ! ctest --test-dir build/default --output-on-failure -j"$(nproc)"; then
-    echo "[pre-push] ❌ ctest 실패"
-    exit 1
-  fi
-  echo "[pre-push] ✅ C++ 빌드 + 테스트 OK"
 else
   echo "[pre-push] C++ 트리거 경로 변경 없음 — 빌드 skip"
 fi
@@ -73,8 +120,14 @@ fi
 
 # ③ 통합 테스트 (integration.yml 트리거 경로 기준)
 if paths_changed '^src/' '^tests/integration/' '^config/' '^docker-compose\.yaml$'; then
-  if [[ ! -f "$INTEGRATION_SCRIPT" || ! -x "$INTEGRATION_SCRIPT" ]]; then
+  if [[ "$RUN_INTEGRATION" != "1" ]]; then
+    echo "[pre-push] 통합 테스트 기본 skip (실행: PRE_PUSH_RUN_INTEGRATION=1 git push)"
+  elif [[ ! -f "$INTEGRATION_SCRIPT" || ! -x "$INTEGRATION_SCRIPT" ]]; then
     echo "[pre-push] ⚠️  $INTEGRATION_SCRIPT 없거나 실행 권한 없음 — 통합 테스트 skip"
+  elif ! command -v mysql >/dev/null 2>&1; then
+    echo "[pre-push] ⚠️  mysql 클라이언트 미설치 — 통합 테스트 skip"
+  elif ! command -v curl >/dev/null 2>&1; then
+    echo "[pre-push] ⚠️  curl 미설치 — 통합 테스트 skip"
   else
     echo "[pre-push] 통합 테스트 실행..."
     if ! bash "$INTEGRATION_SCRIPT"; then
@@ -94,7 +147,10 @@ if [[ ! -f "$DOC_SCRIPT" ]]; then
 fi
 
 echo "[pre-push] Running doc impact check against $BASE_REF..."
-if ! bash "$DOC_SCRIPT" --base "$BASE_REF" --head HEAD; then
+if ! GIT_CONFIG_COUNT=1 \
+     GIT_CONFIG_KEY_0=safe.directory \
+     GIT_CONFIG_VALUE_0="$PWD" \
+     bash "$DOC_SCRIPT" --base "$BASE_REF" --head HEAD; then
   echo ""
   echo "[pre-push] Push 중단: doc impact 요건 미충족."
   echo "           해당 docs 파일을 업데이트하거나 아래 트레일러를 마지막 커밋에 추가하세요:"

@@ -85,6 +85,7 @@ add_executable(dbgate_tests
     tests/test_uds_server.cpp
     tests/test_proxy_pipeline.cpp
     tests/test_proxy_server.cpp
+    tests/test_edge_cases.cpp
     src/logger/structured_logger.cpp
     src/protocol/mysql_packet.cpp
     src/protocol/command.cpp

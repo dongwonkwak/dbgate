@@ -64,6 +64,7 @@ cleanup() {
     fi
     mysql_direct "DROP TABLE IF EXISTS smoke_direct" 2>/dev/null || true
     mysql_direct "DROP TABLE IF EXISTS smoke_proxy"  2>/dev/null || true
+    mysql_direct "DROP TABLE IF EXISTS smoke_trunc"  2>/dev/null || true
 }
 trap cleanup EXIT
 
@@ -170,12 +171,178 @@ YAML
     fi
 fi
 
+# ─── Phase 4: block_statements 차단 ──────────────────────────────────────────
+
+echo ""
+echo "=== Phase 4: block_statements 차단 (DROP/TRUNCATE) ==="
+
+if [ -n "$DBGATE_PID" ] && kill -0 "$DBGATE_PID" 2>/dev/null; then
+    kill "$DBGATE_PID" 2>/dev/null || true
+    wait "$DBGATE_PID" 2>/dev/null || true
+    DBGATE_PID=""
+fi
+
+cat > "$TEST_POLICY" <<'YAML'
+global:
+  log_level: warn
+  log_format: json
+  max_connections: 100
+  connection_timeout: 30s
+access_control:
+  - user: "__MYSQL_USER__"
+    source_ip: "0.0.0.0/0"
+    allowed_tables: ["*"]
+    allowed_operations: ["SELECT", "INSERT", "UPDATE", "DELETE", "CREATE"]
+    time_restriction: null
+sql_rules:
+  block_statements: ["DROP", "TRUNCATE"]
+  # policy_loader fail-close 제약: block_patterns 는 최소 1개 필요
+  # Phase 4 검증 대상은 DROP/TRUNCATE 이므로 기존 기본 패턴 1개만 유지
+  block_patterns:
+    - "UNION\\s+SELECT"
+procedure_control:
+  mode: "whitelist"
+  whitelist: []
+  block_dynamic_sql: false
+  block_create_alter: false
+data_protection:
+  max_result_rows: 10000
+  block_schema_access: false
+  sensitive_columns: []
+alerts:
+  on_block: false
+  on_high_volume_query: false
+  threshold_qps: 10000
+YAML
+sed -i "s/__MYSQL_USER__/${MYSQL_USER}/g" "$TEST_POLICY"
+
+# 프록시 재기동
+MYSQL_HOST="$MYSQL_HOST" \
+MYSQL_PORT="$MYSQL_PORT" \
+PROXY_LISTEN_PORT="$PROXY_PORT" \
+POLICY_PATH="$TEST_POLICY" \
+LOG_PATH="/tmp/dbgate-test-p4.log" \
+LOG_LEVEL="warn" \
+UDS_SOCKET_PATH="/tmp/dbgate-test-p4.sock" \
+HEALTH_CHECK_PORT="8082" \
+    "$DBGATE_BIN" &
+DBGATE_PID=$!
+
+# 헬스체크 대기 (최대 10초)
+READY=0
+for i in $(seq 1 20); do
+    if curl -sf http://127.0.0.1:8082/health >/dev/null 2>&1; then
+        READY=1; break
+    fi
+    sleep 0.5
+done
+
+if [ $READY -eq 0 ]; then
+    fail "Phase 4: dbgate 헬스체크 타임아웃"
+else
+    echo "  dbgate Phase 4 기동 완료 (PID=$DBGATE_PID)"
+
+    # SELECT 는 통과
+    run_ok    "Phase4: SELECT 허용"       mysql_proxy "SELECT 1"
+
+    # TRUNCATE 차단 검증: 실존 테이블로 "table not found" 오류와 구별
+    mysql_direct "CREATE TABLE IF NOT EXISTS smoke_trunc (id INT PRIMARY KEY)" 2>/dev/null || true
+
+    # DROP/TRUNCATE 는 차단
+    run_block "Phase4: DROP TABLE 차단"   mysql_proxy "DROP TABLE IF EXISTS nonexistent_smoke"
+    run_block "Phase4: TRUNCATE 차단"     mysql_proxy "TRUNCATE TABLE smoke_trunc"
+fi
+
+# ─── Phase 5: 시간대 차단 ─────────────────────────────────────────────────────
+
+echo ""
+echo "=== Phase 5: 시간대 차단 (time_restriction) ==="
+
+# 현재 UTC 시/분 확인
+CURRENT_UTC_HOUR=$(date -u +%H)
+CURRENT_UTC_MIN=$(date -u +%M)
+
+# 현재 시각을 포함하지 않는 허용 범위 = 현재+2시간 ~ 현재+3시간 (UTC)
+# → 현재 시각은 항상 차단됨
+ALLOW_HOUR=$(( (10#$CURRENT_UTC_HOUR + 2) % 24 ))
+ALLOW_END=$(( (10#$CURRENT_UTC_HOUR + 3) % 24 ))
+ALLOW_START_STR=$(printf "%02d:00" "$ALLOW_HOUR")
+ALLOW_END_STR=$(printf "%02d:00" "$ALLOW_END")
+
+# dbgate 재기동
+if [ -n "$DBGATE_PID" ] && kill -0 "$DBGATE_PID" 2>/dev/null; then
+    kill "$DBGATE_PID" 2>/dev/null || true
+    wait "$DBGATE_PID" 2>/dev/null || true
+    DBGATE_PID=""
+fi
+
+cat > "$TEST_POLICY" <<YAML
+global:
+  log_level: warn
+  log_format: json
+  max_connections: 100
+  connection_timeout: 30s
+access_control:
+  - user: "${MYSQL_USER}"
+    source_ip: "0.0.0.0/0"
+    allowed_tables: ["*"]
+    allowed_operations: ["SELECT", "INSERT", "UPDATE", "DELETE", "CREATE", "DROP"]
+    time_restriction:
+      allow: "${ALLOW_START_STR}-${ALLOW_END_STR}"
+      timezone: "UTC"
+sql_rules:
+  block_statements: []
+  # policy_loader fail-close 제약: block_patterns 는 최소 1개 필요
+  # Phase 5 검증 대상은 time_restriction 이므로 기본 패턴 1개만 유지
+  block_patterns:
+    - "UNION\\s+SELECT"
+procedure_control:
+  mode: "whitelist"
+  whitelist: []
+  block_dynamic_sql: false
+  block_create_alter: false
+data_protection:
+  max_result_rows: 10000
+  block_schema_access: false
+  sensitive_columns: []
+alerts:
+  on_block: false
+  on_high_volume_query: false
+  threshold_qps: 10000
+YAML
+
+MYSQL_HOST="$MYSQL_HOST" \
+MYSQL_PORT="$MYSQL_PORT" \
+PROXY_LISTEN_PORT="$PROXY_PORT" \
+POLICY_PATH="$TEST_POLICY" \
+LOG_PATH="/tmp/dbgate-test-p5.log" \
+LOG_LEVEL="warn" \
+UDS_SOCKET_PATH="/tmp/dbgate-test-p5.sock" \
+HEALTH_CHECK_PORT="8083" \
+    "$DBGATE_BIN" &
+DBGATE_PID=$!
+
+READY=0
+for i in $(seq 1 20); do
+    if curl -sf http://127.0.0.1:8083/health >/dev/null 2>&1; then
+        READY=1; break
+    fi
+    sleep 0.5
+done
+
+if [ $READY -eq 0 ]; then
+    fail "Phase 5: dbgate 헬스체크 타임아웃"
+else
+    echo "  dbgate Phase 5 기동 완료 (허용 범위: ${ALLOW_START_STR}~${ALLOW_END_STR} UTC, 현재 UTC: ${CURRENT_UTC_HOUR}:${CURRENT_UTC_MIN})"
+    run_block "Phase5: 시간대 외 SELECT 차단" mysql_proxy "SELECT 1"
+fi
+
 # ─── 결과 ─────────────────────────────────────────────────────────────────────
 
 echo ""
 echo "=== 결과: PASS=${PASS} / FAIL=${FAIL} ==="
 if [ "$FAIL" -gt 0 ]; then
-    echo "❌ 통합 테스트 실패"
+    echo "통합 테스트 실패"
     exit 1
 fi
-echo "✅ 통합 테스트 전체 통과"
+echo "통합 테스트 전체 통과"
