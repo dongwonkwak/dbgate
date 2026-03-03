@@ -64,6 +64,7 @@ cleanup() {
     fi
     mysql_direct "DROP TABLE IF EXISTS smoke_direct" 2>/dev/null || true
     mysql_direct "DROP TABLE IF EXISTS smoke_proxy"  2>/dev/null || true
+    mysql_direct "DROP TABLE IF EXISTS smoke_trunc"  2>/dev/null || true
 }
 trap cleanup EXIT
 
@@ -241,9 +242,12 @@ else
     # SELECT 는 통과
     run_ok    "Phase4: SELECT 허용"       mysql_proxy "SELECT 1"
 
+    # TRUNCATE 차단 검증: 실존 테이블로 "table not found" 오류와 구별
+    mysql_direct "CREATE TABLE IF NOT EXISTS smoke_trunc (id INT PRIMARY KEY)" 2>/dev/null || true
+
     # DROP/TRUNCATE 는 차단
     run_block "Phase4: DROP TABLE 차단"   mysql_proxy "DROP TABLE IF EXISTS nonexistent_smoke"
-    run_block "Phase4: TRUNCATE 차단"     mysql_proxy "TRUNCATE TABLE nonexistent_smoke"
+    run_block "Phase4: TRUNCATE 차단"     mysql_proxy "TRUNCATE TABLE smoke_trunc"
 fi
 
 # ─── Phase 5: 시간대 차단 ─────────────────────────────────────────────────────
@@ -281,8 +285,8 @@ access_control:
     allowed_tables: ["*"]
     allowed_operations: ["SELECT", "INSERT", "UPDATE", "DELETE", "CREATE", "DROP"]
     time_restriction:
-      start: "${ALLOW_START_STR}"
-      end: "${ALLOW_END_STR}"
+      allow: "${ALLOW_START_STR}-${ALLOW_END_STR}"
+      timezone: "UTC"
 sql_rules:
   block_statements: []
   block_patterns: []
