@@ -294,7 +294,7 @@
 3. stopping_ = true 설정 (accept 루프 조기 종료)
 4. tcp::acceptor.close() (포트 해제, 새 연결 즉시 거부)
 5. sessions[*].close() 호출:
-   - 각 세션의 client_socket, server_socket 정상 종료
+   - 각 세션의 client_stream, server_stream 정상 종료
    - 진행 중인 쿼리 처리 완료 대기
    - timeout 적용 (선택, 구현 시 정의)
 6. 모든 세션 종료 대기 (co_await)
@@ -310,6 +310,128 @@
 - timeout 없이 무한 대기 가능 (구현에서 timeout 설정 권장)
 - 진행 중인 트랜잭션은 롤백되지 않음 (MySQL 커넥션 종료 시 자동 롤백)
 - 정책/로그 파일 손상 방지: 마지막 쓰기 flush 필요
+
+---
+
+## 시나리오 9: SSL/TLS 핸드셰이크 흐름
+
+### 입력
+- 클라이언트가 dbgate에 새로운 TCP 연결 시작 (frontend_ssl_enabled=true 또는 backend_ssl_enabled=true)
+
+### 사전 조건
+- ProxyServer::run() 실행 중
+- SSL 설정 파일 로드 완료 (인증서/키/CA 파일 유효)
+- Frontend SSL: cert_path, key_path 유효
+- Backend SSL: ca_path 유효 (optional)
+
+### 주요 컴포넌트
+- `proxy/proxy_server` (SSL context 초기화, Session 생성)
+- `proxy/session` (Frontend accept, Backend connect, TLS 핸드셰이크)
+- `common/async_stream` (TCP/TLS 통합 추상화)
+- `protocol/handshake` (MySQL 핸드셰이크, AsyncStream 사용)
+
+### 출력/결과
+- Frontend SSL: 클라이언트 ↔ dbgate 구간 TLS 보호
+- Backend SSL: dbgate ↔ MySQL 구간 TLS 보호
+- 양 구간 독립적으로 활성화 가능
+- 양쪽 모두 TLS인 경우: 클라이언트 → (TLS) → dbgate → (TLS) → MySQL
+- CLIENT_SSL 비트: 프록시에서 항상 strip (이중 TLS 방지)
+
+#### 단계
+
+**1단계: Frontend SSL (클라이언트 ↔ dbgate)**
+
+1. ProxyServer::run()에서 init_ssl() 호출
+   - frontend_ssl_ctx 초기화 (cert/key 로드)
+   - 로드 실패 시 fail-close: 서버 기동 실패
+
+2. TCP accept: 클라이언트 연결 수신
+   - tcp::acceptor.async_accept(client_socket)
+   - 상태: plain TCP socket
+
+3. ProxyServer가 Session 생성 시:
+   - frontend_ssl_enabled=true이면:
+     - ssl::stream<tcp::socket> 생성 (frontend_ssl_ctx 사용)
+     - AsyncStream으로 래핑
+   - frontend_ssl_enabled=false이면:
+     - tcp::socket을 AsyncStream으로 래핑 (평문 모드)
+
+4. Session::run()에서 TLS 핸드셰이크 (frontend SSL 경우만)
+   - co_await client_stream_.async_handshake(ssl::stream_base::server)
+   - AsyncStream이 TLS 모드면 실제 핸드셰이크 수행
+   - 평문 모드면 no-op (즉시 성공)
+   - fail: ParseError 반환, 세션 종료
+
+**2단계: Backend SSL (dbgate ↔ MySQL)**
+
+1. Session::run()에서 업스트림 MySQL 연결:
+   - tcp::socket client_socket 생성
+   - co_await client_socket.async_connect(server_endpoint)
+
+2. Backend SSL 결정:
+   - backend_ssl_enabled=true이면:
+     - ssl::stream<tcp::socket> 생성 (backend_ssl_ctx 사용)
+     - SSLRequest 패킷 전송 (MySQL 핸드셰이크 전)
+     - ssl::stream::async_handshake(ssl::stream_base::client) 수행
+     - 성공 후 AsyncStream으로 교체
+   - backend_ssl_enabled=false이면:
+     - tcp::socket을 AsyncStream으로 래핑 (평문 모드)
+
+3. Backend TLS 핸드셰이크 (SSL 모드 경우만):
+   - co_await server_stream_.async_handshake(ssl::stream_base::client)
+   - TLS 핸드셰이크 완료
+   - fail: ParseError 반환, 세션 종료
+
+**3단계: MySQL 핸드셰이크 (양쪽 TLS 후)**
+
+1. 이제 client_stream과 server_stream 양쪽 모두 AsyncStream으로 준비됨
+   - 평문 또는 TLS 투명하게 처리
+
+2. HandshakeRelay::relay_handshake() 호출
+   - 참여자: Client, Proxy(client_stream, server_stream), MySQL
+   - 패킷 릴레이: client ↔ proxy ↔ server
+   - CLIENT_SSL 비트 처리:
+     - 서버 greeting의 capability flags에서 CLIENT_SSL 비트 제거
+     - 클라이언트 response의 capability flags에서 CLIENT_SSL 비트 제거
+     - (이중 TLS 방지, 프록시가 이미 TLS 제공)
+
+3. 핸드셰이크 완료:
+   - SessionContext 채우기: db_user, db_name, handshake_done=true
+   - COM_QUERY 루프 시작
+
+#### 관측성 포인트
+- 로그:
+  - Frontend SSL: TLS 악수 완료/실패 기록
+  - Backend SSL: TLS 악수 완료/실패 기록
+  - MySQL 핸드셰이크: 사용자 정보 추출 (기존과 동일)
+- 통계:
+  - 활성 세션 수 (SSL 여부와 무관)
+- 헬스체크:
+  - SSL context 초기화 실패 시 unhealthy 전환
+
+#### 문서화해야 하는 한계/주의점
+
+**SSL 설정 오류 (Fail-Close)**
+- 인증서/키 파일 누락: 서버 기동 실패 (init_ssl() 반환 false → 종료)
+- 인증서 파싱 오류: 서버 기동 실패
+- CA 파일 누락 (backend_ssl_verify=true): 서버 기동 실패
+- 런타임 TLS 핸드셰이크 실패: 세션 종료, 클라이언트에 연결 거부
+
+**Backend SSL 미지원 감지**
+- MySQL 서버가 TLS 미지원인 경우:
+  - SSLRequest 전송 후 서버가 ERR 패킷 반환
+  - 핸드셰이크 실패 → ParseError → 세션 거부 (fail-close)
+
+**CLIENT_SSL 비트 Strip**
+- 목적: 클라이언트가 중복 TLS를 요청하는 것 방지
+- 구현: HandshakeRelay에서 capability flags 조작
+- 결과: 프록시가 이미 TLS를 제공하므로 클라이언트의 추가 TLS 요청 무시
+
+**양쪽 모두 TLS일 때 고려사항**
+- 클라이언트↔프록시: TLS 1.2/1.3 (frontend_ssl_ctx)
+- 프록시↔MySQL: TLS 1.2/1.3 (backend_ssl_ctx)
+- 프로토콜 혼용 가능 (예: Client TLS 1.3, MySQL TLS 1.2)
+- SNI: backend_ssl_ctx에서 sni_hostname 설정 가능 (선택)
 
 ## 코드 참고 경로 (DON-28)
 

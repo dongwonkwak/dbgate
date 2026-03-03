@@ -1,22 +1,23 @@
 #pragma once
 
-#include "policy/policy_engine.hpp"
-#include "policy/policy_loader.hpp"
-#include "logger/structured_logger.hpp"
-#include "stats/stats_collector.hpp"
-#include "stats/uds_server.hpp"
-#include "health/health_check.hpp"
-#include "proxy/session.hpp"
-
+#include <atomic>
 #include <boost/asio/awaitable.hpp>
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/ip/tcp.hpp>
-
-#include <atomic>
+#include <boost/asio/ssl/context.hpp>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <unordered_map>
+
+#include "health/health_check.hpp"
+#include "logger/structured_logger.hpp"
+#include "policy/policy_engine.hpp"
+#include "policy/policy_loader.hpp"
+#include "proxy/session.hpp"
+#include "stats/stats_collector.hpp"
+#include "stats/uds_server.hpp"
 
 // ---------------------------------------------------------------------------
 // ProxyConfig
@@ -34,23 +35,43 @@
 //   log_path              : 로그 출력 파일 경로
 //   log_level             : 로그 레벨 문자열 ("trace","debug","info","warn","error")
 //   health_check_port     : Health Check HTTP 서버 포트
+//   frontend_ssl_enabled  : Frontend TLS 활성화 여부
+//   frontend_ssl_cert_path: Frontend TLS 인증서 경로 (PEM)
+//   frontend_ssl_key_path : Frontend TLS 개인키 경로 (PEM)
+//   backend_ssl_enabled   : Backend TLS 활성화 여부
+//   backend_ssl_ca_path   : Backend CA 인증서 경로 (서버 검증용)
+//   backend_ssl_verify    : Backend 서버 인증서 검증 여부
+//   upstream_ssl_sni      : Backend SNI 호스트명 (빈 문자열 = 미사용)
 // ---------------------------------------------------------------------------
 struct ProxyConfig {
-    std::string   listen_address{};
+    std::string listen_address{};
     std::uint16_t listen_port{0};
 
-    std::string   upstream_address{};
+    std::string upstream_address{};
     std::uint16_t upstream_port{0};
 
     std::uint32_t max_connections{0};
     std::uint32_t connection_timeout_sec{0};
 
-    std::string   policy_path{};
-    std::string   uds_socket_path{};
-    std::string   log_path{};
-    std::string   log_level{};
+    std::string policy_path{};
+    std::string uds_socket_path{};
+    std::string log_path{};
+    std::string log_level{};
 
     std::uint16_t health_check_port{0};
+
+    // --- SSL/TLS 설정 (DON-31) ---
+
+    // 클라이언트 -> 프록시 (frontend) TLS
+    bool frontend_ssl_enabled{false};
+    std::string frontend_ssl_cert_path{};  // PEM 인증서
+    std::string frontend_ssl_key_path{};   // PEM 개인키
+
+    // 프록시 -> MySQL (backend) TLS
+    bool backend_ssl_enabled{false};
+    std::string backend_ssl_ca_path{};  // MySQL 서버 CA 인증서 (검증용)
+    bool backend_ssl_verify{true};      // 서버 인증서 검증 여부
+    std::string upstream_ssl_sni{};     // SNI 호스트명 (빈 문자열 = 미사용)
 };
 
 // ---------------------------------------------------------------------------
@@ -63,6 +84,10 @@ struct ProxyConfig {
 //
 //   Graceful Shutdown:
 //     stop() 호출 시 새 연결을 거부하고 기존 세션이 완료되면 io_context 를 중단한다.
+//
+//   SSL 지원:
+//     - Frontend SSL: accept 후 ssl::stream으로 TLS 핸드셰이크 → AsyncStream 생성
+//     - Backend SSL: ssl::context 포인터를 Session에 전달, Session에서 connect 후 TLS 업그레이드
 // ---------------------------------------------------------------------------
 class ProxyServer {
 public:
@@ -75,10 +100,10 @@ public:
     ~ProxyServer() = default;
 
     // 복사/이동 금지
-    ProxyServer(const ProxyServer&)            = delete;
+    ProxyServer(const ProxyServer&) = delete;
     ProxyServer& operator=(const ProxyServer&) = delete;
-    ProxyServer(ProxyServer&&)                 = delete;
-    ProxyServer& operator=(ProxyServer&&)      = delete;
+    ProxyServer(ProxyServer&&) = delete;
+    ProxyServer& operator=(ProxyServer&&) = delete;
 
     // -----------------------------------------------------------------------
     // run
@@ -99,25 +124,31 @@ public:
 
 private:
     ProxyConfig config_;
-    bool        stopping_{false};
+    bool stopping_{false};
 
-    std::shared_ptr<PolicyEngine>    policy_engine_{};
+    std::shared_ptr<PolicyEngine> policy_engine_{};
     std::shared_ptr<StructuredLogger> logger_{};
-    std::shared_ptr<StatsCollector>  stats_{};
-    std::unique_ptr<UdsServer>       uds_server_{};
-    std::unique_ptr<HealthCheck>     health_check_{};
+    std::shared_ptr<StatsCollector> stats_{};
+    std::unique_ptr<UdsServer> uds_server_{};
+    std::unique_ptr<HealthCheck> health_check_{};
 
-    std::atomic<std::uint64_t>       next_session_id_{1};
+    std::atomic<std::uint64_t> next_session_id_{1};
     std::unordered_map<std::uint64_t, std::shared_ptr<Session>> sessions_{};
 
-    boost::asio::io_context*         io_ctx_{nullptr};
+    boost::asio::io_context* io_ctx_{nullptr};
+
+    // SSL/TLS context
+    //   optional: SSL이 비활성화된 경우 생성하지 않음
+    std::optional<boost::asio::ssl::context> frontend_ssl_ctx_{};
+    std::optional<boost::asio::ssl::context> backend_ssl_ctx_{};
 
     // policy_reload: SIGHUP 핸들러에서 호출
-    //   PolicyLoader::load() → 성공 시 policy_engine_->reload()
-    //   실패 시 기존 정책 유지 + 경고 로그
     void policy_reload();
 
+    // init_ssl: SSL context 초기화 (run() 에서 호출)
+    //   SSL 설정 오류 시 false 반환 (fail-close: 서버 기동 실패)
+    [[nodiscard]] bool init_ssl();
+
     // accept_loop: TCP Accept 루프 코루틴
-    //   listen_ep : 리슨 엔드포인트 (값으로 받아 코루틴 프레임에 안전하게 보관)
     boost::asio::awaitable<void> accept_loop(boost::asio::ip::tcp::endpoint listen_ep);
 };
