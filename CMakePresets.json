@@ -72,8 +72,8 @@
       "cacheVariables": {
         "CMAKE_CXX_COMPILER": "clang++-19",
         "CMAKE_BUILD_TYPE": "Debug",
-        "CMAKE_CXX_FLAGS": "-fsanitize=fuzzer,address -fno-omit-frame-pointer -g",
-        "CMAKE_EXE_LINKER_FLAGS": "-fsanitize=fuzzer,address",
+        "CMAKE_CXX_FLAGS": "-fsanitize=fuzzer-no-link,address -fno-omit-frame-pointer -g",
+        "CMAKE_EXE_LINKER_FLAGS": "-fsanitize=address",
         "DBGATE_ENABLE_FUZZING": "ON"
       }
     }

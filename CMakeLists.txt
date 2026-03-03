@@ -173,6 +173,7 @@ add_executable(fuzz_mysql_packet
     src/protocol/command.cpp
 )
 target_include_directories(fuzz_mysql_packet PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_options(fuzz_mysql_packet PRIVATE -fsanitize=fuzzer)
 
 # fuzz_sql_parser — parser layer (spdlog for InjectionDetector)
 add_executable(fuzz_sql_parser
@@ -182,6 +183,7 @@ add_executable(fuzz_sql_parser
     src/parser/procedure_detector.cpp
 )
 target_include_directories(fuzz_sql_parser PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_options(fuzz_sql_parser PRIVATE -fsanitize=fuzzer)
 target_link_libraries(fuzz_sql_parser PRIVATE spdlog::spdlog)
 target_compile_definitions(fuzz_sql_parser PRIVATE SPDLOG_ACTIVE_LEVEL=SPDLOG_LEVEL_OFF)
 
@@ -194,6 +196,7 @@ add_executable(fuzz_policy_engine
     src/policy/policy_engine.cpp
 )
 target_include_directories(fuzz_policy_engine PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_options(fuzz_policy_engine PRIVATE -fsanitize=fuzzer)
 target_link_libraries(fuzz_policy_engine PRIVATE spdlog::spdlog)
 target_compile_definitions(fuzz_policy_engine PRIVATE SPDLOG_ACTIVE_LEVEL=SPDLOG_LEVEL_OFF)
 
