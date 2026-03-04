@@ -41,6 +41,7 @@
 #include <fstream>
 #include <iomanip>
 #include <regex>
+#include <span>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -64,7 +65,10 @@ namespace {
 #if defined(_WIN32)
     gmtime_s(&utc_tm, &time_t_now);
 #else
-    gmtime_r(&time_t_now, &utc_tm);
+    if (gmtime_r(&time_t_now, &utc_tm) == nullptr) {
+        spdlog::warn("policy_version_store: gmtime_r failed, using empty timestamp");
+        return {};
+    }
 #endif
 
     // YYYYMMDDTHHMMSSz 형식
@@ -85,14 +89,17 @@ struct SnapshotFileParts {
 
 [[nodiscard]] SnapshotFileParts parse_snapshot_filename(const std::string& stem) {
     // 파일명에서 확장자를 제거한 stem: "v1_20260304T103000Z"
-    static const std::regex kPattern(R"(^v(\d+)_(.+)$)");
+    static const std::regex pattern(R"(^v(\d+)_(.+)$)");
     std::smatch m;
-    if (!std::regex_match(stem, m, kPattern)) {
+    if (!std::regex_match(stem, m, pattern)) {
         return {};
     }
     try {
         const std::uint64_t ver = std::stoull(m[1].str());
-        return {ver, m[2].str()};
+        SnapshotFileParts parts;
+        parts.version = ver;
+        parts.timestamp = m[2].str();
+        return parts;
     } catch (...) {
         return {};
     }
@@ -132,7 +139,7 @@ PolicyVersionStore::PolicyVersionStore(const std::filesystem::path& config_dir,
         if (!entry.is_regular_file()) {
             continue;
         }
-        const auto path = entry.path();
+        const auto& path = entry.path();
         if (path.extension() != ".yaml") {
             continue;
         }
@@ -161,10 +168,9 @@ PolicyVersionStore::PolicyVersionStore(const std::filesystem::path& config_dir,
     }
 
     // 버전 번호 오름차순 정렬 (오래된 것 먼저)
-    std::sort(
-        found.begin(), found.end(), [](const PolicyVersionMeta& a, const PolicyVersionMeta& b) {
-            return a.version < b.version;
-        });
+    std::ranges::sort(found, [](const PolicyVersionMeta& a, const PolicyVersionMeta& b) {
+        return a.version < b.version;
+    });
 
     versions_ = std::move(found);
 
@@ -191,7 +197,7 @@ PolicyVersionStore::PolicyVersionStore(const std::filesystem::path& config_dir,
 // ---------------------------------------------------------------------------
 std::expected<PolicyVersionMeta, std::string> PolicyVersionStore::save_snapshot(
     const PolicyConfig& config, const std::filesystem::path& source_path) {
-    std::lock_guard<std::mutex> lock(mutex_);
+    const std::lock_guard<std::mutex> lock(mutex_);
 
     // source_path 존재 확인
     std::error_code ec;
@@ -262,13 +268,12 @@ std::expected<PolicyVersionMeta, std::string> PolicyVersionStore::save_snapshot(
 // ---------------------------------------------------------------------------
 std::expected<PolicyConfig, std::string> PolicyVersionStore::load_snapshot(
     std::uint64_t version) const {
-    std::lock_guard<std::mutex> lock(mutex_);
+    const std::lock_guard<std::mutex> lock(mutex_);
 
     // 버전 검색
-    const auto it =
-        std::find_if(versions_.begin(), versions_.end(), [version](const PolicyVersionMeta& m) {
-            return m.version == version;
-        });
+    const auto it = std::ranges::find_if(versions_, [version](const PolicyVersionMeta& m) {
+        return m.version == version;
+    });
 
     if (it == versions_.end()) {
         const std::string err = fmt::format("policy_version_store: version {} not found", version);
@@ -307,14 +312,13 @@ std::expected<PolicyConfig, std::string> PolicyVersionStore::load_snapshot(
 // versions_ 복사본을 최신 버전 먼저 정렬하여 반환.
 // ---------------------------------------------------------------------------
 std::vector<PolicyVersionMeta> PolicyVersionStore::list_versions() const {
-    std::lock_guard<std::mutex> lock(mutex_);
+    const std::lock_guard<std::mutex> lock(mutex_);
 
     // 내부 versions_ 는 오래된 것 먼저 — 복사 후 역순 정렬
     std::vector<PolicyVersionMeta> result = versions_;
-    std::sort(
-        result.begin(), result.end(), [](const PolicyVersionMeta& a, const PolicyVersionMeta& b) {
-            return a.version > b.version;  // 최신 먼저
-        });
+    std::ranges::sort(result, [](const PolicyVersionMeta& a, const PolicyVersionMeta& b) {
+        return a.version > b.version;  // 최신 먼저
+    });
     return result;
 }
 
@@ -325,7 +329,7 @@ std::vector<PolicyVersionMeta> PolicyVersionStore::list_versions() const {
 // versions_ 가 비어있으면 0 반환.
 // ---------------------------------------------------------------------------
 std::uint64_t PolicyVersionStore::current_version() const {
-    std::lock_guard<std::mutex> lock(mutex_);
+    const std::lock_guard<std::mutex> lock(mutex_);
     if (versions_.empty()) {
         return 0;
     }
@@ -381,7 +385,7 @@ std::string PolicyVersionStore::compute_hash(const std::filesystem::path& file_p
     };
     using EvpCtxPtr = std::unique_ptr<EVP_MD_CTX, EvpCtxDeleter>;
 
-    EvpCtxPtr ctx(EVP_MD_CTX_new());
+    const EvpCtxPtr ctx(EVP_MD_CTX_new());
     if (!ctx) {
         spdlog::warn("policy_version_store: EVP_MD_CTX_new failed");
         return {};
@@ -400,10 +404,10 @@ std::string PolicyVersionStore::compute_hash(const std::filesystem::path& file_p
     }
 
     // 4KB 청크로 읽어 해시 업데이트
-    constexpr std::size_t kChunkSize = 4096;
-    std::array<char, kChunkSize> buf{};
+    constexpr std::size_t chunk_size = 4096;
+    std::array<char, chunk_size> buf{};
     while (file) {
-        file.read(buf.data(), static_cast<std::streamsize>(kChunkSize));
+        file.read(buf.data(), static_cast<std::streamsize>(chunk_size));
         const auto read_count = static_cast<std::size_t>(file.gcount());
         if (read_count == 0) {
             break;
@@ -431,8 +435,8 @@ std::string PolicyVersionStore::compute_hash(const std::filesystem::path& file_p
     // hex 문자열 변환
     std::ostringstream oss;
     oss << std::hex << std::setfill('0');
-    for (unsigned int i = 0; i < digest_len; ++i) {
-        oss << std::setw(2) << static_cast<unsigned int>(digest[i]);
+    for (const unsigned char byte : std::span<const unsigned char>{digest.data(), digest_len}) {
+        oss << std::setw(2) << static_cast<unsigned int>(byte);
     }
     return oss.str();
 }

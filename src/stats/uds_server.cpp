@@ -33,12 +33,12 @@
 #include <boost/asio/detached.hpp>
 #include <boost/asio/dispatch.hpp>
 #include <boost/asio/read.hpp>
-#include <boost/asio/this_coro.hpp>
 #include <boost/asio/write.hpp>
 #include <chrono>
 #include <cstdint>
 #include <ctime>
 #include <iomanip>
+#include <limits>
 #include <optional>
 #include <sstream>
 #include <string>
@@ -157,7 +157,10 @@ std::string current_utc_iso8601() {
 #if defined(_WIN32)
     gmtime_s(&utc_tm, &time_t_now);
 #else
-    gmtime_r(&time_t_now, &utc_tm);
+    if (gmtime_r(&time_t_now, &utc_tm) == nullptr) {
+        spdlog::warn("[uds_server] current_utc_iso8601: gmtime_r failed, returning epoch");
+        return "1970-01-01T00:00:00Z";
+    }
 #endif
 
     std::ostringstream oss;
@@ -165,35 +168,36 @@ std::string current_utc_iso8601() {
     return oss.str();
 }
 
+bool is_json_whitespace(char c) {
+    return c == ' ' || c == '\t' || c == '\n' || c == '\r';
+}
+
 // ---------------------------------------------------------------------------
-// parse_uint64_field
-//   JSON 문자열에서 특정 키의 uint64_t 값을 추출한다.
-//   "key": <number> 패턴만 지원. 파싱 실패 시 std::nullopt 반환.
+// find_json_string_end
+//   json[start_quote]가 '"'일 때, 문자열 리터럴의 닫는 '"' 인덱스를 반환한다.
+//   이스케이프(\\, \")를 고려한다. 실패 시 std::string_view::npos 반환.
 // ---------------------------------------------------------------------------
-std::optional<std::uint64_t> parse_uint64_field(std::string_view json, std::string_view key) {
-    const std::string search_key = fmt::format("\"{}\":", key);
-    const auto pos = json.find(search_key);
-    if (pos == std::string_view::npos) {
-        return std::nullopt;
+std::string_view::size_type find_json_string_end(std::string_view json,
+                                                 std::string_view::size_type start_quote) {
+    if (start_quote >= json.size() || json[start_quote] != '"') {
+        return std::string_view::npos;
     }
-    auto start = pos + search_key.size();
-    // 공백 건너뜀
-    while (start < json.size() && (json[start] == ' ' || json[start] == '\t')) {
-        ++start;
+    bool escaped = false;
+    for (std::string_view::size_type i = start_quote + 1; i < json.size(); ++i) {
+        const char c = json[i];
+        if (escaped) {
+            escaped = false;
+            continue;
+        }
+        if (c == '\\') {
+            escaped = true;
+            continue;
+        }
+        if (c == '"') {
+            return i;
+        }
     }
-    if (start >= json.size()) {
-        return std::nullopt;
-    }
-    // 숫자 파싱
-    if (json[start] < '0' || json[start] > '9') {
-        return std::nullopt;
-    }
-    std::uint64_t value = 0;
-    while (start < json.size() && json[start] >= '0' && json[start] <= '9') {
-        value = value * 10 + static_cast<std::uint64_t>(json[start] - '0');
-        ++start;
-    }
-    return value;
+    return std::string_view::npos;
 }
 
 // ---------------------------------------------------------------------------
@@ -371,6 +375,167 @@ std::string_view::size_type find_json_object_end(std::string_view json,
 }
 
 // ---------------------------------------------------------------------------
+// parse_top_level_uint64_field
+//   JSON object 문자열의 "최상위" 키에서 uint64 값을 추출한다.
+//   문자열 리터럴 내부의 "key": 패턴은 무시한다.
+//   파싱 실패 또는 값 범위 초과 시 std::nullopt 반환.
+// ---------------------------------------------------------------------------
+std::optional<std::uint64_t> parse_top_level_uint64_field(std::string_view object_json,
+                                                          std::string_view field_key) {
+    if (object_json.empty() || object_json.front() != '{') {
+        return std::nullopt;
+    }
+
+    std::size_t depth = 0;
+    for (std::string_view::size_type i = 0; i < object_json.size();) {
+        const char c = object_json[i];
+        if (c == '"') {
+            const auto string_end = find_json_string_end(object_json, i);
+            if (string_end == std::string_view::npos) {
+                return std::nullopt;
+            }
+
+            // depth == 1 이고 문자열 뒤에 ':'가 오면 key 위치다.
+            if (depth == 1) {
+                auto cursor = string_end + 1;
+                while (cursor < object_json.size() && is_json_whitespace(object_json[cursor])) {
+                    ++cursor;
+                }
+                if (cursor < object_json.size() && object_json[cursor] == ':') {
+                    const auto key =
+                        object_json.substr(i + 1, static_cast<std::size_t>(string_end - i - 1));
+                    if (key == field_key) {
+                        ++cursor;  // ':'
+                        while (cursor < object_json.size() &&
+                               is_json_whitespace(object_json[cursor])) {
+                            ++cursor;
+                        }
+                        if (cursor >= object_json.size() || object_json[cursor] < '0' ||
+                            object_json[cursor] > '9') {
+                            return std::nullopt;
+                        }
+
+                        std::uint64_t value = 0;
+                        while (cursor < object_json.size() && object_json[cursor] >= '0' &&
+                               object_json[cursor] <= '9') {
+                            const auto digit =
+                                static_cast<std::uint64_t>(object_json[cursor] - '0');
+                            if (value > (std::numeric_limits<std::uint64_t>::max() - digit) / 10U) {
+                                return std::nullopt;
+                            }
+                            value = value * 10U + digit;
+                            ++cursor;
+                        }
+
+                        while (cursor < object_json.size() &&
+                               is_json_whitespace(object_json[cursor])) {
+                            ++cursor;
+                        }
+                        if (cursor < object_json.size() && object_json[cursor] != ',' &&
+                            object_json[cursor] != '}') {
+                            return std::nullopt;
+                        }
+                        return value;
+                    }
+                }
+            }
+
+            i = string_end + 1;
+            continue;
+        }
+
+        if (c == '{') {
+            ++depth;
+            ++i;
+            continue;
+        }
+        if (c == '}') {
+            if (depth == 0) {
+                return std::nullopt;
+            }
+            --depth;
+            ++i;
+            continue;
+        }
+
+        ++i;
+    }
+
+    return std::nullopt;
+}
+
+// ---------------------------------------------------------------------------
+// extract_top_level_object_field
+//   JSON object 문자열의 최상위에서 field_key에 해당하는 object 값을 추출한다.
+//   문자열 리터럴 내부의 "field_key": 패턴은 무시한다.
+// ---------------------------------------------------------------------------
+std::optional<std::string_view> extract_top_level_object_field(std::string_view object_json,
+                                                               std::string_view field_key) {
+    if (object_json.empty() || object_json.front() != '{') {
+        return std::nullopt;
+    }
+
+    std::size_t depth = 0;
+    for (std::string_view::size_type i = 0; i < object_json.size();) {
+        const char c = object_json[i];
+        if (c == '"') {
+            const auto string_end = find_json_string_end(object_json, i);
+            if (string_end == std::string_view::npos) {
+                return std::nullopt;
+            }
+
+            if (depth == 1) {
+                auto cursor = string_end + 1;
+                while (cursor < object_json.size() && is_json_whitespace(object_json[cursor])) {
+                    ++cursor;
+                }
+                if (cursor < object_json.size() && object_json[cursor] == ':') {
+                    const auto key =
+                        object_json.substr(i + 1, static_cast<std::size_t>(string_end - i - 1));
+                    if (key == field_key) {
+                        ++cursor;  // ':'
+                        while (cursor < object_json.size() &&
+                               is_json_whitespace(object_json[cursor])) {
+                            ++cursor;
+                        }
+                        if (cursor >= object_json.size() || object_json[cursor] != '{') {
+                            return std::nullopt;
+                        }
+                        const auto end = find_json_object_end(object_json, cursor);
+                        if (end == std::string_view::npos) {
+                            return std::nullopt;
+                        }
+                        return object_json.substr(
+                            cursor, static_cast<std::size_t>(end - cursor + 1));
+                    }
+                }
+            }
+
+            i = string_end + 1;
+            continue;
+        }
+
+        if (c == '{') {
+            ++depth;
+            ++i;
+            continue;
+        }
+        if (c == '}') {
+            if (depth == 0) {
+                return std::nullopt;
+            }
+            --depth;
+            ++i;
+            continue;
+        }
+
+        ++i;
+    }
+
+    return std::nullopt;
+}
+
+// ---------------------------------------------------------------------------
 // parse_payload_string_field
 //   요청 JSON 에서 payload 오브젝트 내 특정 문자열 필드를 추출한다.
 //   {"command":"...", "payload": {"key": "value", ...}} 패턴을 처리한다.
@@ -378,26 +543,25 @@ std::string_view::size_type find_json_object_end(std::string_view json,
 // ---------------------------------------------------------------------------
 std::optional<std::string> parse_payload_string_field(std::string_view json,
                                                       std::string_view field_key) {
-    constexpr std::string_view payload_key = "\"payload\":";
-    const auto payload_pos = json.find(payload_key);
-    if (payload_pos == std::string_view::npos) {
+    const auto payload_json = extract_top_level_object_field(json, "payload");
+    if (!payload_json) {
         return std::nullopt;
     }
-    auto start = payload_pos + payload_key.size();
-    // 공백 건너뜀
-    while (start < json.size() && json[start] == ' ') {
-        ++start;
-    }
-    if (start >= json.size() || json[start] != '{') {
+    return parse_string_field(*payload_json, field_key);
+}
+
+// ---------------------------------------------------------------------------
+// parse_payload_uint64_field
+//   요청 JSON 에서 payload 오브젝트 "최상위"의 uint64 필드를 추출한다.
+//   문자열 내부/중첩 오브젝트의 "key": 패턴은 무시한다.
+// ---------------------------------------------------------------------------
+std::optional<std::uint64_t> parse_payload_uint64_field(std::string_view json,
+                                                        std::string_view field_key) {
+    const auto payload_json = extract_top_level_object_field(json, "payload");
+    if (!payload_json) {
         return std::nullopt;
     }
-    // payload 오브젝트 끝 찾기 (문자열 리터럴 내부 중괄호 무시)
-    const auto end = find_json_object_end(json, start);
-    if (end == std::string_view::npos) {
-        return std::nullopt;
-    }
-    const auto payload_json = json.substr(start, end - start + 1);
-    return parse_string_field(payload_json, field_key);
+    return parse_top_level_uint64_field(*payload_json, field_key);
 }
 
 // ---------------------------------------------------------------------------
@@ -527,14 +691,14 @@ UdsServer::UdsServer(const std::filesystem::path& socket_path,
                      std::shared_ptr<PolicyEngine> policy_engine,
                      std::shared_ptr<SqlParser> sql_parser,
                      std::shared_ptr<PolicyVersionStore> version_store,
-                     const std::filesystem::path& policy_config_path,
+                     std::filesystem::path policy_config_path,
                      asio::io_context& ioc)
     : socket_path_{socket_path},
       stats_{std::move(stats)},
       policy_engine_{std::move(policy_engine)},
       sql_parser_{std::move(sql_parser)},
       version_store_{std::move(version_store)},
-      policy_config_path_{policy_config_path},
+      policy_config_path_{std::move(policy_config_path)},
       ioc_{ioc},
       acceptor_{ioc} {}
 
@@ -660,7 +824,7 @@ asio::awaitable<void> UdsServer::run() {
 //   오류 발생 시 로그 후 co_return (데이터패스 비전파).
 // ---------------------------------------------------------------------------
 asio::awaitable<void> UdsServer::handle_client(asio::local::stream_protocol::socket socket) {
-    const auto io_executor = co_await asio::this_coro::executor;
+    const auto io_executor = socket.get_executor();
 
     // ── 요청 헤더 읽기 ──────────────────────────────────────────────────
     std::array<uint8_t, 4> req_hdr{};
@@ -916,11 +1080,8 @@ std::string UdsServer::handle_policy_rollback(std::string_view request_json) {
 
     // ── payload 오브젝트 내 target_version 파싱 ──────────────────────────
     // 프로토콜: {"command":"policy_rollback","version":1,"payload":{"target_version":3}}
-    // target_version 은 숫자이므로 parse_uint64_field 로 payload 내부에서 직접 탐색
-    //
-    // 방법: 전체 JSON 에서 "target_version": <숫자> 패턴을 찾는다.
-    // (payload 중첩을 고려하여 전체 JSON 에서 탐색하면 충분함)
-    const auto target_version_opt = parse_uint64_field(request_json, "target_version");
+    // payload 최상위 키만 허용한다 (문자열 리터럴/중첩 오브젝트 내 패턴 무시).
+    const auto target_version_opt = parse_payload_uint64_field(request_json, "target_version");
     if (!target_version_opt) {
         spdlog::warn("[uds_server] policy_rollback: missing target_version in payload");
         return make_error_response("missing required field: target_version");

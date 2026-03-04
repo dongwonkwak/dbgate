@@ -994,6 +994,136 @@ TEST_F(UdsPolicyVersioningTest, PolicyRollback_MissingTargetVersion_ReturnsError
 }
 
 // ---------------------------------------------------------------------------
+// PolicyRollback_TargetVersionOutsidePayload_IsIgnored
+//   payload 바깥의 target_version 필드는 무시되어야 하며,
+//   payload 내 target_version 이 없으면 오류를 반환해야 한다.
+// ---------------------------------------------------------------------------
+TEST_F(UdsPolicyVersioningTest, PolicyRollback_TargetVersionOutsidePayload_IsIgnored) {
+    start_server();
+    ASSERT_TRUE(wait_for_socket()) << "UDS socket not created within 2s";
+
+    UdsSyncClient client;
+    ASSERT_NO_THROW(client.connect(socket_path_));
+
+    client.send(R"({"command":"policy_rollback","version":1,"target_version":1,"payload":{}})");
+
+    const std::string resp = client.recv();
+    ASSERT_FALSE(resp.empty()) << "policy_rollback must return a non-empty response";
+
+    EXPECT_NE(resp.find(R"("ok":false)"), std::string::npos)
+        << "target_version outside payload must be ignored. Got: " << resp;
+    EXPECT_NE(resp.find("missing required field: target_version"), std::string::npos)
+        << "Error should indicate missing payload.target_version. Got: " << resp;
+}
+
+// ---------------------------------------------------------------------------
+// PolicyRollback_TargetVersionStringLiteral_DoesNotOverridePayloadField
+//   payload 문자열 리터럴에 포함된 \"target_version\":N 패턴이
+//   실제 payload.target_version 값을 덮어쓰면 안 된다.
+// ---------------------------------------------------------------------------
+TEST_F(UdsPolicyVersioningTest, PolicyRollback_TargetVersionStringLiteral_DoesNotOverridePayloadField) {
+    const auto tmp_policy_path = version_dir_ / "rollback_literal_policy.yaml";
+    {
+        std::ofstream f(tmp_policy_path);
+        f << "version: 1\n";
+        f << "access_control:\n";
+        f << "  - user: rollback_user\n";
+        f << "    source_ip_cidr: 0.0.0.0/0\n";
+        f << "    allowed_operations: [SELECT]\n";
+        f << "    allowed_tables: [\"*\"]\n";
+        f << "sql_rules:\n";
+        f << "  block_patterns:\n";
+        f << "    - \"UNION\\\\s+SELECT\"\n";
+    }
+
+    auto cfg = make_explain_policy_config();
+    const auto save_v1 = version_store_->save_snapshot(*cfg, tmp_policy_path);
+    ASSERT_TRUE(static_cast<bool>(save_v1)) << "save_snapshot(v1) must succeed";
+    const auto save_v2 = version_store_->save_snapshot(*cfg, tmp_policy_path);
+    ASSERT_TRUE(static_cast<bool>(save_v2)) << "save_snapshot(v2) must succeed";
+
+    const std::uint64_t injected_version = save_v1->version;
+    const std::uint64_t target_version = save_v2->version;
+    ASSERT_NE(injected_version, target_version);
+
+    policy_engine_->reload(cfg, 99U);
+    ASSERT_EQ(policy_engine_->current_version(), 99U);
+
+    start_server();
+    ASSERT_TRUE(wait_for_socket()) << "UDS socket not created within 2s";
+
+    UdsSyncClient client;
+    ASSERT_NO_THROW(client.connect(socket_path_));
+
+    const std::string request =
+        R"({"command":"policy_rollback","version":1,"payload":{"note":"\"target_version\":)" +
+        std::to_string(injected_version) + R"(","target_version":)" +
+        std::to_string(target_version) + R"(}})";
+    client.send(request);
+
+    const std::string resp = client.recv();
+    ASSERT_FALSE(resp.empty()) << "policy_rollback must return a non-empty response";
+
+    EXPECT_NE(resp.find(R"("ok":true)"), std::string::npos)
+        << "rollback should succeed with payload.target_version. Got: " << resp;
+
+    const std::string expected_rolled_back = "\"rolled_back_to\":" + std::to_string(target_version);
+    EXPECT_NE(resp.find(expected_rolled_back), std::string::npos)
+        << "response must use payload.target_version, not string literal match. Got: " << resp;
+    EXPECT_EQ(policy_engine_->current_version(), target_version)
+        << "policy_engine must roll back to payload.target_version";
+}
+
+// ---------------------------------------------------------------------------
+// PolicyRollback_TargetVersionOverflow_ReturnsErrorAndKeepsCurrentPolicy
+//   uint64 범위를 넘는 target_version 입력은 거부되어야 하며,
+//   현재 정책 버전이 변경되면 안 된다.
+// ---------------------------------------------------------------------------
+TEST_F(UdsPolicyVersioningTest, PolicyRollback_TargetVersionOverflow_ReturnsErrorAndKeepsCurrentPolicy) {
+    const auto tmp_policy_path = version_dir_ / "rollback_overflow_policy.yaml";
+    {
+        std::ofstream f(tmp_policy_path);
+        f << "version: 1\n";
+        f << "access_control:\n";
+        f << "  - user: rollback_user\n";
+        f << "    source_ip_cidr: 0.0.0.0/0\n";
+        f << "    allowed_operations: [SELECT]\n";
+        f << "    allowed_tables: [\"*\"]\n";
+        f << "sql_rules:\n";
+        f << "  block_patterns:\n";
+        f << "    - \"UNION\\\\s+SELECT\"\n";
+    }
+
+    auto cfg = make_explain_policy_config();
+    const auto save_v1 = version_store_->save_snapshot(*cfg, tmp_policy_path);
+    ASSERT_TRUE(static_cast<bool>(save_v1)) << "save_snapshot(v1) must succeed";
+    ASSERT_EQ(save_v1->version, 1U);
+
+    const std::uint64_t before_version = 99U;
+    policy_engine_->reload(cfg, before_version);
+    ASSERT_EQ(policy_engine_->current_version(), before_version);
+
+    start_server();
+    ASSERT_TRUE(wait_for_socket()) << "UDS socket not created within 2s";
+
+    UdsSyncClient client;
+    ASSERT_NO_THROW(client.connect(socket_path_));
+
+    // UINT64_MAX + 1: 취약한 누적 파서는 0으로 wrap 된다.
+    // UINT64_MAX + 2: 취약한 누적 파서는 1로 wrap 되어, v1이 있으면 잘못된 롤백이 발생할 수 있다.
+    client.send(
+        R"({"command":"policy_rollback","version":1,"payload":{"target_version":18446744073709551617}})");
+
+    const std::string resp = client.recv();
+    ASSERT_FALSE(resp.empty()) << "policy_rollback must return a non-empty response";
+
+    EXPECT_NE(resp.find(R"("ok":false)"), std::string::npos)
+        << "overflow target_version must be rejected. Got: " << resp;
+    EXPECT_EQ(policy_engine_->current_version(), before_version)
+        << "current policy version must stay unchanged on overflow input";
+}
+
+// ---------------------------------------------------------------------------
 // PolicyReload_WithoutVersionStore_ReturnsNotImplemented (DON-50)
 //   version_store 없이 생성된 UdsServer 에서 policy_reload 커맨드는
 //   not-implemented 응답을 반환해야 한다.

@@ -87,7 +87,7 @@ public:
               std::shared_ptr<PolicyEngine> policy_engine,
               std::shared_ptr<SqlParser> sql_parser,
               std::shared_ptr<PolicyVersionStore> version_store,
-              const std::filesystem::path& policy_config_path,
+              std::filesystem::path policy_config_path,
               asio::io_context& ioc);
 
     ~UdsServer();
