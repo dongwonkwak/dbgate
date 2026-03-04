@@ -1,0 +1,34 @@
+{{if .Error}}
+<div class="error-msg">
+    <p>Failed to fetch statistics: {{.Error}}</p>
+    <p><small>Retrying automatically...</small></p>
+</div>
+{{else}}
+<div class="stats-grid">
+    <article class="stat-card">
+        <h3>QPS</h3>
+        <div class="value">{{fmtFloat .Stats.QPS}}</div>
+    </article>
+    <article class="stat-card">
+        <h3>Block Rate</h3>
+        <div class="value">{{fmtPct .Stats.BlockRate}}</div>
+    </article>
+    <article class="stat-card">
+        <h3>Active Sessions</h3>
+        <div class="value">{{fmtInt .Stats.ActiveSessions}}</div>
+    </article>
+    <article class="stat-card">
+        <h3>Total Queries</h3>
+        <div class="value">{{fmtInt .Stats.TotalQueries}}</div>
+    </article>
+    <article class="stat-card">
+        <h3>Blocked Queries</h3>
+        <div class="value">{{fmtInt .Stats.BlockedQueries}}</div>
+    </article>
+    <article class="stat-card">
+        <h3>Total Connections</h3>
+        <div class="value">{{fmtInt .Stats.TotalConnections}}</div>
+    </article>
+</div>
+<p><small>Last updated: {{fmtTime .Stats.CapturedAt}}</small></p>
+{{end}}

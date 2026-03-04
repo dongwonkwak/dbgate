@@ -19,6 +19,7 @@ RUN go mod download
 # Copy source and build
 COPY tools/ ./
 RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o /out/dbgate-cli ./cmd/dbgate-cli
+RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o /out/dbgate-dashboard ./cmd/dbgate-dashboard
 
 # ---------------------------------------------------------------------------
 # Stage 2: Minimal runtime
@@ -26,5 +27,6 @@ RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o /out/dbgate-cli ./cmd/dbgate-cli
 FROM gcr.io/distroless/static-debian12:nonroot
 
 COPY --from=builder /out/dbgate-cli /usr/local/bin/dbgate-cli
+COPY --from=builder /out/dbgate-dashboard /usr/local/bin/dbgate-dashboard
 
 ENTRYPOINT ["dbgate-cli"]

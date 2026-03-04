@@ -1,0 +1,38 @@
+{{define "content"}}
+<section>
+    <h2>Statistics</h2>
+    <div id="stats-container"
+         hx-get="/api/stats"
+         hx-trigger="every 2s"
+         hx-swap="innerHTML"
+         hx-indicator="#loading">
+        {{template "templates/partials/stats.html" .}}
+    </div>
+</section>
+
+<section>
+    <h2>QPS History</h2>
+    <article>
+        <div class="chart-container">
+            <canvas id="qps-chart"></canvas>
+        </div>
+        <div id="chart-data"
+             hx-get="/api/chart-data"
+             hx-trigger="every 2s"
+             hx-swap="innerHTML"
+             style="display:none">
+        </div>
+    </article>
+</section>
+
+<section>
+    <h2>Active Sessions</h2>
+    <div id="sessions-container"
+         hx-get="/api/sessions"
+         hx-trigger="load, every 5s"
+         hx-swap="innerHTML"
+         hx-indicator="#loading">
+        <p><small>Loading sessions...</small></p>
+    </div>
+</section>
+{{end}}

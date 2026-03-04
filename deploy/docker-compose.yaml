@@ -102,6 +102,26 @@ services:
       dbgate-3:
         condition: service_healthy
 
+  # --------------------------------------------------------------------------
+  # Web Dashboard
+  # --------------------------------------------------------------------------
+  dbgate-dashboard:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.tools
+    entrypoint: ["dbgate-dashboard"]
+    command: ["--socket", "/run/dbgate/dbgate.sock", "--listen", ":8081"]
+    ports:
+      - "127.0.0.1:8081:8081"
+    volumes:
+      - uds-1:/run/dbgate:ro
+    env_file: .env
+    # UID 1000 matches the dbgate core user that owns the UDS socket.
+    user: "1000:1000"
+    depends_on:
+      dbgate-1:
+        condition: service_healthy
+
 volumes:
   mysql-data:
   uds-1:

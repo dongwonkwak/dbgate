@@ -1,0 +1,37 @@
+{{if .Error}}
+<article class="coming-soon">
+    <p>Sessions — Coming Soon</p>
+    <p><small>The sessions endpoint is not yet implemented on the server side.</small></p>
+</article>
+{{else if .Sessions}}
+<figure>
+    <table>
+        <thead>
+            <tr>
+                <th>ID</th>
+                <th>Client</th>
+                <th>User</th>
+                <th>Database</th>
+                <th>Duration</th>
+                <th>Queries</th>
+            </tr>
+        </thead>
+        <tbody>
+            {{range .Sessions}}
+            <tr>
+                <td>{{.ID}}</td>
+                <td>{{.Client}}</td>
+                <td>{{.User}}</td>
+                <td>{{.Database}}</td>
+                <td>{{.Duration}}</td>
+                <td>{{.Queries}}</td>
+            </tr>
+            {{end}}
+        </tbody>
+    </table>
+</figure>
+{{else}}
+<article class="coming-soon">
+    <p>No active sessions</p>
+</article>
+{{end}}
