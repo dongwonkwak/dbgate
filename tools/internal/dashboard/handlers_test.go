@@ -322,6 +322,25 @@ func makePolicyExplainResponse(action string) []byte {
 	return b
 }
 
+func makePolicyVersionsResponseWithEmptyHash() []byte {
+	resp := map[string]interface{}{
+		"ok": true,
+		"payload": map[string]interface{}{
+			"current": 3,
+			"versions": []map[string]interface{}{
+				{
+					"version":     3,
+					"timestamp":   "20260304T103520Z",
+					"rules_count": 24,
+					"hash":        "",
+				},
+			},
+		},
+	}
+	b, _ := json.Marshal(resp)
+	return b
+}
+
 func TestHandlePolicyTester_GET(t *testing.T) {
 	sockPath := startMockUDS(t, makeStatsResponse())
 	srv := newTestServer(t, sockPath)
@@ -405,5 +424,25 @@ func TestHandlePolicyExplain_ServerError(t *testing.T) {
 	body := rec.Body.String()
 	if !strings.Contains(body, "Error") {
 		t.Error("result partial should contain 'Error' on server failure")
+	}
+}
+
+func TestHandlePolicyVersions_EmptyHash_DoesNotFailTemplate(t *testing.T) {
+	sockPath := startMockUDS(t, makePolicyVersionsResponseWithEmptyHash())
+	srv := newTestServer(t, sockPath)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/policy-versions", http.NoBody)
+	rec := httptest.NewRecorder()
+	srv.mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", rec.Code)
+	}
+	body := rec.Body.String()
+	if strings.Contains(body, "Policy Versions Error") {
+		t.Errorf("template execution should not fail for empty hash, body=%s", body)
+	}
+	if !strings.Contains(body, "<code>-</code>") {
+		t.Errorf("empty hash should render fallback marker '-', body=%s", body)
 	}
 }

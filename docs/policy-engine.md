@@ -452,6 +452,89 @@ parse_failed
 
 `new_config = nullptr`로 reload하면 이후 모든 `evaluate()`가 `kBlock`을 반환한다 (fail-close).
 
+### 버전 추적 오버로드 (DON-50)
+
+`reload(new_config, version)` 오버로드를 사용하면 정책 버전 번호를 함께 갱신한다.
+
+```cpp
+// 버전 없는 reload (하위 호환) — current_version() == 0
+engine.reload(new_config);
+
+// 버전 있는 reload — current_version() == 42
+engine.reload(new_config, 42U);
+
+// 현재 활성 버전 조회
+std::uint64_t ver = engine.current_version();  // noexcept
+```
+
+- `reload(config)` 호출 시 `current_version_`은 `0`으로 리셋된다 (하위 호환).
+- `reload(config, version)` 호출 시 `current_version_`은 `version`으로 갱신된다.
+- `current_version()`은 `noexcept`이며 `atomic::load(memory_order_acquire)`로 스레드 안전하게 읽는다.
+
+---
+
+## PolicyVersionStore (DON-50)
+
+정책 스냅샷의 저장/로드/목록/정리를 담당하는 컴포넌트다. `src/policy/policy_version_store.hpp` / `.cpp`에 구현되어 있다.
+
+### 설계 원칙
+
+- **원본 파일 복사 방식**: YAML 재직렬화 없이 원본 파일을 스냅샷으로 복사한다.
+- **SHA-256 무결성 추적**: OpenSSL EVP API로 원본 파일의 해시를 계산한다.
+- **자동 정리(prune)**: `max_versions` 초과 시 오래된 스냅샷을 자동 삭제한다.
+- **스레드 안전성**: 모든 공개 메서드는 `std::mutex`로 직렬화된다.
+
+### 파일 구조
+
+```
+config_dir/
+└── .policy_versions/           # 자동 생성
+    ├── v1_20260304T103000Z.yaml
+    ├── v2_20260304T120000Z.yaml
+    └── v3_20260304T180000Z.yaml
+```
+
+파일명 패턴: `v{version}_{YYYYMMDDTHHMMSSz}.yaml`
+
+### API
+
+| 메서드 | 설명 | 실패 동작 |
+|--------|------|-----------|
+| `save_snapshot(config, source_path)` | 원본 YAML을 스냅샷 디렉토리에 복사 | `std::unexpected` 반환. 현재 정책에 영향 없음 |
+| `load_snapshot(version)` | 지정 버전의 스냅샷을 `PolicyConfig`로 반환 | `std::unexpected` 반환. 호출자가 기존 정책 유지 책임 |
+| `list_versions()` | 저장된 버전 목록을 최신 먼저 반환 | 빈 벡터 반환 |
+| `current_version()` | 마지막 저장 버전 번호 (없으면 0) | 0 반환 |
+
+### PolicyEngine과 연동 예시
+
+```cpp
+// 정책 로드 및 스냅샷 저장
+PolicyVersionStore store(config_dir, /*max_versions=*/10);
+auto cfg_result = PolicyLoader::load(policy_path);
+if (cfg_result) {
+    auto cfg = std::make_shared<PolicyConfig>(*cfg_result);
+    auto meta = store.save_snapshot(*cfg, policy_path);
+    if (meta) {
+        engine.reload(cfg, meta->version);
+        // engine.current_version() == meta->version == store.current_version()
+    }
+}
+```
+
+### fail-close 연계
+
+- `load_snapshot` 실패 시 `std::unexpected` 반환 → 호출자는 기존 정책 유지 또는 차단 처리
+- `save_snapshot` 실패는 데이터패스에 영향 없음 (스냅샷 미보관일 뿐)
+- 디렉토리 생성 실패 시 경고 로그만 출력하고 계속 동작
+
+### 알려진 한계
+
+| 항목 | 설명 |
+|------|------|
+| 디렉토리 외부 수정 | `.policy_versions/` 외부에서 파일이 추가/삭제되면 내부 목록과 불일치 발생. 재시작 시 생성자 스캔으로 복원됨. |
+| 복원 시 rules_count/hash | 재시작 후 디렉토리 스캔 복원 시 `rules_count=0`, `hash=""` 로 초기화됨. |
+| 타임스탬프 동시성 | 동일 초에 여러 번 저장 시 파일명이 충돌할 수 있음 (`overwrite_existing` 옵션으로 덮어씀). |
+
 ---
 
 ## 알려진 한계

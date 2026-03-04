@@ -2,22 +2,26 @@
 // uds_server.cpp
 //
 // UdsServer 구현 — Unix Domain Socket 서버.
-// Go CLI/대시보드에 StatsSnapshot 및 policy_explain 을 노출한다.
+// Go CLI/대시보드에 StatsSnapshot, policy_explain, policy_versions,
+// policy_rollback, policy_reload 를 노출한다.
 //
 // [프로토콜]
 //   요청/응답 모두 4byte LE 길이 프리픽스 + JSON 바디.
 //
 // [지원 커맨드]
-//   "stats"          — StatsSnapshot JSON 반환
-//   "policy_explain" — SQL 정책 평가 dry-run (DON-48)
-//   "sessions"       — 501 placeholder (Phase 3)
-//   "policy_reload"  — 501 placeholder (Phase 3)
-//   기타             — error 응답
+//   "stats"           — StatsSnapshot JSON 반환
+//   "policy_explain"  — SQL 정책 평가 dry-run (DON-48)
+//   "policy_versions" — 저장된 정책 버전 목록 조회 (DON-50)
+//   "policy_rollback" — 특정 버전으로 정책 롤백 (DON-50)
+//   "policy_reload"   — 정책 파일 리로드 + 스냅샷 저장 (DON-50)
+//   "sessions"        — 501 placeholder (Phase 3)
+//   기타              — error 응답
 //
 // [격리 원칙]
 //   UDS I/O 실패는 데이터패스로 전파하지 않는다.
 //   stats 접근은 read-only (StatsCollector::snapshot()) 만 수행한다.
-//   policy_explain 실패(파싱 오류 포함)는 데이터패스로 전파하지 않는다.
+//   policy_explain/policy_rollback/policy_reload 실패는 데이터패스로 전파하지 않는다.
+//   롤백/리로드 실패 시 현재 정책을 유지한다 (fail-close).
 // ---------------------------------------------------------------------------
 
 #include "stats/uds_server.hpp"
@@ -27,14 +31,21 @@
 #include <array>
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
+#include <boost/asio/dispatch.hpp>
 #include <boost/asio/read.hpp>
 #include <boost/asio/write.hpp>
 #include <chrono>
 #include <cstdint>
+#include <ctime>
+#include <iomanip>
+#include <limits>
 #include <optional>
+#include <sstream>
 #include <string>
 #include <string_view>
 #include <vector>
+
+#include "policy/policy_loader.hpp"
 
 namespace {
 
@@ -131,6 +142,62 @@ std::string make_error_response(std::string_view msg) {
 std::string make_not_implemented_response(std::string_view cmd) {
     return fmt::format(R"({{"ok":false,"error":"not implemented","code":501,"command":"{}"}})",
                        json_escape(cmd));
+}
+
+// ---------------------------------------------------------------------------
+// current_utc_iso8601
+//   현재 UTC 시각을 ISO 8601 형식으로 반환.
+//   형식: "2026-03-04T10:35:20Z"
+// ---------------------------------------------------------------------------
+std::string current_utc_iso8601() {
+    const auto now = std::chrono::system_clock::now();
+    const auto time_t_now = std::chrono::system_clock::to_time_t(now);
+
+    std::tm utc_tm{};
+#if defined(_WIN32)
+    gmtime_s(&utc_tm, &time_t_now);
+#else
+    if (gmtime_r(&time_t_now, &utc_tm) == nullptr) {
+        spdlog::warn("[uds_server] current_utc_iso8601: gmtime_r failed, returning epoch");
+        return "1970-01-01T00:00:00Z";
+    }
+#endif
+
+    std::ostringstream oss;
+    oss << std::put_time(&utc_tm, "%Y-%m-%dT%H:%M:%SZ");
+    return oss.str();
+}
+
+bool is_json_whitespace(char c) {
+    return c == ' ' || c == '\t' || c == '\n' || c == '\r';
+}
+
+// ---------------------------------------------------------------------------
+// find_json_string_end
+//   json[start_quote]가 '"'일 때, 문자열 리터럴의 닫는 '"' 인덱스를 반환한다.
+//   이스케이프(\\, \")를 고려한다. 실패 시 std::string_view::npos 반환.
+// ---------------------------------------------------------------------------
+std::string_view::size_type find_json_string_end(std::string_view json,
+                                                 std::string_view::size_type start_quote) {
+    if (start_quote >= json.size() || json[start_quote] != '"') {
+        return std::string_view::npos;
+    }
+    bool escaped = false;
+    for (std::string_view::size_type i = start_quote + 1; i < json.size(); ++i) {
+        const char c = json[i];
+        if (escaped) {
+            escaped = false;
+            continue;
+        }
+        if (c == '\\') {
+            escaped = true;
+            continue;
+        }
+        if (c == '"') {
+            return i;
+        }
+    }
+    return std::string_view::npos;
 }
 
 // ---------------------------------------------------------------------------
@@ -308,6 +375,167 @@ std::string_view::size_type find_json_object_end(std::string_view json,
 }
 
 // ---------------------------------------------------------------------------
+// parse_top_level_uint64_field
+//   JSON object 문자열의 "최상위" 키에서 uint64 값을 추출한다.
+//   문자열 리터럴 내부의 "key": 패턴은 무시한다.
+//   파싱 실패 또는 값 범위 초과 시 std::nullopt 반환.
+// ---------------------------------------------------------------------------
+std::optional<std::uint64_t> parse_top_level_uint64_field(std::string_view object_json,
+                                                          std::string_view field_key) {
+    if (object_json.empty() || object_json.front() != '{') {
+        return std::nullopt;
+    }
+
+    std::size_t depth = 0;
+    for (std::string_view::size_type i = 0; i < object_json.size();) {
+        const char c = object_json[i];
+        if (c == '"') {
+            const auto string_end = find_json_string_end(object_json, i);
+            if (string_end == std::string_view::npos) {
+                return std::nullopt;
+            }
+
+            // depth == 1 이고 문자열 뒤에 ':'가 오면 key 위치다.
+            if (depth == 1) {
+                auto cursor = string_end + 1;
+                while (cursor < object_json.size() && is_json_whitespace(object_json[cursor])) {
+                    ++cursor;
+                }
+                if (cursor < object_json.size() && object_json[cursor] == ':') {
+                    const auto key =
+                        object_json.substr(i + 1, static_cast<std::size_t>(string_end - i - 1));
+                    if (key == field_key) {
+                        ++cursor;  // ':'
+                        while (cursor < object_json.size() &&
+                               is_json_whitespace(object_json[cursor])) {
+                            ++cursor;
+                        }
+                        if (cursor >= object_json.size() || object_json[cursor] < '0' ||
+                            object_json[cursor] > '9') {
+                            return std::nullopt;
+                        }
+
+                        std::uint64_t value = 0;
+                        while (cursor < object_json.size() && object_json[cursor] >= '0' &&
+                               object_json[cursor] <= '9') {
+                            const auto digit =
+                                static_cast<std::uint64_t>(object_json[cursor] - '0');
+                            if (value > (std::numeric_limits<std::uint64_t>::max() - digit) / 10U) {
+                                return std::nullopt;
+                            }
+                            value = value * 10U + digit;
+                            ++cursor;
+                        }
+
+                        while (cursor < object_json.size() &&
+                               is_json_whitespace(object_json[cursor])) {
+                            ++cursor;
+                        }
+                        if (cursor < object_json.size() && object_json[cursor] != ',' &&
+                            object_json[cursor] != '}') {
+                            return std::nullopt;
+                        }
+                        return value;
+                    }
+                }
+            }
+
+            i = string_end + 1;
+            continue;
+        }
+
+        if (c == '{') {
+            ++depth;
+            ++i;
+            continue;
+        }
+        if (c == '}') {
+            if (depth == 0) {
+                return std::nullopt;
+            }
+            --depth;
+            ++i;
+            continue;
+        }
+
+        ++i;
+    }
+
+    return std::nullopt;
+}
+
+// ---------------------------------------------------------------------------
+// extract_top_level_object_field
+//   JSON object 문자열의 최상위에서 field_key에 해당하는 object 값을 추출한다.
+//   문자열 리터럴 내부의 "field_key": 패턴은 무시한다.
+// ---------------------------------------------------------------------------
+std::optional<std::string_view> extract_top_level_object_field(std::string_view object_json,
+                                                               std::string_view field_key) {
+    if (object_json.empty() || object_json.front() != '{') {
+        return std::nullopt;
+    }
+
+    std::size_t depth = 0;
+    for (std::string_view::size_type i = 0; i < object_json.size();) {
+        const char c = object_json[i];
+        if (c == '"') {
+            const auto string_end = find_json_string_end(object_json, i);
+            if (string_end == std::string_view::npos) {
+                return std::nullopt;
+            }
+
+            if (depth == 1) {
+                auto cursor = string_end + 1;
+                while (cursor < object_json.size() && is_json_whitespace(object_json[cursor])) {
+                    ++cursor;
+                }
+                if (cursor < object_json.size() && object_json[cursor] == ':') {
+                    const auto key =
+                        object_json.substr(i + 1, static_cast<std::size_t>(string_end - i - 1));
+                    if (key == field_key) {
+                        ++cursor;  // ':'
+                        while (cursor < object_json.size() &&
+                               is_json_whitespace(object_json[cursor])) {
+                            ++cursor;
+                        }
+                        if (cursor >= object_json.size() || object_json[cursor] != '{') {
+                            return std::nullopt;
+                        }
+                        const auto end = find_json_object_end(object_json, cursor);
+                        if (end == std::string_view::npos) {
+                            return std::nullopt;
+                        }
+                        return object_json.substr(
+                            cursor, static_cast<std::size_t>(end - cursor + 1));
+                    }
+                }
+            }
+
+            i = string_end + 1;
+            continue;
+        }
+
+        if (c == '{') {
+            ++depth;
+            ++i;
+            continue;
+        }
+        if (c == '}') {
+            if (depth == 0) {
+                return std::nullopt;
+            }
+            --depth;
+            ++i;
+            continue;
+        }
+
+        ++i;
+    }
+
+    return std::nullopt;
+}
+
+// ---------------------------------------------------------------------------
 // parse_payload_string_field
 //   요청 JSON 에서 payload 오브젝트 내 특정 문자열 필드를 추출한다.
 //   {"command":"...", "payload": {"key": "value", ...}} 패턴을 처리한다.
@@ -315,26 +543,25 @@ std::string_view::size_type find_json_object_end(std::string_view json,
 // ---------------------------------------------------------------------------
 std::optional<std::string> parse_payload_string_field(std::string_view json,
                                                       std::string_view field_key) {
-    constexpr std::string_view payload_key = "\"payload\":";
-    const auto payload_pos = json.find(payload_key);
-    if (payload_pos == std::string_view::npos) {
+    const auto payload_json = extract_top_level_object_field(json, "payload");
+    if (!payload_json) {
         return std::nullopt;
     }
-    auto start = payload_pos + payload_key.size();
-    // 공백 건너뜀
-    while (start < json.size() && json[start] == ' ') {
-        ++start;
-    }
-    if (start >= json.size() || json[start] != '{') {
+    return parse_string_field(*payload_json, field_key);
+}
+
+// ---------------------------------------------------------------------------
+// parse_payload_uint64_field
+//   요청 JSON 에서 payload 오브젝트 "최상위"의 uint64 필드를 추출한다.
+//   문자열 내부/중첩 오브젝트의 "key": 패턴은 무시한다.
+// ---------------------------------------------------------------------------
+std::optional<std::uint64_t> parse_payload_uint64_field(std::string_view json,
+                                                        std::string_view field_key) {
+    const auto payload_json = extract_top_level_object_field(json, "payload");
+    if (!payload_json) {
         return std::nullopt;
     }
-    // payload 오브젝트 끝 찾기 (문자열 리터럴 내부 중괄호 무시)
-    const auto end = find_json_object_end(json, start);
-    if (end == std::string_view::npos) {
-        return std::nullopt;
-    }
-    const auto payload_json = json.substr(start, end - start + 1);
-    return parse_string_field(payload_json, field_key);
+    return parse_top_level_uint64_field(*payload_json, field_key);
 }
 
 // ---------------------------------------------------------------------------
@@ -438,6 +665,8 @@ UdsServer::UdsServer(const std::filesystem::path& socket_path,
       stats_{std::move(stats)},
       policy_engine_{nullptr},
       sql_parser_{nullptr},
+      version_store_{nullptr},
+      policy_config_path_{},
       ioc_{ioc},
       acceptor_{ioc} {}
 
@@ -451,6 +680,25 @@ UdsServer::UdsServer(const std::filesystem::path& socket_path,
       stats_{std::move(stats)},
       policy_engine_{std::move(policy_engine)},
       sql_parser_{std::move(sql_parser)},
+      version_store_{nullptr},
+      policy_config_path_{},
+      ioc_{ioc},
+      acceptor_{ioc} {}
+
+// NOLINTNEXTLINE(modernize-pass-by-value)
+UdsServer::UdsServer(const std::filesystem::path& socket_path,
+                     std::shared_ptr<StatsCollector> stats,
+                     std::shared_ptr<PolicyEngine> policy_engine,
+                     std::shared_ptr<SqlParser> sql_parser,
+                     std::shared_ptr<PolicyVersionStore> version_store,
+                     std::filesystem::path policy_config_path,
+                     asio::io_context& ioc)
+    : socket_path_{socket_path},
+      stats_{std::move(stats)},
+      policy_engine_{std::move(policy_engine)},
+      sql_parser_{std::move(sql_parser)},
+      version_store_{std::move(version_store)},
+      policy_config_path_{std::move(policy_config_path)},
       ioc_{ioc},
       acceptor_{ioc} {}
 
@@ -576,6 +824,8 @@ asio::awaitable<void> UdsServer::run() {
 //   오류 발생 시 로그 후 co_return (데이터패스 비전파).
 // ---------------------------------------------------------------------------
 asio::awaitable<void> UdsServer::handle_client(asio::local::stream_protocol::socket socket) {
+    const auto io_executor = socket.get_executor();
+
     // ── 요청 헤더 읽기 ──────────────────────────────────────────────────
     std::array<uint8_t, 4> req_hdr{};
     auto [hdr_ec, hdr_n] = co_await asio::async_read(
@@ -625,12 +875,24 @@ asio::awaitable<void> UdsServer::handle_client(asio::local::stream_protocol::soc
     } else if (cmd == "policy_explain") {
         // policy_explain — SQL 정책 평가 dry-run (DON-48)
         response_body = handle_policy_explain(request_json);
+    } else if (cmd == "policy_versions") {
+        // policy_versions — 저장된 정책 버전 목록 조회 (DON-50)
+        response_body = handle_policy_versions(request_json);
+    } else if (cmd == "policy_rollback") {
+        // policy_rollback — 특정 버전으로 정책 롤백 (DON-50)
+        // 파일 I/O/파싱이 포함되므로 control_pool_에서 실행해 이벤트 루프 블로킹을 방지한다.
+        co_await asio::dispatch(control_pool_.get_executor(), asio::use_awaitable);
+        response_body = handle_policy_rollback(request_json);
+        co_await asio::dispatch(io_executor, asio::use_awaitable);
+    } else if (cmd == "policy_reload") {
+        // policy_reload — 정책 파일 리로드 + 스냅샷 저장 (DON-50)
+        // 파일 I/O/해시 계산이 포함되므로 control_pool_에서 실행해 이벤트 루프 블로킹을 방지한다.
+        co_await asio::dispatch(control_pool_.get_executor(), asio::use_awaitable);
+        response_body = handle_policy_reload(request_json);
+        co_await asio::dispatch(io_executor, asio::use_awaitable);
     } else if (cmd == "sessions") {
         // Phase 3 구현 예정
         response_body = make_not_implemented_response("sessions");
-    } else if (cmd == "policy_reload") {
-        // Phase 3 구현 예정
-        response_body = make_not_implemented_response("policy_reload");
     } else if (cmd.empty()) {
         spdlog::warn("[uds_server] handle_client: missing or malformed 'command' field");
         response_body = make_error_response("missing or malformed 'command' field");
@@ -737,4 +999,202 @@ std::string UdsServer::handle_policy_explain(std::string_view request_json) {
         spdlog::error("[uds_server] policy_explain: unknown exception");
         return make_error_response("internal error during policy evaluation");
     }
+}
+
+// ---------------------------------------------------------------------------
+// handle_policy_versions (DON-50)
+//   저장된 정책 버전 목록 및 현재 활성 버전을 반환한다.
+//
+//   [응답 형식]
+//   {"ok":true,"payload":{"current":5,"versions":[{"version":5,"timestamp":"...","rules_count":24,"hash":"abc123..."},...]}}
+//
+//   [fail-close]
+//   version_store_ 미주입 시 not-implemented 반환.
+//   예외 발생 시 ok:false 반환 (데이터패스 비전파).
+// ---------------------------------------------------------------------------
+std::string UdsServer::handle_policy_versions(std::string_view /*request_json*/) {
+    if (!version_store_ || !policy_engine_) {
+        spdlog::warn("[uds_server] policy_versions: version_store or policy_engine not configured");
+        return make_not_implemented_response("policy_versions");
+    }
+
+    try {
+        const auto versions = version_store_->list_versions();
+        const std::uint64_t current = policy_engine_->current_version();
+
+        // 수동 JSON 직렬화
+        std::string payload;
+        payload += '{';
+        payload += fmt::format(R"("current":{})", current);
+        payload += R"(,"versions":[)";
+
+        bool first = true;
+        for (const auto& meta : versions) {
+            if (!first) {
+                payload += ',';
+            }
+            payload += '{';
+            payload += fmt::format(R"("version":{})", meta.version);
+            payload += R"(,"timestamp":")" + json_escape(meta.timestamp) + '"';
+            payload += fmt::format(R"(,"rules_count":{})", meta.rules_count);
+            payload += R"(,"hash":")" + json_escape(meta.hash) + '"';
+            payload += '}';
+            first = false;
+        }
+
+        payload += "]}";
+
+        spdlog::debug(
+            "[uds_server] policy_versions: current={} count={}", current, versions.size());
+        return make_ok_response(payload);
+    } catch (const std::exception& e) {
+        spdlog::error("[uds_server] policy_versions: exception: {}", e.what());
+        return make_error_response("internal error during policy_versions");
+    } catch (...) {
+        spdlog::error("[uds_server] policy_versions: unknown exception");
+        return make_error_response("internal error during policy_versions");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// handle_policy_rollback (DON-50)
+//   payload 에서 target_version 을 파싱하여 해당 스냅샷으로 정책을 롤백한다.
+//
+//   [응답 형식 (성공)]
+//   {"ok":true,"payload":{"rolled_back_to":3,"previous_version":5,"rules_count":20}}
+//
+//   [응답 형식 (실패)]
+//   {"ok":false,"error":"version 3 not found"}
+//
+//   [fail-close]
+//   - version_store_ 또는 policy_engine_ 미주입 시 not-implemented 반환.
+//   - target_version 파싱 실패 시 ok:false 반환.
+//   - load_snapshot 실패 시 현재 정책 유지 + ok:false 반환.
+//   - reload 실패 시 현재 정책 유지 + ok:false 반환 (예외 처리).
+// ---------------------------------------------------------------------------
+std::string UdsServer::handle_policy_rollback(std::string_view request_json) {
+    if (!version_store_ || !policy_engine_) {
+        spdlog::warn("[uds_server] policy_rollback: version_store or policy_engine not configured");
+        return make_not_implemented_response("policy_rollback");
+    }
+
+    // ── payload 오브젝트 내 target_version 파싱 ──────────────────────────
+    // 프로토콜: {"command":"policy_rollback","version":1,"payload":{"target_version":3}}
+    // payload 최상위 키만 허용한다 (문자열 리터럴/중첩 오브젝트 내 패턴 무시).
+    const auto target_version_opt = parse_payload_uint64_field(request_json, "target_version");
+    if (!target_version_opt) {
+        spdlog::warn("[uds_server] policy_rollback: missing target_version in payload");
+        return make_error_response("missing required field: target_version");
+    }
+
+    const std::uint64_t target_version = *target_version_opt;
+    const std::uint64_t previous_version = policy_engine_->current_version();
+
+    // ── 스냅샷 로드 ──────────────────────────────────────────────────────
+    auto load_result = version_store_->load_snapshot(target_version);
+    if (!load_result) {
+        spdlog::warn("[uds_server] policy_rollback: {}", load_result.error());
+        return make_error_response(load_result.error());
+    }
+
+    auto new_config = std::make_shared<PolicyConfig>(std::move(*load_result));
+    const auto rules_count = static_cast<std::uint32_t>(new_config->access_control.size());
+
+    // ── 정책 엔진 교체 (fail-close: 실패 시 현재 정책 유지) ──────────────
+    try {
+        policy_engine_->reload(new_config, target_version);
+    } catch (const std::exception& e) {
+        spdlog::error("[uds_server] policy_rollback: reload exception: {}", e.what());
+        return make_error_response(fmt::format("rollback failed during reload: {}", e.what()));
+    }
+
+    spdlog::info("[uds_server] policy_rollback: rolled back to v{} (prev=v{})",
+                 target_version,
+                 previous_version);
+
+    std::string payload;
+    payload += '{';
+    payload += fmt::format(R"("rolled_back_to":{})", target_version);
+    payload += fmt::format(R"(,"previous_version":{})", previous_version);
+    payload += fmt::format(R"(,"rules_count":{})", rules_count);
+    payload += '}';
+    return make_ok_response(payload);
+}
+
+// ---------------------------------------------------------------------------
+// handle_policy_reload (DON-50, 기존 501 placeholder 교체)
+//   정책 파일을 리로드하고 스냅샷을 저장한 뒤 정책 엔진을 교체한다.
+//
+//   [응답 형식 (성공)]
+//   {"ok":true,"payload":{"reloaded_at":"2026-03-04T10:35:20Z","rules_count":24,"version":6,"message":"Policy
+//   reloaded successfully"}}
+//
+//   [응답 형식 (실패)]
+//   {"ok":false,"error":"..."}
+//
+//   [fail-close]
+//   - version_store_ 또는 policy_engine_ 미주입 시 not-implemented 반환.
+//   - policy_config_path_ 비어있으면 ok:false 반환.
+//   - PolicyLoader::load 실패 시 현재 정책 유지 + ok:false 반환.
+//   - save_snapshot 실패는 경고 로그만 출력하고 reload 는 계속 진행
+//     (스냅샷 저장 실패가 정책 리로드를 막지 않도록 격리).
+//   - policy_engine_->reload 예외 시 ok:false 반환 (현재 정책 유지).
+// ---------------------------------------------------------------------------
+std::string UdsServer::handle_policy_reload(std::string_view /*request_json*/) {
+    if (!version_store_ || !policy_engine_) {
+        spdlog::warn("[uds_server] policy_reload: version_store or policy_engine not configured");
+        return make_not_implemented_response("policy_reload");
+    }
+
+    if (policy_config_path_.empty()) {
+        spdlog::warn("[uds_server] policy_reload: policy_config_path not configured");
+        return make_error_response("policy config path not configured");
+    }
+
+    // ── 정책 파일 로드 ────────────────────────────────────────────────────
+    auto load_result = PolicyLoader::load(policy_config_path_);
+    if (!load_result) {
+        spdlog::warn("[uds_server] policy_reload: load failed (keeping current policy): {}",
+                     load_result.error());
+        return make_error_response(load_result.error());
+    }
+
+    auto new_config = std::make_shared<PolicyConfig>(std::move(*load_result));
+    const auto rules_count = static_cast<std::uint32_t>(new_config->access_control.size());
+
+    // ── 스냅샷 저장 (격리: 실패해도 리로드 진행) ─────────────────────────
+    std::uint64_t new_version = 0;
+    auto save_result = version_store_->save_snapshot(*new_config, policy_config_path_);
+    if (!save_result) {
+        spdlog::warn("[uds_server] policy_reload: snapshot save failed (reload continues): {}",
+                     save_result.error());
+        // 저장 실패 시 현재 version_store의 next_version - 1 이 아닌 기존 버전 유지
+        new_version = version_store_->current_version();
+    } else {
+        new_version = save_result->version;
+    }
+
+    // ── 정책 엔진 교체 (fail-close: 실패 시 현재 정책 유지) ──────────────
+    try {
+        policy_engine_->reload(new_config, new_version);
+    } catch (const std::exception& e) {
+        spdlog::error("[uds_server] policy_reload: reload exception: {}", e.what());
+        return make_error_response(fmt::format("reload failed during engine update: {}", e.what()));
+    }
+
+    const std::string reloaded_at = current_utc_iso8601();
+
+    spdlog::info("[uds_server] policy_reload: reloaded v{} rules={} at {}",
+                 new_version,
+                 rules_count,
+                 reloaded_at);
+
+    std::string payload;
+    payload += '{';
+    payload += R"("reloaded_at":")" + json_escape(reloaded_at) + '"';
+    payload += fmt::format(R"(,"rules_count":{})", rules_count);
+    payload += fmt::format(R"(,"version":{})", new_version);
+    payload += R"(,"message":"Policy reloaded successfully")";
+    payload += '}';
+    return make_ok_response(payload);
 }

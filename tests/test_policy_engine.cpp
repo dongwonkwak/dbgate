@@ -39,6 +39,7 @@
 
 #include "policy/policy_engine.hpp"
 #include "policy/policy_loader.hpp"
+#include "policy/policy_version_store.hpp"
 
 // ---------------------------------------------------------------------------
 // 테스트 헬퍼: 기본 PolicyConfig 생성
@@ -2260,4 +2261,550 @@ TEST(PolicyEngine, Explain_MonitorMode_NoAccessRule_WithBlockStatement_StillBloc
     EXPECT_EQ(result.matched_rule, "no-access-rule");
     EXPECT_NE(result.evaluation_path.find("no_access_rule"), std::string::npos)
         << "evaluation_path must show no_access_rule. Got: " << result.evaluation_path;
+}
+
+// ===========================================================================
+// DON-50: PolicyEngine::current_version() 테스트
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// 초기 상태: current_version() == 0
+// ---------------------------------------------------------------------------
+TEST(PolicyEngine, CurrentVersion_InitialIsZero) {
+    const PolicyEngine engine(make_basic_config());
+    EXPECT_EQ(engine.current_version(), 0U);
+}
+
+// ---------------------------------------------------------------------------
+// reload(config) — 버전 없는 오버로드 → version=0 유지
+// ---------------------------------------------------------------------------
+TEST(PolicyEngine, CurrentVersion_ReloadWithoutVersion_StaysZero) {
+    PolicyEngine engine(make_basic_config());
+    engine.reload(make_basic_config());
+    EXPECT_EQ(engine.current_version(), 0U);
+}
+
+// ---------------------------------------------------------------------------
+// reload(config, version) — 버전 추적 오버로드 → 지정 버전으로 갱신
+// ---------------------------------------------------------------------------
+TEST(PolicyEngine, CurrentVersion_ReloadWithVersion_UpdatesVersion) {
+    PolicyEngine engine(make_basic_config());
+    engine.reload(make_basic_config(), 42U);
+    EXPECT_EQ(engine.current_version(), 42U);
+}
+
+// ---------------------------------------------------------------------------
+// 버전 있는 reload 후 버전 없는 reload → 0으로 리셋 (하위 호환 동작)
+// ---------------------------------------------------------------------------
+TEST(PolicyEngine, CurrentVersion_ReloadWithoutVersionAfterVersioned_ResetsToZero) {
+    PolicyEngine engine(make_basic_config());
+    engine.reload(make_basic_config(), 99U);
+    ASSERT_EQ(engine.current_version(), 99U);
+
+    engine.reload(make_basic_config());
+    EXPECT_EQ(engine.current_version(), 0U);
+}
+
+// ---------------------------------------------------------------------------
+// reload(nullptr, version) — nullptr config + 버전 설정 → fail-close 유지
+// reload 후 evaluate() 는 kBlock 반환해야 한다.
+// ---------------------------------------------------------------------------
+TEST(PolicyEngine, CurrentVersion_ReloadNullptrWithVersion_BlocksAndSetsVersion) {
+    PolicyEngine engine(make_basic_config());
+    engine.reload(nullptr, 5U);
+
+    // fail-close: nullptr config → kBlock
+    const auto query = make_query(SqlCommand::kSelect, {"users"}, "SELECT * FROM users");
+    const auto result = engine.evaluate(query, make_session());
+    EXPECT_EQ(result.action, PolicyAction::kBlock);
+    EXPECT_EQ(result.matched_rule, "no-config");
+
+    // 버전은 설정됨
+    EXPECT_EQ(engine.current_version(), 5U);
+}
+
+// ---------------------------------------------------------------------------
+// 여러 번 reload — 마지막 버전이 유효
+// ---------------------------------------------------------------------------
+TEST(PolicyEngine, CurrentVersion_MultipleReloads_LastVersionWins) {
+    PolicyEngine engine(make_basic_config());
+    engine.reload(make_basic_config(), 1U);
+    engine.reload(make_basic_config(), 2U);
+    engine.reload(make_basic_config(), 3U);
+    EXPECT_EQ(engine.current_version(), 3U);
+}
+
+// ===========================================================================
+// DON-50: PolicyVersionStore 테스트
+//
+// [오탐/미탐 트레이드오프]
+// - save_snapshot 은 파일 복사 실패 시 std::unexpected 반환 (fail-close 없음).
+//   현재 동작 중인 정책에 영향 없음.
+// - load_snapshot 실패 시 호출자가 기존 정책을 유지해야 함.
+//
+// [알려진 한계]
+// - rules_count/hash 는 디렉토리 스캔 복원 시 0/"" 로 초기화됨.
+//   운영 환경에서는 재시작 후 목록 조회 시 0 이 될 수 있음.
+// ===========================================================================
+
+// 테스트용 임시 YAML 정책 파일 생성 헬퍼
+namespace {
+
+// 최소 유효 YAML 정책 파일 내용 (PolicyLoader::load 통과 가능)
+constexpr const char* kMinimalValidYaml = R"(
+global:
+  log_level: info
+  log_format: json
+  max_connections: 100
+  connection_timeout: 10s
+
+access_control:
+  - user: "admin"
+    source_ip: ""
+    allowed_tables: ["*"]
+    allowed_operations: ["*"]
+
+sql_rules:
+  block_statements:
+    - DROP
+  block_patterns:
+    - "UNION\\s+SELECT"
+
+procedure_control:
+  mode: "whitelist"
+  whitelist: []
+  block_dynamic_sql: true
+  block_create_alter: true
+
+data_protection:
+  max_result_rows: 1000
+  block_schema_access: true
+)";
+
+// 임시 YAML 파일을 path 에 생성하고 path 를 반환.
+// 실패 시 테스트를 GTEST_SKIP.
+std::filesystem::path create_temp_yaml(const std::filesystem::path& path) {
+    // NOLINTNEXTLINE(cppcoreguidelines-owning-memory)
+    std::FILE* f = std::fopen(path.c_str(), "w");
+    if (f == nullptr) {
+        return {};
+    }
+    // NOLINTNEXTLINE(cert-err33-c)
+    std::fputs(kMinimalValidYaml, f);
+    // NOLINTNEXTLINE(cert-err33-c,cppcoreguidelines-owning-memory)
+    std::fclose(f);
+    return path;
+}
+
+}  // namespace
+
+// ---------------------------------------------------------------------------
+// 초기 상태: current_version() == 0 (저장된 스냅샷 없음)
+// ---------------------------------------------------------------------------
+TEST(PolicyVersionStore, InitialCurrentVersionIsZero) {
+    // 임시 디렉토리 사용
+    const std::filesystem::path tmp_dir = "/tmp/pvs_test_init";
+    std::filesystem::remove_all(tmp_dir);
+    std::filesystem::create_directories(tmp_dir);
+
+    PolicyVersionStore store(tmp_dir, 10U);
+    EXPECT_EQ(store.current_version(), 0U);
+
+    std::filesystem::remove_all(tmp_dir);
+}
+
+// ---------------------------------------------------------------------------
+// list_versions(): 빈 상태에서 빈 벡터 반환
+// ---------------------------------------------------------------------------
+TEST(PolicyVersionStore, ListVersions_EmptyStore) {
+    const std::filesystem::path tmp_dir = "/tmp/pvs_test_list_empty";
+    std::filesystem::remove_all(tmp_dir);
+    std::filesystem::create_directories(tmp_dir);
+
+    PolicyVersionStore store(tmp_dir, 10U);
+    EXPECT_TRUE(store.list_versions().empty());
+
+    std::filesystem::remove_all(tmp_dir);
+}
+
+// ---------------------------------------------------------------------------
+// save_snapshot: 성공 케이스 — 메타데이터가 올바르게 채워지는지 확인
+// ---------------------------------------------------------------------------
+TEST(PolicyVersionStore, SaveSnapshot_Success_MetaIsPopulated) {
+    const std::filesystem::path tmp_dir = "/tmp/pvs_test_save";
+    std::filesystem::remove_all(tmp_dir);
+    std::filesystem::create_directories(tmp_dir);
+
+    const auto yaml_path = tmp_dir / "policy.yaml";
+    ASSERT_FALSE(create_temp_yaml(yaml_path).empty()) << "Failed to create temp yaml";
+
+    auto cfg_result = PolicyLoader::load(yaml_path);
+    ASSERT_TRUE(cfg_result.has_value()) << cfg_result.error();
+    const auto cfg = std::make_shared<PolicyConfig>(std::move(*cfg_result));
+
+    PolicyVersionStore store(tmp_dir, 10U);
+    const auto meta_result = store.save_snapshot(*cfg, yaml_path);
+
+    ASSERT_TRUE(meta_result.has_value()) << meta_result.error();
+    const auto& meta = meta_result.value();
+
+    EXPECT_EQ(meta.version, 1U);
+    EXPECT_FALSE(meta.timestamp.empty());
+    EXPECT_EQ(meta.rules_count, static_cast<std::uint32_t>(cfg->access_control.size()));
+    EXPECT_FALSE(meta.hash.empty()) << "SHA-256 hash should not be empty for valid file";
+    EXPECT_EQ(meta.hash.size(), 64U) << "SHA-256 hex digest must be 64 chars";
+    EXPECT_TRUE(std::filesystem::exists(meta.snapshot_path));
+
+    std::filesystem::remove_all(tmp_dir);
+}
+
+// ---------------------------------------------------------------------------
+// save_snapshot 연속 호출 → 버전 번호가 단조 증가하는지 확인
+// ---------------------------------------------------------------------------
+TEST(PolicyVersionStore, SaveSnapshot_MultipleVersions_VersionIncreases) {
+    const std::filesystem::path tmp_dir = "/tmp/pvs_test_multiver";
+    std::filesystem::remove_all(tmp_dir);
+    std::filesystem::create_directories(tmp_dir);
+
+    const auto yaml_path = tmp_dir / "policy.yaml";
+    ASSERT_FALSE(create_temp_yaml(yaml_path).empty());
+
+    auto cfg_result = PolicyLoader::load(yaml_path);
+    ASSERT_TRUE(cfg_result.has_value()) << cfg_result.error();
+    const auto cfg = std::make_shared<PolicyConfig>(std::move(*cfg_result));
+
+    PolicyVersionStore store(tmp_dir, 10U);
+
+    for (std::uint64_t expected_ver = 1U; expected_ver <= 3U; ++expected_ver) {
+        const auto meta_result = store.save_snapshot(*cfg, yaml_path);
+        ASSERT_TRUE(meta_result.has_value()) << meta_result.error();
+        EXPECT_EQ(meta_result->version, expected_ver);
+    }
+
+    EXPECT_EQ(store.current_version(), 3U);
+
+    std::filesystem::remove_all(tmp_dir);
+}
+
+// ---------------------------------------------------------------------------
+// list_versions(): 최신 버전 먼저 정렬되어 반환되는지 확인
+// ---------------------------------------------------------------------------
+TEST(PolicyVersionStore, ListVersions_ReturnsNewestFirst) {
+    const std::filesystem::path tmp_dir = "/tmp/pvs_test_list_order";
+    std::filesystem::remove_all(tmp_dir);
+    std::filesystem::create_directories(tmp_dir);
+
+    const auto yaml_path = tmp_dir / "policy.yaml";
+    ASSERT_FALSE(create_temp_yaml(yaml_path).empty());
+
+    auto cfg_result = PolicyLoader::load(yaml_path);
+    ASSERT_TRUE(cfg_result.has_value()) << cfg_result.error();
+    const auto cfg = std::make_shared<PolicyConfig>(std::move(*cfg_result));
+
+    PolicyVersionStore store(tmp_dir, 10U);
+    for (int i = 0; i < 3; ++i) {
+        ASSERT_TRUE(store.save_snapshot(*cfg, yaml_path).has_value());
+    }
+
+    const auto versions = store.list_versions();
+    ASSERT_EQ(versions.size(), 3U);
+    // 최신 먼저: v3, v2, v1
+    EXPECT_EQ(versions[0].version, 3U);
+    EXPECT_EQ(versions[1].version, 2U);
+    EXPECT_EQ(versions[2].version, 1U);
+
+    std::filesystem::remove_all(tmp_dir);
+}
+
+// ---------------------------------------------------------------------------
+// load_snapshot: 저장된 스냅샷을 올바르게 복원하는지 확인
+// ---------------------------------------------------------------------------
+TEST(PolicyVersionStore, LoadSnapshot_Success_ConfigRestored) {
+    const std::filesystem::path tmp_dir = "/tmp/pvs_test_load";
+    std::filesystem::remove_all(tmp_dir);
+    std::filesystem::create_directories(tmp_dir);
+
+    const auto yaml_path = tmp_dir / "policy.yaml";
+    ASSERT_FALSE(create_temp_yaml(yaml_path).empty());
+
+    auto cfg_result = PolicyLoader::load(yaml_path);
+    ASSERT_TRUE(cfg_result.has_value()) << cfg_result.error();
+    const auto cfg = std::make_shared<PolicyConfig>(std::move(*cfg_result));
+
+    PolicyVersionStore store(tmp_dir, 10U);
+    const auto meta = store.save_snapshot(*cfg, yaml_path);
+    ASSERT_TRUE(meta.has_value()) << meta.error();
+
+    // 저장된 버전을 로드
+    const auto loaded = store.load_snapshot(meta->version);
+    ASSERT_TRUE(loaded.has_value()) << loaded.error();
+
+    // 핵심 필드가 원본과 일치하는지 확인
+    EXPECT_EQ(loaded->global.log_level, cfg->global.log_level);
+    EXPECT_EQ(loaded->access_control.size(), cfg->access_control.size());
+    EXPECT_EQ(loaded->sql_rules.block_statements.size(), cfg->sql_rules.block_statements.size());
+
+    std::filesystem::remove_all(tmp_dir);
+}
+
+// ---------------------------------------------------------------------------
+// load_snapshot: 존재하지 않는 버전 → std::unexpected 반환 (fail-close 연계)
+// ---------------------------------------------------------------------------
+TEST(PolicyVersionStore, LoadSnapshot_NotFound_ReturnsError) {
+    const std::filesystem::path tmp_dir = "/tmp/pvs_test_load_notfound";
+    std::filesystem::remove_all(tmp_dir);
+    std::filesystem::create_directories(tmp_dir);
+
+    PolicyVersionStore store(tmp_dir, 10U);
+    const auto result = store.load_snapshot(999U);
+
+    EXPECT_FALSE(result.has_value());
+    EXPECT_FALSE(result.error().empty());
+
+    std::filesystem::remove_all(tmp_dir);
+}
+
+// ---------------------------------------------------------------------------
+// prune: max_versions 초과 시 오래된 스냅샷이 삭제되는지 확인
+// ---------------------------------------------------------------------------
+TEST(PolicyVersionStore, Prune_ExceedsMaxVersions_OldestRemoved) {
+    const std::filesystem::path tmp_dir = "/tmp/pvs_test_prune";
+    std::filesystem::remove_all(tmp_dir);
+    std::filesystem::create_directories(tmp_dir);
+
+    const auto yaml_path = tmp_dir / "policy.yaml";
+    ASSERT_FALSE(create_temp_yaml(yaml_path).empty());
+
+    auto cfg_result = PolicyLoader::load(yaml_path);
+    ASSERT_TRUE(cfg_result.has_value()) << cfg_result.error();
+    const auto cfg = std::make_shared<PolicyConfig>(std::move(*cfg_result));
+
+    // max_versions=2 로 설정
+    PolicyVersionStore store(tmp_dir, 2U);
+
+    std::filesystem::path oldest_path;
+    for (int i = 0; i < 4; ++i) {
+        const auto meta = store.save_snapshot(*cfg, yaml_path);
+        ASSERT_TRUE(meta.has_value()) << meta.error();
+        if (i == 0) {
+            oldest_path = meta->snapshot_path;
+        }
+    }
+
+    // list_versions 는 최대 2개
+    const auto versions = store.list_versions();
+    EXPECT_EQ(versions.size(), 2U);
+
+    // 가장 오래된 스냅샷 파일(v1)이 삭제됐는지 확인
+    EXPECT_FALSE(std::filesystem::exists(oldest_path)) << "Oldest snapshot should have been pruned";
+
+    // 최신 버전은 v4
+    EXPECT_EQ(versions[0].version, 4U);
+    EXPECT_EQ(versions[1].version, 3U);
+
+    std::filesystem::remove_all(tmp_dir);
+}
+
+// ---------------------------------------------------------------------------
+// save_snapshot: 존재하지 않는 원본 파일 → std::unexpected 반환
+// ---------------------------------------------------------------------------
+TEST(PolicyVersionStore, SaveSnapshot_SourceNotExists_ReturnsError) {
+    const std::filesystem::path tmp_dir = "/tmp/pvs_test_save_nofile";
+    std::filesystem::remove_all(tmp_dir);
+    std::filesystem::create_directories(tmp_dir);
+
+    auto cfg = make_basic_config();
+    PolicyVersionStore store(tmp_dir, 10U);
+
+    const auto result = store.save_snapshot(*cfg, "/nonexistent/policy.yaml");
+    EXPECT_FALSE(result.has_value());
+    EXPECT_FALSE(result.error().empty());
+
+    // current_version 은 0 유지 (저장 실패)
+    EXPECT_EQ(store.current_version(), 0U);
+
+    std::filesystem::remove_all(tmp_dir);
+}
+
+// ---------------------------------------------------------------------------
+// PolicyEngine + PolicyVersionStore 통합: reload(config, version) 후
+// current_version() 이 store.current_version() 과 일치하는지 확인
+// ---------------------------------------------------------------------------
+TEST(PolicyVersionStore, IntegrationWithPolicyEngine_VersionsMatch) {
+    const std::filesystem::path tmp_dir = "/tmp/pvs_test_integration";
+    std::filesystem::remove_all(tmp_dir);
+    std::filesystem::create_directories(tmp_dir);
+
+    const auto yaml_path = tmp_dir / "policy.yaml";
+    ASSERT_FALSE(create_temp_yaml(yaml_path).empty());
+
+    auto cfg_result = PolicyLoader::load(yaml_path);
+    ASSERT_TRUE(cfg_result.has_value()) << cfg_result.error();
+    auto cfg = std::make_shared<PolicyConfig>(std::move(*cfg_result));
+
+    PolicyVersionStore store(tmp_dir, 10U);
+    const auto meta = store.save_snapshot(*cfg, yaml_path);
+    ASSERT_TRUE(meta.has_value()) << meta.error();
+
+    // PolicyEngine 에 버전 포함 reload
+    PolicyEngine engine(cfg);
+    engine.reload(cfg, meta->version);
+
+    // store 의 current_version 과 engine 의 current_version 이 일치해야 함
+    EXPECT_EQ(engine.current_version(), store.current_version());
+    EXPECT_EQ(engine.current_version(), 1U);
+
+    std::filesystem::remove_all(tmp_dir);
+}
+
+// ---------------------------------------------------------------------------
+// 디렉토리 스캔 복원: PolicyVersionStore 재생성 시 기존 스냅샷을 복원하는지 확인
+// ---------------------------------------------------------------------------
+TEST(PolicyVersionStore, RestoreFromDirectory_ExistingSnapshotsRestored) {
+    const std::filesystem::path tmp_dir = "/tmp/pvs_test_restore";
+    std::filesystem::remove_all(tmp_dir);
+    std::filesystem::create_directories(tmp_dir);
+
+    const auto yaml_path = tmp_dir / "policy.yaml";
+    ASSERT_FALSE(create_temp_yaml(yaml_path).empty());
+
+    auto cfg_result = PolicyLoader::load(yaml_path);
+    ASSERT_TRUE(cfg_result.has_value()) << cfg_result.error();
+    const auto cfg = std::make_shared<PolicyConfig>(std::move(*cfg_result));
+
+    std::uint64_t last_version = 0;
+    {
+        // 첫 번째 스토어 인스턴스에서 스냅샷 3개 저장
+        PolicyVersionStore store1(tmp_dir, 10U);
+        for (int i = 0; i < 3; ++i) {
+            const auto meta = store1.save_snapshot(*cfg, yaml_path);
+            ASSERT_TRUE(meta.has_value()) << meta.error();
+            last_version = meta->version;
+        }
+        EXPECT_EQ(store1.current_version(), 3U);
+    }
+
+    // 두 번째 스토어 인스턴스: 디렉토리 스캔으로 복원
+    {
+        PolicyVersionStore store2(tmp_dir, 10U);
+        const auto versions = store2.list_versions();
+        EXPECT_EQ(versions.size(), 3U);
+        EXPECT_EQ(store2.current_version(), last_version);
+    }
+
+    std::filesystem::remove_all(tmp_dir);
+}
+
+// ---------------------------------------------------------------------------
+// 해시 일관성: 동일 파일 두 번 저장 → hash 값이 동일해야 한다
+// ---------------------------------------------------------------------------
+TEST(PolicyVersionStore, HashConsistency_SameFileProducesSameHash) {
+    const std::filesystem::path tmp_dir = "/tmp/pvs_test_hash_same";
+    std::filesystem::remove_all(tmp_dir);
+    std::filesystem::create_directories(tmp_dir);
+
+    const auto yaml_path = tmp_dir / "policy.yaml";
+    ASSERT_FALSE(create_temp_yaml(yaml_path).empty());
+
+    auto cfg_result = PolicyLoader::load(yaml_path);
+    ASSERT_TRUE(cfg_result.has_value()) << cfg_result.error();
+    const auto cfg = std::make_shared<PolicyConfig>(std::move(*cfg_result));
+
+    PolicyVersionStore store(tmp_dir, 10U);
+
+    const auto meta1 = store.save_snapshot(*cfg, yaml_path);
+    ASSERT_TRUE(meta1.has_value()) << meta1.error();
+
+    const auto meta2 = store.save_snapshot(*cfg, yaml_path);
+    ASSERT_TRUE(meta2.has_value()) << meta2.error();
+
+    // 파일 내용이 동일하면 hash 도 동일해야 한다
+    EXPECT_FALSE(meta1->hash.empty()) << "hash must not be empty for valid file";
+    EXPECT_EQ(meta1->hash, meta2->hash) << "Same source file must produce the same SHA-256 hash. "
+                                        << "v1=" << meta1->hash << " v2=" << meta2->hash;
+
+    std::filesystem::remove_all(tmp_dir);
+}
+
+// ---------------------------------------------------------------------------
+// 해시 일관성: 내용이 다른 파일 두 번 저장 → hash 값이 달라야 한다
+// ---------------------------------------------------------------------------
+TEST(PolicyVersionStore, HashDiffers_ForDifferentFileContents) {
+    const std::filesystem::path tmp_dir = "/tmp/pvs_test_hash_diff";
+    std::filesystem::remove_all(tmp_dir);
+    std::filesystem::create_directories(tmp_dir);
+
+    const auto yaml_path = tmp_dir / "policy.yaml";
+
+    // 첫 번째 파일 저장
+    ASSERT_FALSE(create_temp_yaml(yaml_path).empty());
+    auto cfg_result1 = PolicyLoader::load(yaml_path);
+    ASSERT_TRUE(cfg_result1.has_value()) << cfg_result1.error();
+    auto cfg1 = std::make_shared<PolicyConfig>(std::move(*cfg_result1));
+
+    PolicyVersionStore store(tmp_dir, 10U);
+    const auto meta1 = store.save_snapshot(*cfg1, yaml_path);
+    ASSERT_TRUE(meta1.has_value()) << meta1.error();
+
+    // 두 번째 파일: 내용 다르게 덮어쓰기
+    {
+        // NOLINTNEXTLINE(cppcoreguidelines-owning-memory)
+        std::FILE* f = std::fopen(yaml_path.c_str(), "w");
+        if (f == nullptr) {
+            GTEST_SKIP() << "Failed to open file for writing: " << yaml_path;
+        }
+        // NOLINTNEXTLINE(cert-err33-c)
+        std::fputs(R"(
+global:
+  log_level: debug
+  log_format: text
+  max_connections: 200
+  connection_timeout: 30s
+
+access_control:
+  - user: "dba"
+    source_ip: ""
+    allowed_tables: ["*"]
+    allowed_operations: ["*"]
+  - user: "read_only"
+    source_ip: ""
+    allowed_tables: ["users"]
+    allowed_operations: ["SELECT"]
+
+sql_rules:
+  block_statements:
+    - DROP
+    - TRUNCATE
+  block_patterns:
+    - "UNION\\s+SELECT"
+
+procedure_control:
+  mode: "whitelist"
+  whitelist: []
+  block_dynamic_sql: true
+  block_create_alter: true
+
+data_protection:
+  max_result_rows: 5000
+  block_schema_access: false
+)",
+                   f);
+        // NOLINTNEXTLINE(cert-err33-c,cppcoreguidelines-owning-memory)
+        (void)std::fclose(f);
+    }
+
+    auto cfg_result2 = PolicyLoader::load(yaml_path);
+    ASSERT_TRUE(cfg_result2.has_value()) << cfg_result2.error();
+    auto cfg2 = std::make_shared<PolicyConfig>(std::move(*cfg_result2));
+
+    const auto meta2 = store.save_snapshot(*cfg2, yaml_path);
+    ASSERT_TRUE(meta2.has_value()) << meta2.error();
+
+    // 파일 내용이 다르면 hash 도 달라야 한다
+    EXPECT_FALSE(meta2->hash.empty()) << "hash must not be empty for valid file";
+    EXPECT_NE(meta1->hash, meta2->hash)
+        << "Different source files must produce different SHA-256 hashes. "
+        << "v1=" << meta1->hash << " v2=" << meta2->hash;
+
+    std::filesystem::remove_all(tmp_dir);
 }

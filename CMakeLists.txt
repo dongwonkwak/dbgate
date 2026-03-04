@@ -56,6 +56,7 @@ set(DBGATE_SOURCES
     # policy — DON-23 Phase 2 stub
     src/policy/policy_engine.cpp
     src/policy/policy_loader.cpp
+    src/policy/policy_version_store.cpp
     # logger — DON-23 Phase 2 stub
     src/logger/structured_logger.cpp
     # stats — DON-28
@@ -105,6 +106,7 @@ add_executable(dbgate_tests
     src/parser/procedure_detector.cpp
     src/policy/policy_loader.cpp
     src/policy/policy_engine.cpp
+    src/policy/policy_version_store.cpp
     src/stats/uds_server.cpp
     src/health/health_check.cpp
     src/proxy/session.cpp

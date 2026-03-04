@@ -2,6 +2,7 @@ package dashboard
 
 import (
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"sync"
@@ -25,8 +26,15 @@ type policyTesterData struct {
 
 // indexData is the top-level data passed to the index template.
 type indexData struct {
-	Stats *client.StatsSnapshot
-	Error string
+	Stats         *client.StatsSnapshot
+	PolicyVersion uint64
+	Error         string
+}
+
+// policyVersionsData is passed to the policy-versions partial.
+type policyVersionsData struct {
+	Result *client.PolicyVersionsResult
+	Error  string
 }
 
 // sessionsData is passed to the sessions partial.
@@ -223,6 +231,75 @@ func (s *Server) handlePolicyExplain(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := tmpl.ExecuteTemplate(w, "templates/partials/policy-result.html", data); err != nil {
 		s.logger.Error("execute policy-result template", slog.String("error", err.Error()))
+	}
+}
+
+// handlePolicyVersions renders the policy version history partial.
+// GET /api/policy-versions
+func (s *Server) handlePolicyVersions(w http.ResponseWriter, _ *http.Request) {
+	tmpl, err := parseTemplates()
+	if err != nil {
+		s.logger.Error("parse templates", slog.String("error", err.Error()))
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	data := policyVersionsData{}
+	result, err := s.client.PolicyVersions()
+	if err != nil {
+		data.Error = err.Error()
+		s.logger.Warn("policy versions", slog.String("error", err.Error()))
+	} else {
+		data.Result = result
+	}
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := tmpl.ExecuteTemplate(w, "templates/partials/policy-versions.html", data); err != nil {
+		s.logger.Error("execute policy-versions template", slog.String("error", err.Error()))
+	}
+}
+
+// handlePolicyRollback processes a rollback request and returns the updated
+// version history partial for htmx swap.
+// POST /api/policy-rollback
+func (s *Server) handlePolicyRollback(w http.ResponseWriter, r *http.Request) {
+	tmpl, err := parseTemplates()
+	if err != nil {
+		s.logger.Error("parse templates", slog.String("error", err.Error()))
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	data := policyVersionsData{}
+
+	versionStr := r.FormValue("version")
+	if versionStr == "" {
+		data.Error = "version parameter is required"
+	} else {
+		var targetVersion uint64
+		if _, scanErr := fmt.Sscanf(versionStr, "%d", &targetVersion); scanErr != nil {
+			data.Error = fmt.Sprintf("invalid version %q: must be a positive integer", versionStr)
+		} else {
+			_, rollbackErr := s.client.PolicyRollback(targetVersion)
+			if rollbackErr != nil {
+				data.Error = rollbackErr.Error()
+				s.logger.Warn("policy rollback", slog.String("error", rollbackErr.Error()))
+			} else {
+				// Re-fetch the version list so the partial reflects the new state.
+				result, versionsErr := s.client.PolicyVersions()
+				if versionsErr != nil {
+					data.Error = versionsErr.Error()
+					s.logger.Warn("policy versions after rollback", slog.String("error", versionsErr.Error()))
+				} else {
+					data.Result = result
+				}
+			}
+		}
+	}
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := tmpl.ExecuteTemplate(w, "templates/partials/policy-versions.html", data); err != nil {
+		s.logger.Error("execute policy-versions template", slog.String("error", err.Error()))
 	}
 }
 

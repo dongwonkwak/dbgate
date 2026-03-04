@@ -159,6 +159,8 @@ LogLevel parse_log_level(const std::string& level_str) {
 
 // ---------------------------------------------------------------------------
 // policy_reload
+//   SIGHUP 핸들러에서 호출된다.
+//   DON-50: PolicyLoader::load → save_snapshot → policy_engine_->reload(버전 포함)
 // ---------------------------------------------------------------------------
 void ProxyServer::policy_reload() {
     spdlog::info("[proxy] SIGHUP received — reloading policy: {}", config_.policy_path);
@@ -170,8 +172,26 @@ void ProxyServer::policy_reload() {
     }
 
     auto new_config = std::make_shared<PolicyConfig>(std::move(*result));
-    policy_engine_->reload(std::move(new_config));
-    spdlog::info("[proxy] policy reloaded successfully");
+
+    // DON-50: 스냅샷 저장 후 버전 포함 reload
+    std::uint64_t new_version = 0;
+    if (version_store_) {
+        const std::filesystem::path policy_path{config_.policy_path};
+        auto save_result = version_store_->save_snapshot(*new_config, policy_path);
+        if (!save_result) {
+            spdlog::warn("[proxy] SIGHUP reload: snapshot save failed (non-fatal): {}",
+                         save_result.error());
+            new_version = version_store_->current_version();
+        } else {
+            new_version = save_result->version;
+            spdlog::info("[proxy] SIGHUP reload: snapshot saved v{}", new_version);
+        }
+        policy_engine_->reload(new_config, new_version);
+    } else {
+        policy_engine_->reload(new_config);
+    }
+
+    spdlog::info("[proxy] policy reloaded successfully (v{})", new_version);
 }
 
 // ---------------------------------------------------------------------------
@@ -209,14 +229,42 @@ void ProxyServer::run(boost::asio::io_context& io_ctx) {
     const auto log_level = parse_log_level(config_.log_level);
     logger_ = std::make_shared<StructuredLogger>(log_level, config_.log_path);
     stats_ = std::make_shared<StatsCollector>();
-    policy_engine_ = std::make_shared<PolicyEngine>(std::move(policy_config));
+    policy_engine_ = std::make_shared<PolicyEngine>(policy_config);
 
     // -----------------------------------------------------------------------
-    // 5. UdsServer 생성 + co_spawn
+    // 4b. PolicyVersionStore 생성 + 초기 스냅샷 저장 (DON-50)
+    // -----------------------------------------------------------------------
+    {
+        const std::filesystem::path policy_path{config_.policy_path};
+        const auto config_dir = policy_path.parent_path().empty() ? std::filesystem::current_path()
+                                                                  : policy_path.parent_path();
+        version_store_ = std::make_shared<PolicyVersionStore>(config_dir);
+
+        if (policy_config) {
+            // 초기 로드 성공 시 스냅샷 저장 (버전 관리 시작)
+            auto save_result = version_store_->save_snapshot(*policy_config, policy_path);
+            if (!save_result) {
+                spdlog::warn("[proxy] initial snapshot save failed (non-fatal): {}",
+                             save_result.error());
+            } else {
+                // 초기 버전으로 policy_engine_ 버전 설정
+                policy_engine_->reload(policy_config, save_result->version);
+                spdlog::info("[proxy] initial policy snapshot saved: v{}", save_result->version);
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // 5. UdsServer 생성 + co_spawn (DON-50: version_store_ 주입)
     // -----------------------------------------------------------------------
     auto sql_parser = std::make_shared<SqlParser>();
-    uds_server_ = std::make_unique<UdsServer>(
-        config_.uds_socket_path, stats_, policy_engine_, sql_parser, io_ctx);
+    uds_server_ = std::make_unique<UdsServer>(config_.uds_socket_path,
+                                              stats_,
+                                              policy_engine_,
+                                              sql_parser,
+                                              version_store_,
+                                              std::filesystem::path{config_.policy_path},
+                                              io_ctx);
 
     boost::asio::co_spawn(
         io_ctx,

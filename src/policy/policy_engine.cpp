@@ -1239,4 +1239,38 @@ void PolicyEngine::reload(std::shared_ptr<PolicyConfig> new_config) {
     // std::memory_order_release 를 사용하여 이 store 이전의 메모리 쓰기가
     // evaluate() 의 load(acquire) 이후에 보이도록 보장한다.
     config_.store(std::move(new_config), std::memory_order_release);
+    // 버전 없는 reload 는 version=0 으로 리셋 (하위 호환).
+    current_version_.store(0, std::memory_order_release);
+}
+
+// ---------------------------------------------------------------------------
+// PolicyEngine::reload (버전 추적 오버로드)
+//
+// 기존 reload(shared_ptr) 를 호출한 후 current_version_ 을 version 으로 갱신한다.
+//
+// [스레드 안전성 주의]
+// config_ store 와 current_version_ store 는 각각 atomic 이지만
+// 두 연산 사이에 짧은 비원자적 구간이 존재한다.
+// evaluate() 는 config_ 만 참조하므로 실질적인 경쟁은 없다.
+// current_version() 을 호출하는 관리 경로(Hot Reload 감시 등)는
+// 이 구간을 인지하고 사용해야 한다.
+// ---------------------------------------------------------------------------
+void PolicyEngine::reload(std::shared_ptr<PolicyConfig> new_config, std::uint64_t version) {
+    // config_ 교체 (기존 오버로드 재사용)
+    // 기존 오버로드가 current_version_ 을 0 으로 설정하므로
+    // 이후 version 을 덮어쓴다.
+    reload(std::move(new_config));
+    // 버전 갱신 (0 으로 리셋된 직후 덮어씀)
+    current_version_.store(version, std::memory_order_release);
+    spdlog::info("policy_engine: version set to {}", version);
+}
+
+// ---------------------------------------------------------------------------
+// PolicyEngine::current_version
+//
+// current_version_ 을 memory_order_acquire 로 읽어 반환한다.
+// noexcept 보장: 내부에서 예외 발생 없음.
+// ---------------------------------------------------------------------------
+std::uint64_t PolicyEngine::current_version() const noexcept {
+    return current_version_.load(std::memory_order_acquire);
 }

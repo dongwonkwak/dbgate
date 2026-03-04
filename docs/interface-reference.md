@@ -729,6 +729,99 @@ public:
 
 ---
 
+### policy/policy_version_store.hpp (DON-50)
+
+정책 스냅샷의 저장/로드/목록/정리를 담당하는 컴포넌트입니다.
+
+#### PolicyVersionMeta
+
+저장된 정책 스냅샷의 메타데이터입니다.
+
+```cpp
+struct PolicyVersionMeta {
+    std::uint64_t version{0};                      // 단조 증가 버전 번호 (1부터 시작)
+    std::string timestamp{};                       // ISO 8601 UTC (예: "20260304T103000Z")
+    std::uint32_t rules_count{0};                  // 해당 정책의 access_control 규칙 수
+    std::string hash{};                            // SHA-256 hex digest (파일 무결성)
+    std::filesystem::path snapshot_path{};         // 저장된 스냅샷 파일의 절대 경로
+};
+```
+
+**멤버**:
+- `version`: 버전 번호 (PolicyEngine::current_version()과 일치)
+- `timestamp`: 저장 시각 (ISO 8601 compact UTC)
+- `rules_count`: 정책의 access_control 규칙 수
+- `hash`: 원본 YAML 파일의 SHA-256 hex digest (무결성 확인용)
+- `snapshot_path`: 스냅샷 파일이 저장된 경로 (`.policy_versions/v{version}_{timestamp}.yaml`)
+
+#### PolicyVersionStore 클래스
+
+```cpp
+class PolicyVersionStore {
+public:
+    // 생성자
+    // config_dir : 정책 설정 디렉토리 (스냅샷은 config_dir/.policy_versions/ 에 저장)
+    // max_versions: 유지할 최대 스냅샷 수 (초과 시 오래된 것부터 자동 삭제)
+    explicit PolicyVersionStore(const std::filesystem::path& config_dir,
+                                std::uint32_t max_versions = 10);
+
+    ~PolicyVersionStore() = default;
+
+    PolicyVersionStore(const PolicyVersionStore&) = delete;
+    PolicyVersionStore& operator=(const PolicyVersionStore&) = delete;
+    PolicyVersionStore(PolicyVersionStore&&) = delete;
+    PolicyVersionStore& operator=(PolicyVersionStore&&) = delete;
+
+    // save_snapshot
+    //   source_path 의 YAML 파일을 스냅샷 디렉토리에 복사하여 버전을 저장한다.
+    //
+    //   성공: PolicyVersionMeta 반환 (version, timestamp, hash, snapshot_path 포함)
+    //   실패: std::unexpected(error_message) 반환
+    //   fail-close: 스냅샷 저장 실패해도 현재 정책에 영향 없음
+    [[nodiscard]] std::expected<PolicyVersionMeta, std::string> save_snapshot(
+        const PolicyConfig& config,
+        const std::filesystem::path& source_path);
+
+    // load_snapshot
+    //   version 에 해당하는 스냅샷을 파일에서 읽어 PolicyConfig 로 반환한다.
+    //
+    //   성공: PolicyConfig 반환
+    //   실패: std::unexpected(error_message) 반환 (파일 없음, 파싱 오류, 버전 미발견)
+    //   fail-close: 호출자는 실패 시 기존 정책 유지 또는 차단 처리
+    [[nodiscard]] std::expected<PolicyConfig, std::string> load_snapshot(
+        std::uint64_t version) const;
+
+    // list_versions
+    //   저장된 모든 버전의 메타데이터를 반환한다 (최신 버전 먼저 정렬).
+    [[nodiscard]] std::vector<PolicyVersionMeta> list_versions() const;
+
+    // current_version
+    //   마지막으로 저장된 버전 번호를 반환한다.
+    //   저장된 버전이 없으면 0 을 반환한다.
+    [[nodiscard]] std::uint64_t current_version() const;
+};
+```
+
+**설계 원칙**:
+- **원본 파일 복사 방식**: YAML 재직렬화 없이 원본 파일을 스냅샷으로 복사
+- **SHA-256 무결성 추적**: OpenSSL EVP API로 원본 파일의 해시를 계산하여 저장
+- **자동 정리(prune)**: `max_versions` 초과 시 오래된 스냅샷을 자동 삭제
+- **스레드 안전성**: 모든 공개 메서드는 std::mutex로 직렬화
+- **파일 구조**: `config_dir/.policy_versions/v{version}_{iso_timestamp}.yaml`
+
+**fail-close 연계**:
+- `load_snapshot` 실패 시 std::unexpected 반환 → 호출자가 기존 정책 유지 책임
+- `save_snapshot` 실패는 데이터패스에 영향 없음 (스냅샷 미보관일 뿐)
+
+**알려진 한계**:
+| 항목 | 설명 |
+|------|------|
+| 디렉토리 외부 수정 | `.policy_versions/` 외부에서 파일이 추가/삭제되면 내부 목록과 불일치 발생. 재시작 시 디렉토리 스캔으로 복원됨. |
+| 복원 시 rules_count/hash | 재시작 후 스캔 복원 시 `rules_count=0`, `hash=""` 로 초기화됨. |
+| 타임스탬프 동시성 | 동일 초에 여러 번 저장 시 파일명 충돌 가능 (`overwrite_existing` 옵션으로 덮어씀). |
+
+---
+
 ### policy/policy_engine.hpp
 
 파싱된 쿼리와 세션 컨텍스트를 받아 ALLOW/BLOCK/LOG 판정을 내립니다.
@@ -740,10 +833,15 @@ public:
 ```cpp
 enum class PolicyAction : std::uint8_t {
     kAllow = 0,  // 명시적 allow 규칙 일치 시만
-    kBlock = 1,  // default deny 또는 명시적 block
-    kLog   = 2,  // 허용 + 감사 로그
+    kBlock = 1,  // default deny 또는 명시적 block 규칙 일치
+    kLog   = 2,  // 허용하되 감사 로그 기록 (monitor mode로 다운그레이드된 차단)
 };
 ```
+
+**각 액션의 의미**:
+- `kAllow`: 쿼리 허용 (명시적 allow 규칙이 모든 단계를 통과했을 때만)
+- `kBlock`: 쿼리 차단 (정책에 불일치하거나 차단 규칙 일치)
+- `kLog`: 쿼리 허용 + 감사 로그 (monitor mode 규칙에 의해 kBlock이 kLog로 다운그레이드됨, DON-49)
 
 #### PolicyResult
 
@@ -754,8 +852,42 @@ struct PolicyResult {
     PolicyAction action{PolicyAction::kBlock};  // 기본값 BLOCK
     std::string  matched_rule{};                // 규칙 ID
     std::string  reason{};                      // 판정 이유
+    bool monitor_mode{false};                   // true: monitor 모드에 의해 kBlock→kLog 다운그레이드됨
 };
 ```
+
+**멤버**:
+- `action`: 판정 결과 (kAllow/kBlock/kLog)
+- `matched_rule`: 판정에 사용된 규칙 식별자 (없으면 "default-deny")
+- `reason`: 판정 이유 (로깅용, 클라이언트 직접 노출 비권장)
+- `monitor_mode`: Monitor mode 규칙에 의해 차단이 로그로만 기록되는지 여부
+
+#### ExplainResult (DON-48)
+
+정책 평가 dry-run 결과입니다 (디버깅/감사 전용, 실제 차단 수행 없음).
+
+```cpp
+struct ExplainResult {
+    PolicyAction action{PolicyAction::kBlock};     // 기본값 BLOCK (fail-close)
+    std::string matched_rule{};                    // 매칭된 규칙 식별자
+    std::string reason{};                          // 판정 이유 (로깅용)
+    std::string matched_access_rule{};             // "user@cidr" 형식, access rule 매칭 시만 채움
+    std::string evaluation_path{};                 // 단계별 평가 경로 trace
+    bool monitor_mode{false};                      // true: monitor 모드에 의해 kBlock→kLog 다운그레이드됨
+};
+```
+
+**멤버**:
+- `action`: 판정 결과 (kAllow/kBlock/kLog)
+- `matched_rule`: 판정에 사용된 규칙 식별자
+- `reason`: 판정 이유 (로깅용, 클라이언트 노출 금지)
+- `matched_access_rule`: access_control 룰 매칭 시 `"user@cidr"` 형식. 매칭 없으면 빈 문자열
+- `evaluation_path`: 단계별 평가 경로 추적 (예: `"config_loaded > access_rule_matched(admin@10.0.0.0/8) > command_allowed(SELECT)"`)
+- `monitor_mode`: Monitor mode 규칙에 의한 다운그레이드 여부
+
+**주의**:
+- explain()은 **디버깅/감사 목적 전용**이며, 프로덕션 데이터패스에서는 evaluate()를 사용해야 한다.
+- evaluation_path와 matched_access_rule은 정책 매칭 경로를 노출하므로 권한이 있는 사용자에게만 공개한다.
 
 #### PolicyEngine 클래스
 
@@ -772,10 +904,11 @@ public:
     PolicyEngine(PolicyEngine&&)                 = default;
     PolicyEngine& operator=(PolicyEngine&&)      = default;
 
-    // 정책 평가
-    // 평가 순서 (반드시 준수):
+    // evaluate
+    //   파싱된 쿼리와 세션 컨텍스트를 기반으로 정책을 평가한다.
+    //   평가 순서 (반드시 준수):
     //   1. SQL 구문 차단 (block_statements)
-    //   2. SQL 패턴 차단 (block_patterns / injection)
+    //   2. SQL 패턴 차단 (block_patterns / InjectionDetector)
     //   3. 사용자/IP 접근 제어
     //   4. 테이블 접근 제어
     //   5. 시간대 제한
@@ -786,16 +919,42 @@ public:
         const ParsedQuery&     query,
         const SessionContext&  session) const;
 
-    // 파서 오류 시 호출
-    // 반드시 PolicyAction::kBlock을 반환 (fail-close)
+    // evaluate_error
+    //   파서 오류 발생 시 호출. 반드시 PolicyAction::kBlock을 반환 (fail-close).
+    //   어떠한 경우에도 kAllow 또는 kLog를 반환해서는 안 됨 (noexcept).
     [[nodiscard]] PolicyResult evaluate_error(
         const ParseError&     error,
         const SessionContext& session) const noexcept;
 
+    // explain (DON-48)
+    //   evaluate()와 동일한 결정 로직을 따르되, 실제 차단/로깅 없이
+    //   ExplainResult만 반환한다 (dry-run 용도, 디버깅/감사 전용).
+    //   [주의] 프로덕션 데이터패스에서는 evaluate()를 사용해야 한다.
+    [[nodiscard]] ExplainResult explain(const ParsedQuery& query,
+                                        const SessionContext& session) const;
+
+    // explain_error (DON-48)
+    //   ParseError를 받아 ExplainResult를 반환한다.
+    //   evaluate_error()와 동일하게 반드시 action=kBlock 반환 (fail-close).
+    [[nodiscard]] ExplainResult explain_error(const ParseError& error,
+                                              const SessionContext& session) const noexcept;
+
     // Hot Reload: 새 정책으로 원자적 교체
     // 진행 중인 evaluate()는 이전 config로 완료
     // 새로운 evaluate()는 new_config 사용
+    // 이 오버로드는 version=0으로 버전 추적을 생략 (하위 호환)
     void reload(std::shared_ptr<PolicyConfig> new_config);
+
+    // reload (버전 추적 오버로드, DON-50)
+    //   new_config 교체 후 current_version_을 version으로 갱신한다.
+    //   기존 reload(shared_ptr) 시그니처와 하위 호환 유지.
+    void reload(std::shared_ptr<PolicyConfig> new_config, std::uint64_t version);
+
+    // current_version (DON-50)
+    //   현재 활성 정책의 버전 번호를 반환한다 (noexcept).
+    //   reload(config, version)으로 설정된 버전을 반환.
+    //   reload(config) (버전 없음) 호출 시 0으로 리셋됨.
+    [[nodiscard]] std::uint64_t current_version() const noexcept;
 };
 ```
 
@@ -804,6 +963,10 @@ public:
 - 정책 일치 없음 → kBlock (default deny)
 - 엔진 오류 → kBlock
 - kAllow는 명시적 allow 규칙 필요
+
+**thread-safety**:
+- evaluate/evaluate_error/explain/explain_error: 읽기 전용, concurrent 호출 안전
+- reload: std::atomic<std::shared_ptr<>>으로 원자적 교체, data race 없음
 
 ---
 
@@ -989,9 +1152,26 @@ Unix Domain Socket 서버로 Go CLI에 통계를 노출합니다.
 ```cpp
 class UdsServer {
 public:
+    // 생성자 1: stats 전용 (policy_explain 비활성)
     UdsServer(const std::filesystem::path&    socket_path,
               std::shared_ptr<StatsCollector> stats,
               asio::io_context&               ioc);
+
+    // 생성자 2: policy_explain 활성
+    UdsServer(const std::filesystem::path&    socket_path,
+              std::shared_ptr<StatsCollector> stats,
+              std::shared_ptr<PolicyEngine>   policy_engine,
+              std::shared_ptr<SqlParser>      sql_parser,
+              asio::io_context&               ioc);
+
+    // 생성자 3: policy_versions/policy_rollback/policy_reload 활성 (DON-50)
+    UdsServer(const std::filesystem::path&      socket_path,
+              std::shared_ptr<StatsCollector>   stats,
+              std::shared_ptr<PolicyEngine>     policy_engine,
+              std::shared_ptr<SqlParser>        sql_parser,
+              std::shared_ptr<PolicyVersionStore> version_store,
+              const std::filesystem::path&      policy_config_path,
+              asio::io_context&                 ioc);
 
     ~UdsServer();
 
@@ -1013,13 +1193,16 @@ public:
 - 요청: `[4byte LE 길이][JSON]`
   - 예: `{"command": "stats", "version": 1}`
 - 응답: `[4byte LE 길이][JSON]`
-  - 성공: `{"ok": true, "payload": {...StatsSnapshot...}}`
+  - 성공: `{"ok": true, "payload": {...}}`
   - 실패: `{"ok": false, "error": "<msg>"}`
 
-**지원 커맨드**:
-- `"stats"`: StatsSnapshot 반환
-- `"sessions"`: 활성 세션 목록 (Phase 3)
-- `"policy_reload"`: 정책 리로드 트리거 (Phase 3)
+**지원 커맨드** (버전에 따라 활성화):
+- `"stats"`: StatsSnapshot 반환 (생성자 1/2/3)
+- `"policy_explain"`: SQL 정책 평가 dry-run (생성자 2/3, DON-48)
+- `"policy_versions"`: 저장된 정책 버전 목록 조회 (생성자 3, DON-50)
+- `"policy_rollback"`: 특정 버전으로 정책 롤백 (생성자 3, DON-50)
+- `"policy_reload"`: 정책 파일 리로드 + 스냅샷 저장 (생성자 3, DON-50)
+- `"sessions"`: 활성 세션 목록 (Phase 3 확장 예정)
 
 ---
 
