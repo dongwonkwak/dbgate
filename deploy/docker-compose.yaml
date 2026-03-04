@@ -109,7 +109,8 @@ services:
     build:
       context: ..
       dockerfile: deploy/Dockerfile.tools
-    command: ["dbgate-dashboard", "--socket", "/run/dbgate/dbgate.sock", "--listen", ":8081"]
+    entrypoint: ["dbgate-dashboard"]
+    command: ["--socket", "/run/dbgate/dbgate.sock", "--listen", ":8081"]
     ports:
       - "127.0.0.1:8081:8081"
     volumes:
