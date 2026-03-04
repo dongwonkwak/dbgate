@@ -54,5 +54,9 @@ corpus/
 !tests/fuzz/corpus/
 !tests/fuzz/corpus/**
 
+# ─── Benchmarks ──────────────────────────────────────────────────────────────
+benchmarks/results/*.json
+!benchmarks/results/.gitkeep
+
 .claude/settings.local.json
 .claude/agent-memory/

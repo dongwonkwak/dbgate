@@ -1,0 +1,46 @@
+# =============================================================================
+# dbgate 벤치마크 전용 정책
+#
+# 성능 측정을 위해 모든 쿼리를 허용하되,
+# fail-close 제약 충족을 위해 매칭 불가능한 더미 패턴 1개를 포함한다.
+# =============================================================================
+global:
+  log_level: warn
+  log_format: json
+  max_connections: 1000
+  connection_timeout: 30s
+
+access_control:
+  - user: "dbgate"
+    source_ip: "0.0.0.0/0"
+    allowed_tables: ["*"]
+    allowed_operations: ["SELECT", "INSERT", "UPDATE", "DELETE", "CREATE", "DROP"]
+    time_restriction: null
+
+  - user: "root"
+    source_ip: "0.0.0.0/0"
+    allowed_tables: ["*"]
+    allowed_operations: ["SELECT", "INSERT", "UPDATE", "DELETE", "CREATE", "DROP"]
+    time_restriction: null
+
+sql_rules:
+  block_statements: []
+  block_patterns:
+    # 절대 매칭되지 않는 더미 패턴 (fail-close 제약 충족)
+    - "^__DBGATE_BENCHMARK_NEVER_MATCH__$"
+
+procedure_control:
+  mode: "whitelist"
+  whitelist: []
+  block_dynamic_sql: false
+  block_create_alter: false
+
+data_protection:
+  max_result_rows: 0
+  block_schema_access: false
+  sensitive_columns: []
+
+alerts:
+  on_block: false
+  on_high_volume_query: false
+  threshold_qps: 100000

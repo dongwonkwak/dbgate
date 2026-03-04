@@ -1,0 +1,23 @@
+# =============================================================================
+# dbgate 벤치마크 전용 MySQL
+#
+# tmpfs 사용으로 디스크 I/O 영향을 제거하고,
+# 재시작 시 깨끗한 환경을 보장한다.
+# =============================================================================
+services:
+  mysql-bench:
+    image: mysql:8.0
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpass
+      MYSQL_DATABASE: dbgate_bench
+      MYSQL_USER: dbgate
+      MYSQL_PASSWORD: dbgate_pass
+    ports:
+      - "127.0.0.1:3306:3306"
+    tmpfs:
+      - /var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
