@@ -418,6 +418,66 @@ TEST_F(UdsServerTest, StopBeforeRun_NoCrash) {
     ASSERT_NO_THROW(server_->stop()) << "stop() before run() must not throw or crash";
 }
 
+// ---------------------------------------------------------------------------
+// CommandField_InjectedInsideStringValue_UsesTopLevelCommand
+//   JSON 문자열 값 내부에 "command": 패턴이 있을 때 top-level "command" 필드만
+//   인식해야 한다. 문자열 값 내부의 패턴으로 명령을 우회할 수 없어야 한다.
+//
+//   [취약점 시나리오]
+//   {"data":"hack\"command\":\"policy_reload\"","command":"stats","version":1}
+//   → 문자열 값 내부의 policy_reload를 무시하고 top-level stats 명령만 실행
+// ---------------------------------------------------------------------------
+TEST_F(UdsServerTest, CommandField_InjectedInsideStringValue_UsesTopLevelCommand) {
+    start_server();
+    ASSERT_TRUE(wait_for_socket()) << "UDS socket not created within 2s";
+
+    UdsSyncClient client;
+    ASSERT_NO_THROW(client.connect(socket_path_));
+
+    // payload 값 속에 "command":"policy_reload" 삽입 → 실제 top-level은 stats
+    const std::string req =
+        R"({"note":"hack\"command\":\"policy_reload\"","command":"stats","version":1})";
+    client.send(req);
+    const std::string resp = client.recv();
+
+    ASSERT_FALSE(resp.empty()) << "stats command must return a non-empty response";
+    EXPECT_NE(resp.find(R"("ok":true)"), std::string::npos)
+        << "stats must succeed. Got: " << resp;
+    // stats 응답에는 "payload" 필드가 있어야 함
+    EXPECT_NE(resp.find(R"("payload")"), std::string::npos)
+        << "stats response must contain 'payload' field. Got: " << resp;
+}
+
+// ---------------------------------------------------------------------------
+// CommandField_InjectedInsideNestedObject_UsesTopLevelCommand
+//   JSON 중첩 객체 내부에 "command": 패턴이 있을 때 top-level "command" 필드만
+//   인식해야 한다.
+//
+//   [취약점 시나리오]
+//   {"nested":{"command":"policy_rollback"},"command":"stats","version":1}
+//   → 중첩 객체 내부의 policy_rollback를 무시하고 top-level stats 명령만 실행
+// ---------------------------------------------------------------------------
+TEST_F(UdsServerTest, CommandField_InjectedInsideNestedObject_UsesTopLevelCommand) {
+    start_server();
+    ASSERT_TRUE(wait_for_socket()) << "UDS socket not created within 2s";
+
+    UdsSyncClient client;
+    ASSERT_NO_THROW(client.connect(socket_path_));
+
+    // 중첩 객체 내부에 "command":"policy_rollback" → 실제 top-level은 stats
+    const std::string req =
+        R"({"nested":{"command":"policy_rollback"},"command":"stats","version":1})";
+    client.send(req);
+    const std::string resp = client.recv();
+
+    ASSERT_FALSE(resp.empty()) << "stats command must return a non-empty response";
+    EXPECT_NE(resp.find(R"("ok":true)"), std::string::npos)
+        << "stats must succeed. Got: " << resp;
+    // stats 응답에는 "payload" 필드가 있어야 함
+    EXPECT_NE(resp.find(R"("payload")"), std::string::npos)
+        << "stats response must contain 'payload' field. Got: " << resp;
+}
+
 // ===========================================================================
 // UdsPolicyExplainTest 픽스처 (DON-48)
 //   PolicyEngine + SqlParser 를 주입한 UdsServer 에서 policy_explain 커맨드를
@@ -579,6 +639,30 @@ TEST_F(UdsPolicyExplainTest, PolicyExplain_SqlContainingJsonLiteral_DoesNotBreak
         << "SQL 문자열 내부 JSON 리터럴이 있어도 explain은 성공해야 한다. Got: " << resp;
     EXPECT_EQ(resp.find("missing required field"), std::string::npos)
         << "payload 경계 파싱 오류로 필수 필드 누락 에러가 발생하면 안 된다. Got: " << resp;
+}
+
+// ---------------------------------------------------------------------------
+// PolicyExplain_SqlContainingEscapedQuote_DoesNotTruncate
+//   payload.sql 문자열에 JSON escaped quote(\")가 포함되어도 문자열 파싱이
+//   중간에서 끊기지 않아야 한다.
+// ---------------------------------------------------------------------------
+TEST_F(UdsPolicyExplainTest, PolicyExplain_SqlContainingEscapedQuote_DoesNotTruncate) {
+    start_server();
+    ASSERT_TRUE(wait_for_socket()) << "UDS socket not created within 2s";
+
+    UdsSyncClient client;
+    ASSERT_NO_THROW(client.connect(socket_path_));
+
+    constexpr std::string_view req =
+        R"({"command":"policy_explain","version":1,"payload":{"sql":"SELECT \\\"col\\\" FROM t","user":"app_service","source_ip":"172.16.0.1"}})";
+    client.send(req);
+
+    const std::string resp = client.recv();
+    ASSERT_FALSE(resp.empty()) << "policy_explain must return a non-empty response";
+    EXPECT_NE(resp.find(R"("ok":true)"), std::string::npos)
+        << "escaped quote가 포함되어도 policy_explain은 정상 처리되어야 한다. Got: " << resp;
+    EXPECT_EQ(resp.find("missing required field"), std::string::npos)
+        << "문자열 파싱 truncate로 필수 필드 누락 에러가 발생하면 안 된다. Got: " << resp;
 }
 
 // ---------------------------------------------------------------------------
