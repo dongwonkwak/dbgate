@@ -202,6 +202,8 @@ docker build -f deploy/Dockerfile.tools -t dbgate-tools:latest .
 
 ```bash
 cd deploy
+cp .env.example .env   # 시크릿 값 반드시 수정
+# .env 파일에서 MYSQL_ROOT_PASSWORD, MYSQL_PASSWORD, HAPROXY_STATS_AUTH 변경
 docker compose up --build -d
 ```
 
@@ -211,10 +213,10 @@ docker compose up --build -d
 
 ```bash
 # HAProxy 경유 MySQL 접속
-mysql -h 127.0.0.1 -P 13306 -u dbgate -pdbgate_pass dbgate_test
+mysql -h 127.0.0.1 -P 13306 -u dbgate -p dbgate_test
 
-# HAProxy 통계 페이지
-curl http://localhost:8404/stats
+# HAProxy 통계 페이지 (인증 필요, .env의 HAPROXY_STATS_AUTH 참조)
+curl -u admin:changeme_stats http://localhost:8404/stats
 
 # 개별 인스턴스 헬스체크
 docker compose exec dbgate-1 curl -s http://localhost:8080/health
