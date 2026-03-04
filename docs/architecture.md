@@ -4,172 +4,85 @@
 
 dbgate는 MySQL 클라이언트와 MySQL 서버 사이에 위치하는 **DB 접근제어 프록시**입니다. 높은 성능이 요구되는 **데이터패스(data path)**는 C++로, 운영 편의성이 중요한 **컨트롤플레인(control plane)**은 Go로 구현되어 있습니다.
 
-## 모듈 구조 다이어그램
+## 아키텍처 다이어그램
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                          dbgate Instance                             │
-├─────────────────────────────────────────────────────────────────────┤
-│                                                                       │
-│  ┌─────────────┐                                    ┌──────────────┐ │
-│  │ DB Client   │                                    │ MySQL Server │ │
-│  └──────┬──────┘                                    └──────────────┘ │
-│         │                                                    ▲        │
-│         │ TCP Connect (Port 13306) [+ optional TLS]        │        │
-│         │                                                   │        │
-│         ▼                                                   │        │
-│  ┌───────────────────────────────────────────────────────────────┐  │
-│  │  Boost.Asio (epoll 기반 비동기 I/O, C++23 코루틴)             │  │
-│  │  - TCP Accept                                                 │  │
-│  │  - Session Manager (1:1 릴레이)                              │  │
-│  │  - Strand (스레드 안전성)                                     │  │
-│  │  - SSL/TLS (Frontend/Backend 독립 지원)                       │  │
-│  └───────────────────────────────────────────────────────────────┘  │
-│         ▲                                                            │
-│         │                                                            │
-│  ┌──────┴──────────────────────────────────────────────────────┐   │
-│  │          핸드셰이크 단계 (투명 패스스루)                        │   │
-│  │  - 클라이언트 ← → 서버 간 패킷 투명 릴레이                   │   │
-│  │  - auth plugin 개입 없음                                      │   │
-│  │  - SessionContext 구성 (db_user, db_name 추출)               │   │
-│  └──────┬───────────────────────────────────────────────────────┘   │
-│         │                                                            │
-│  ┌──────▼──────────────────────────────────────────────────────┐   │
-│  │             COM_QUERY 처리 루프 (정책 적용)                   │   │
-│  │  1. MySQL 패킷 수신 (parse)                                 │   │
-│  │  2. SQL 추출                                                 │   │
-│  │        │                                                     │   │
-│  │  ┌─────▼──────────────────────────────────────────────┐    │   │
-│  │  │            SQL Parser (경량)                       │    │   │
-│  │  │  - 첫 번째 키워드로 구문 분류                        │    │   │
-│  │  │    (SELECT/INSERT/UPDATE/DELETE/DROP/...)         │    │   │
-│  │  │  - 테이블명 추출 (기본적)                           │    │   │
-│  │  │  - 정규식 기반 간단한 패턴 매칭                    │    │   │
-│  │  │  ParsedQuery 생성                                 │    │   │
-│  │  └─────┬──────────────────────────────────────────────┘    │   │
-│  │        │                                                     │   │
-│  │  ┌─────▼──────────────────────────────────────────────┐    │   │
-│  │  │      InjectionDetector (정규식)                    │    │   │
-│  │  │  - SQL Injection 패턴 탐지                          │    │   │
-│  │  │  - 주석 분할, 인코딩 우회 등 한계 존재              │    │   │
-│  │  └─────┬──────────────────────────────────────────────┘    │   │
-│  │        │                                                     │   │
-│  │  ┌─────▼──────────────────────────────────────────────┐    │   │
-│  │  │      ProcedureDetector (상태 분류)                 │    │   │
-│  │  │  - CALL/PREPARE/EXECUTE 탐지                       │    │   │
-│  │  │  - 동적 SQL 우회 가능성 표시                        │    │   │
-│  │  └─────┬──────────────────────────────────────────────┘    │   │
-│  │        │                                                     │   │
-│  │  ┌─────▼──────────────────────────────────────────────┐    │   │
-│  │  │         PolicyEngine (정책 판정)                   │    │   │
-│  │  │  1. SQL 구문 차단 규칙 확인                         │    │   │
-│  │  │  2. 패턴 기반 차단 확인                             │    │   │
-│  │  │  3. 사용자/IP 접근 제어                            │    │   │
-│  │  │  4. 테이블 접근 제어                                │    │   │
-│  │  │  5. 시간대 제한                                     │    │   │
-│  │  │  6. 프로시저 제어 (화이트/블랙리스트)              │    │   │
-│  │  │  7. ALLOW / BLOCK / LOG 판정                       │    │   │
-│  │  │                                                     │    │   │
-│  │  │  원칙: ALLOW는 명시적 허용 규칙 필요                │    │   │
-│  │  │        일치 없음 → BLOCK (default deny)             │    │   │
-│  │  │        파싱 오류 → BLOCK (fail-close)               │    │   │
-│  │  └─────┬──────────────────────────────────────────────┘    │   │
-│  │        │                                                     │   │
-│  │  ┌─────▼─────────────────┬────────────────────────────┐    │   │
-│  │  │                       │                            │    │   │
-│  │  ▼                       ▼                            ▼    │   │
-│  │[ALLOW]          [BLOCK/LOG]              [Internal Error]│   │
-│  │  │                 │                         │         │   │
-│  │  │    ┌────────────┴─────────────┐          │         │   │
-│  │  │    ▼                          ▼          ▼         │   │
-│  │  │  [릴레이]             [Error Response]  [Log]      │   │
-│  │  │                                                     │   │
-│  │  ▼                                                     │   │
-│  └──────────────────────────────────────────────────────────┘   │
-│         │                                                            │
-│         ▼                                                            │
-│  ┌──────────────────────────────────────────────────────┐           │
-│  │          StructuredLogger (spdlog, JSON)            │           │
-│  │  - 연결 로그 (connect/disconnect)                    │           │
-│  │  - 쿼리 로그 (정책 판정 결과 포함)                   │           │
-│  │  - 차단 로그 (차단 사유/규칙 정보)                   │           │
-│  └──────────────────────────────────────────────────────┘           │
-│         │                                                            │
-│         ▼                                                            │
-│  ┌──────────────────────────────────────────────────────┐           │
-│  │          StatsCollector (실시간 통계, atomic)       │           │
-│  │  - 총 연결 수 (total_connections)                    │           │
-│  │  - 활성 세션 수 (active_sessions)                    │           │
-│  │  - 총 쿼리 수 (total_queries)                        │           │
-│  │  - 차단 쿼리 수 (blocked_queries)                    │           │
-│  │  - 초당 쿼리 수 (QPS, 슬라이딩 윈도우)               │           │
-│  │  - 차단 비율 (block_rate)                            │           │
-│  └──────────────────────────────────────────────────────┘           │
-│         │                                                            │
-│         ▼                                                            │
-│  ┌──────────────────────────────────────────────────────┐           │
-│  │  UdsServer (Unix Domain Socket)                      │           │
-│  │  - Go CLI 도구와 통신 (저오버헤드)                    │           │
-│  │  - 프로토콜: 4byte LE 길이 + JSON 페이로드           │           │
-│  │  - 지원 커맨드: stats / sessions / policy_reload     │           │
-│  └──────────────────────────────────────────────────────┘           │
-│                                                                       │
-└─────────────────────────────────────────────────────────────────────┘
-        │
-        │ Unix Domain Socket (/tmp/dbgate.sock 등)
-        │
-        ▼
-┌───────────────────────────────────┐
-│      Go CLI / 웹 대시보드          │
-│  (tools/cmd/dbgate-cli)           │
-│  - sessions 조회                   │
-│  - stats 조회                      │
-│  - policy reload                   │
-│  - 실시간 모니터링                 │
-└───────────────────────────────────┘
+C4 모델 스타일로 3단계 깊이로 표현합니다. 각 레벨은 한 가지 관심사만 담당합니다.
+
+### Level 1 — Context (외부 시스템 관계)
+
+```mermaid
+flowchart TD
+    client["DB Client\n애플리케이션"]
+    operator["운영자\nDBA · 보안팀"]
+    dbgate["dbgate\nDB 접근제어 프록시"]
+    mysql[("MySQL Server")]
+
+    client -->|"MySQL protocol / TCP · TLS"| dbgate
+    dbgate -->|"1:1 relay"| mysql
+    operator -->|"CLI · 대시보드"| dbgate
 ```
 
-## 모듈 의존 관계
+### Level 2 — Container (런타임 구성)
 
-```
-common/
-  ├─ types.hpp        (공통 타입, enum, 구조체)
-  └─ async_stream.hpp (TCP/TLS 통합 AsyncStream 래퍼; async_read_some/write_some/handshake — DON-31)
-  │
-protocol/ (← common)
-  ├─ mysql_packet.hpp (MySQL 와이어 프로토콜 패킷)
-  ├─ handshake.hpp    (핸드셰이크 패스스루, relay_handshake(AsyncStream&, AsyncStream&, ...) — DON-31)
-  └─ command.hpp      (COM_QUERY 등 커맨드)
-  │
-parser/ (← common, protocol)
-  ├─ sql_parser.hpp          (SQL 구문 분류)
-  ├─ injection_detector.hpp  (Injection 탐지)
-  └─ procedure_detector.hpp  (프로시저 탐지)
-  │
-policy/ (← common, parser)
-  ├─ rule.hpp         (정책 구조체)
-  ├─ policy_loader.hpp (YAML 로드)
-  └─ policy_engine.hpp (정책 판정)
-  │
-logger/ (← common)
-  ├─ log_types.hpp       (로그 구조체)
-  └─ structured_logger.hpp (spdlog 래퍼)
-  │
-stats/ (← common)
-  ├─ stats_collector.hpp  (실시간 통계)
-  └─ uds_server.hpp       (UDS 서버)
-  │
-health/ (← common, stats)
-  └─ health_check.hpp (HTTP Health Check)
-  │
-proxy/ (← common, protocol, parser, policy, logger, stats, health)
-  ├─ proxy_server.hpp (TCP 서버, Frontend SSL context, Backend SSL context — DON-31)
-  └─ session.hpp      (1:1 릴레이 세션, AsyncStream 기반, Backend SSL 업그레이드 — DON-31)
+```mermaid
+flowchart LR
+    client["DB Client"]
+    mysql[("MySQL Server")]
+    operator["운영자"]
 
-✓ 무순환 (DAG) 구조 보장
-✓ proxy 레이어만 모든 모듈에 의존 (통합점)
-✓ logger/stats는 상위 모듈에 역의존하지 않음
+    subgraph core["dbgate C++ Core  ―  데이터패스 (Boost.Asio TLS)"]
+        cpp["proxy · session\nprotocol · parser · policy\nlogger · stats · health"]
+    end
+
+    subgraph control["Go Control Plane  ―  운영 인터페이스"]
+        cli["dbgate-cli"]
+        dash["dbgate-dashboard"]
+    end
+
+    client -->|"MySQL protocol\nTCP · TLS"| cpp
+    cpp -->|"1:1 relay"| mysql
+    cli -->|"UDS / JSON"| cpp
+    dash -->|"UDS / JSON"| cpp
+    operator --> cli & dash
 ```
+
+### Level 3 — Component (C++ Core 내부 모듈)
+
+```mermaid
+flowchart TD
+    common["common\ntypes · async_stream"]
+
+    subgraph datapath["데이터패스"]
+        protocol["protocol\nmysql_packet · handshake · command"]
+        parser["parser\nsql · injection · procedure"]
+        policy["policy\nengine · loader · rule"]
+        proxy["proxy\nproxy_server · session"]
+    end
+
+    subgraph infra["인프라"]
+        logger["logger\nstructured_logger"]
+        stats["stats\ncollector · uds_server"]
+        health["health\nhealth_check"]
+    end
+
+    common --> protocol & parser & policy & logger & stats & health & proxy
+
+    protocol --> parser
+    parser --> policy
+    protocol --> proxy
+    parser --> proxy
+    policy --> proxy
+    logger --> proxy
+    stats --> proxy
+    health --> proxy
+    health -.->|"snapshot() read-only"| stats
+```
+
+- 실선: 컴파일 타임 의존 (현재 구현)
+- 점선: 읽기 전용 참조 (쓰기 없음)
+- 무순환(DAG) 구조, `proxy`가 통합점
+- `logger` / `stats` / `health`는 상위 계층으로 역의존하지 않음
+- Go Control Plane의 sessions · policy_reload 기능은 현재 501 (planned)
 
 ## 데이터 흐름 상세
 
@@ -184,16 +97,34 @@ proxy/ (← common, protocol, parser, policy, logger, stats, health)
 
 ### 2단계: MySQL 핸드셰이크
 
-```
-[Client]                              [Server]
-   │                                     │
-   │─── HandshakeInit Packet ────────────→
-   │                                     │
-   │←─ HandshakeInit Packet ─────────────│
-   │                                     │
-   │─ HandshakeResponse Packet (user, db) →
-   │                                     │
-   │←─ OK/Error ─────────────────────────│
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant P as Proxy(Session)
+    participant S as MySQL Server
+
+    S->>P: Initial Handshake
+    Note over P: strip_unsupported_capabilities()<br/>CLIENT_SSL/CLIENT_QUERY_ATTRIBUTES/CLIENT_DEPRECATE_EOF 제거
+    P->>C: Modified Initial Handshake
+
+    C->>P: HandshakeResponse41
+    Note over P: extract user/db + strip_unsupported_client_capabilities()
+    P->>S: Modified HandshakeResponse41
+
+    loop Auth Round Trips (max 10)
+        S->>P: Auth Switch / Auth More Data / OK / ERR / EOF
+        alt AuthSwitch(0xFE, payload>=9) or AuthMoreData(0x01)
+            P->>C: Relay auth challenge
+            C->>P: Auth response
+            P->>S: Relay auth response
+        else OK(0x00)
+            P->>C: Relay OK
+            Note over P: ctx.db_user/db_name 설정<br/>ctx.handshake_done=true
+        else ERR(0xFF) or EOF(0xFE, payload<9)
+            P->>C: Relay failure packet
+            Note over P: handshake failed (fail-close)
+        end
+    end
 ```
 
 **HandshakeRelay의 역할:**
@@ -212,7 +143,9 @@ While (세션 활성):
        │
     2. extract_command(packet)
        │
-       ├─ COM_QUERY 아니면 → 그냥 릴레이 후 응답
+       ├─ COM_QUERY 아니면
+       │   ├─ COM_STMT_PREPARE/EXECUTE/RESET → 차단(Error 1235)
+       │   └─ 그 외 커맨드 → 투명 릴레이 후 응답
        │
        ▼ COM_QUERY인 경우
 
@@ -222,17 +155,17 @@ While (세션 활성):
 
     4. Injection Detection (병렬 가능)
        - InjectionDetector::check(raw_sql)
-       - InjectionResult (detected=true/false)
+       - 현재는 보조 탐지(PolicyEngine 입력으로 직접 전달되지는 않음)
 
     5. Procedure Detection (병렬 가능)
        - ProcedureDetector::detect(parsed_query)
-       - ProcedureInfo (is_dynamic_sql 등)
+       - 현재는 보조 탐지(PolicyEngine 입력으로 직접 전달되지는 않음)
 
     6. Policy Engine 평가
        - PolicyEngine::evaluate(parsed_query, session_context)
-       - 순서: 구문 차단 → 패턴 차단 → 사용자/IP → 테이블 →
-               시간대 → 프로시저 → 명시적 allow/default deny
-       - PolicyResult (action=ALLOW/BLOCK/LOG)
+       - 순서: 구문 차단 → 패턴 차단 → 사용자/IP → blocked_operations →
+               시간대 → 테이블 → allowed_operations → 프로시저/스키마 → allow/default deny
+       - PolicyResult (action=ALLOW/BLOCK, kLog는 현재 미사용)
 
     7-1. ALLOW인 경우
          └─ MySQL 서버로 릴레이
@@ -242,12 +175,9 @@ While (세션 활성):
          └─ Error Packet 생성 (MySQL 호환)
          └─ 클라이언트에 오류 응답
 
-    7-3. LOG인 경우
-         └─ ALLOW와 동일하게 처리
-         └─ 감사 로그에 기록
-
     8. 로깅 (모든 경로)
-       - StructuredLogger::log_query(entry)
+       - ALLOW: StructuredLogger::log_query(entry)
+       - BLOCK: StructuredLogger::log_block(entry)
        - JSON 포맷으로 기록
 
     9. 통계 갱신 (모든 경로)
@@ -341,7 +271,7 @@ try {
 }
 ```
 
-## 모듈 구현 상태 (DON-31 기준)
+## 모듈 구현 상태
 
 | 모듈 | 상태 | 구현 범위 |
 |------|------|----------|
@@ -353,7 +283,7 @@ try {
 | `parser/` | ✓ 완료 | SQL 파싱, Injection 탐지, 프로시저 탐지 |
 | `policy/` | ✓ 완료 | 정책 엔진, YAML 로더, Hot Reload |
 | `logger/` | ✓ 완료 | 구조화 JSON 로깅 |
-| `stats/` | ✓ 완료 | Atomic 통계 수집, UDS 서버 (JSON API) |
+| `stats/` | ✓ 완료 | Atomic 통계 수집, UDS 서버 (JSON API, `stats` 구현 / `sessions`,`policy_reload`는 501) |
 | `health/` | ✓ 완료 | HTTP /health 엔드포인트 (read-only stats) |
 | `proxy/proxy_server.hpp` | ✓ 완료 | **TCP 서버, SSL context 초기화, Frontend SSL accept (DON-31)** |
 | `proxy/session.hpp` | ✓ 완료 | **1:1 릴레이, AsyncStream 기반, Backend SSL 업그레이드 (DON-31)** |
@@ -428,7 +358,7 @@ try {
   - 고성능 (lock-free atomic)
   - 데이터패스 오버헤드 최소화
   - Go CLI와 저레이턴시 통신
-  - 지원 커맨드: `stats`, `sessions`, `policy_reload`
+  - 지원 커맨드: `stats` (구현), `sessions`/`policy_reload` (planned, 현재 501)
   - 프로토콜: 4byte LE 길이 + JSON 페이로드
 
 ### health 모듈
@@ -461,53 +391,6 @@ try {
     - SSLRequest 전송 → TLS 핸드셰이크 → AsyncStream 교체
   - **SslConfig**: Frontend(cert/key), Backend(CA/verify_peer) 분리 설정 구조
   - **ProxyConfig**: frontend_ssl_enabled/cert_path/key_path, backend_ssl_enabled/ca_path/verify/sni 필드 (DON-31)
-
-## Query Processing Pipeline
-
-Session::run()이 구현하는 SQL 처리 파이프라인은 다음과 같습니다:
-
-```
-1. 클라이언트 패킷 읽기 (co_await client_stream_.async_read_some)
-   │   (AsyncStream: TLS/평문 투명 처리)
-   │
-2. MySQL 프로토콜 파싱 (CommandType 판별)
-   │
-   ├─ COM_QUERY가 아니면 → 단계 9 (패스스루)
-   │
-   ▼ COM_QUERY인 경우
-
-3. SQL 문자열 추출 (extract_command 또는 mysql_packet.payload)
-   │
-4. SqlParser::parse() → ParsedQuery 또는 fail-close
-   │
-5. InjectionDetector::check() → 인젝션 패턴 탐지 (병렬 가능)
-   │
-6. ProcedureDetector::detect() → 프로시저/동적 SQL 탐지 (병렬 가능)
-   │
-7. PolicyEngine::evaluate() → PolicyAction::kAllow/kBlock/kLog
-   │
-   ├─ kAllow → 단계 9 (MySQL 서버로 릴레이)
-   │
-   └─ kBlock/kLog → 차단 또는 로그 기록
-      ├─ kBlock: Error Packet 생성 → 클라이언트 전송
-      └─ kLog: MySQL 서버로 릴레이 + 감사 로그 기록
-
-8. 모든 경로: 응답 처리 및 로깅
-   ├─ StructuredLogger::log_query() (JSON 로그)
-   └─ StatsCollector::on_query(blocked) (원자적 카운터)
-
-9. MySQL 응답 릴레이 (seq_id 역전 감지)
-   │   (AsyncStream: TLS/평문 투명 처리)
-   │
-10. 루프 반복 또는 세션 종료
-```
-
-**주요 구현 포인트:**
-
-- **ParsingError 처리**: SQL 파서가 실패하면 PolicyEngine::evaluate_error() 호출 → 반드시 kBlock 반환 (fail-close)
-- **응답 릴레이**: MySQL 응답 패킷의 sequence_id가 역전되지 않도록 주의 (여러 패킷 응답 시)
-- **비동기**: 모든 I/O는 `co_await` + strand으로 관리 (스레드 안전성)
-- **통계 갱신**: 모든 쿼리 처리 후 StatsCollector::on_query() 호출 (blocked 여부 기록)
 
 ## Graceful Shutdown 플로우
 
@@ -693,8 +576,11 @@ Session::run() 루프 내부:
 2. auto [cmd_type, sql] = extract_command(buffer)
 
    ├─ if (cmd_type != COM_QUERY)
-   │  └─ co_await relay_packet(server_socket, buffer)
-   │     (PING, INIT_DB, QUIT 등 정책 검사 없이 릴레이)
+   │  ├─ if (cmd_type in {COM_STMT_PREPARE, COM_STMT_EXECUTE, COM_STMT_RESET})
+   │  │   └─ Error 1235 반환 (prepared statement 미지원, fail-close)
+   │  └─ else
+   │     └─ co_await relay_packet(server_socket, buffer)
+   │        (PING, INIT_DB, QUIT 등 정책 검사 없이 릴레이)
    │
    └─ if (cmd_type == COM_QUERY)
       └─ SQL 파싱 및 정책 평가 구간 시작
@@ -712,18 +598,18 @@ Session::run() 루프 내부:
 4. auto injection_result = injection_detector_.check(sql)
    (병렬 가능: parsed 완료 후 독립적으로 진행)
    → InjectionResult{detected, matched_pattern, ...}
+   → 현재는 관측/로그 보조 용도 (PolicyEngine 입력 인자 아님)
 
 5. auto procedure_result = procedure_detector_.detect(parsed)
    (병렬 가능: parsed 완료 후 독립적으로 진행)
    → ProcedureInfo{is_dynamic_sql, ...}
+   → 현재는 관측/로그 보조 용도 (PolicyEngine 입력 인자 아님)
 
 6. auto policy_result = policy_engine_.evaluate(
      parsed.value(),
-     ctx_,
-     injection_result,
-     procedure_result
+     ctx_
    )
-   → PolicyResult{action=ALLOW/BLOCK/LOG, matched_rule, reason}
+   → PolicyResult{action=ALLOW/BLOCK, matched_rule, reason}
 
 7. 정책 결과에 따른 분기:
 
@@ -744,20 +630,9 @@ Session::run() 루프 내부:
    │  ├─ co_await async_write(client_socket, err_pkt, ...)
    │  └─ stats.on_query(blocked=true)
    │
-   └─ if (policy_result.action == PolicyAction::kLog)
-      ├─ co_await async_write(server_socket, buffer, ...)
-      ├─ co_await relay_response(client_socket, server_socket)
-      └─ 감사 로그 추가 기록
-
-8. 모든 경로 (ALLOW/BLOCK/LOG):
-   ├─ logger_.log_query(QueryLog{
-   │    session_id, db_user, client_ip,
-   │    raw_sql, command_type, tables,
-   │    action, matched_rule, duration_us
-   │  })
-   │
-   └─ stats_.on_query(blocked=policy_result.action==BLOCK)
-      (원자적 카운터 갱신)
+8. 로깅/통계 갱신:
+   ├─ ALLOW: logger_.log_query(QueryLog{...}) + stats_.on_query(false)
+   └─ BLOCK: logger_.log_block(BlockLog{...}) + stats_.on_query(true)
 
 9. 루프 반복 또는 종료
    └─ if (COM_QUIT 또는 소켓 에러)
@@ -791,40 +666,27 @@ co_await relay_response(client_socket, server_socket):
 
 ## 배포 아키텍처
 
-```
-┌────────────────┐
-│   HAProxy      │ (로드밸런싱, Health Check 모니터링)
-│  Port 3306     │
-└────────────────┘
-        │
-    ┌───┼───┬───┐
-    │   │   │   │
-    ▼   ▼   ▼   ▼
-┌───────────┐  ┌───────────┐  ┌───────────┐
-│ dbgate #1 │  │ dbgate #2 │  │ dbgate #3 │
-│ :13306    │  │ :13306    │  │ :13306    │
-├───────────┤  ├───────────┤  ├───────────┤
-│  C++ Core │  │  C++ Core │  │  C++ Core │
-│  Go CLI   │  │  Go CLI   │  │  Go CLI   │
-└─────┬─────┘  └─────┬─────┘  └─────┬─────┘
-      │              │              │
-      └──────┬───────┴──────┬───────┘
-             │              │
-        ┌────▼────┐    ┌────▼────┐
-        │ MySQL   │    │ MySQL   │
-        │ Primary │    │ Replica │
-        └─────────┘    └─────────┘
+```mermaid
+flowchart TD
+    haproxy["HAProxy :3306\n로드밸런싱 · Health Check 모니터링"]
 
-Health Check:
-- dbgate #1 → GET /health:8001
-- dbgate #2 → GET /health:8002
-- dbgate #3 → GET /health:8003
+    cpp1["dbgate #1 :13306\nC++ Core · Go CLI\n/health :8001"]
+    cpp2["dbgate #2 :13306\nC++ Core · Go CLI\n/health :8002"]
+    cpp3["dbgate #3 :13306\nC++ Core · Go CLI\n/health :8003"]
 
-CLI/Dashboard:
-- dbgate-cli sessions  (UDS → /tmp/dbgate-1.sock)
-- dbgate-cli stats
-- dbgate-cli policy reload
+    primary[("MySQL Primary")]
+    replica[("MySQL Replica")]
+
+    haproxy -->|"MySQL proxy"| cpp1 & cpp2 & cpp3
+    haproxy -.->|"GET /health"| cpp1 & cpp2 & cpp3
+    cpp1 & cpp2 & cpp3 --> primary
+    cpp1 & cpp2 & cpp3 -.->|"read"| replica
 ```
+
+**CLI/Dashboard (UDS):**
+- `dbgate-cli stats` — 실시간 통계 조회 (구현됨)
+- `dbgate-cli sessions` — 세션 목록 (planned, 현재 501)
+- `dbgate-cli policy reload` — 정책 갱신 (planned, 현재 501)
 
 ## SSL/TLS 구성 (DON-31)
 
@@ -860,10 +722,10 @@ CLIENT_SSL 비트 처리:
 Client: SELECT * FROM users WHERE id = 1;
   │
   ├─ Parser: SELECT command, tables=[users]
-  ├─ Injection: No injection pattern
-  ├─ Procedure: No procedure call
+  ├─ InjectionDetector: No pattern match (보조 탐지)
+  ├─ ProcedureDetector: No procedure call (보조 탐지)
   ├─ Policy: Access Rule check
-  │          - user=app_service ✓
+  │          - user=readonly_user ✓
   │          - source_ip=192.168.1.x ✓
   │          - operation=SELECT ✓
   │          - table=users ✓
@@ -882,14 +744,14 @@ Server Response: ✓ 정상 응답
 Client: DROP TABLE users;
   │
   ├─ Parser: DROP command, tables=[users]
-  ├─ Injection: No injection
-  ├─ Procedure: No procedure
+  ├─ InjectionDetector: No pattern match
+  ├─ ProcedureDetector: No procedure
   ├─ Policy: SQL Rule check
   │          - block_statements includes "DROP" ✗
   │          → PolicyAction::kBlock
   ├─ Response: Error Packet
-  │           (ERROR 1045: "Query blocked by policy: DROP not allowed")
-  └─ Log: BlockLog (matched_rule="sql-rule-001", reason="DROP statement blocked")
+  │           (ERROR 1045: "Access denied by policy")
+  └─ Log: BlockLog (matched_rule="block-statement", reason="SQL statement blocked: DROP")
 
 Server: (요청 전달 안 됨)
 
@@ -902,15 +764,13 @@ Client Response: ✗ 차단 오류
 Client: SELECT * FROM users WHERE name = '' OR 1=1 --';
   │
   ├─ Parser: SELECT command, tables=[users]
-  ├─ Injection: Pattern ' OR 1=1 -- matched! ✗
-  │           InjectionResult::detected=true
-  │           matched_pattern="'\\s*OR\\s+1\\s*=\\s*1"
-  ├─ Policy: Injection detected
-  │         (정책에서 injection=true일 때 BLOCK 규칙 검사)
+  ├─ InjectionDetector: OR 패턴 매칭(보조 탐지)
+  ├─ Policy: sql_rules.block_patterns 정규식 매칭
+  │         (예: "'\\s*OR\\s+'.*'\\s*=\\s*'")
   │         → PolicyAction::kBlock
   ├─ Response: Error Packet
-  │           (ERROR 1045: "Query blocked: SQL injection pattern detected")
-  └─ Log: BlockLog (matched_rule="injection-detector", reason="Pattern matched: '.*OR 1=1.*'")
+  │           (ERROR 1045: "Access denied by policy")
+  └─ Log: BlockLog (matched_rule="block-pattern", reason="SQL pattern blocked: ...")
 
 Client Response: ✗ 차단 오류
 ```
@@ -945,12 +805,12 @@ Client Response: ✗ 차단 오류
    - 전처리 단계 부재 (주석 제거 미구현)
 
 3. **Prepared Statement**
-   - `COM_STMT_PREPARE` 바이너리 프로토콜 미파싱
-   - 문자열 리터럴 내부 SQL 미분석
+   - `COM_STMT_PREPARE`/`COM_STMT_EXECUTE`/`COM_STMT_RESET`은 현재 fail-close 차단
+   - 따라서 Prepared Statement 바이너리 프로토콜 정책 검사는 미지원
 
 4. **세션 모델**
    - 1:1 릴레이만 지원 (커넥션 풀링 미지원)
-   - Multi-statement 지원 미정
+   - Multi-statement는 현재 SqlParser 단계에서 fail-close 차단
 
 5. **DoS 방어**
    - Slowloris 같은 프로토콜 레벨 공격 미방어
@@ -964,7 +824,7 @@ Client Response: ✗ 차단 오류
 - Prometheus 메트릭 Export
 - PostgreSQL 프로토콜 지원
 
-## 구현 참고 (DON-28)
+## 구현 참고
 
 ### 주요 코드 위치
 
@@ -1011,75 +871,6 @@ Client Response: ✗ 차단 오류
 6. **Hot Reload**: SIGHUP 수신 시 PolicyLoader::load() → PolicyEngine::reload() 호출
 7. **CLIENT_SSL Strip**: HandshakeRelay에서 capability flags 조작하여 이중 TLS 방지
 
-## 통합 구현 요약 (DON-28)
-
-이 섹션은 Session::run(), ProxyServer::run() 등 핵심 코루틴의 구조와 설계 원칙을 정리합니다.
-
-### Session::run() 코루틴의 역할
-
-Session 인스턴스 하나는 클라이언트 연결 하나에 해당하며, Session::run() 코루틴이 다음을 수행합니다:
-
-1. **핸드셰이크 (HandshakeRelay)**: 클라이언트 ↔ 서버 간 MySQL 핸드셰이크 패킷을 투명 릴레이
-2. **Query Processing Loop**:
-   - 클라이언트로부터 MySQL 패킷 읽기 (co_await async_read_some)
-   - CommandType 판별 (COM_QUERY vs 기타)
-   - COM_QUERY인 경우 SQL 파싱 및 정책 평가
-   - 정책 결과에 따라 릴레이/차단
-   - 응답을 클라이언트로 릴레이
-   - 로깅 및 통계 갱신
-3. **정리 (Cleanup)**: 세션 종료 시 소켓 정상 종료
-
-### ProxyServer의 역할
-
-ProxyServer 인스턴스는 다음을 관리합니다:
-
-1. **TCP Accept 루프**: 클라이언트 연결을 수용하고 각 연결마다 Session 코루틴 생성
-2. **Signal Handling**: SIGTERM/SIGINT → graceful shutdown, SIGHUP → hot reload
-3. **Session 관리**: active session count, graceful shutdown 시 모든 세션 종료 대기
-
-### Fail-Close 원칙 구현
-
-- **SQL 파싱 실패**: PolicyEngine::evaluate_error() 호출 → 반드시 PolicyAction::kBlock 반환
-- **정책 엔진 오류**: 설정 로드 실패 등 → 기본값 kBlock
-- **무매칭**: 명시적 allow 규칙이 없으면 default deny (kBlock)
-
-### Strand를 이용한 스레드 안전성
-
-- Session 단위 코루틴이 모두 동일 strand 위에서 실행
-- 수동 락/뮤텍스 불필요
-- 다중 세션은 병렬 실행 (각각 다른 strand 사용 가능)
-
-### Lock-Free 통계 수집
-
-- StatsCollector::on_query()는 std::atomic만 사용 (contention 제로)
-- HealthCheck::run(), UdsServer::run()은 snapshot()을 호출하여 현재 통계 조회 (read-only)
-
-### Hot Reload 메커니즘
-
-```
-SIGHUP 신호
-  → signal_set 핸들러
-    → PolicyLoader::load(config_path)
-      → 성공: PolicyEngine::reload(new_config)
-      → 실패: 로그 기록, 기존 정책 유지 (fail-close)
-```
-
-- std::atomic<shared_ptr<PolicyConfig>>로 원자적 교체
-- 진행 중인 evaluate()는 영향 없음 (이전 config 사용)
-- 새로운 요청부터 새 정책 적용
-
-### Graceful Shutdown 시나리오
-
-```
-SIGTERM/SIGINT 신호
-  → signal_set 핸들러
-    → ProxyServer::stop()
-      → stopping_ = true
-      → acceptor.close() (새 연결 거부)
-      → sessions[*].close() (기존 세션 정상 종료 대기)
-      → io_context.stop()
-```
-
 ## 참고 문서
 
 - ADR-001: Boost.Asio vs raw epoll
@@ -1087,5 +878,6 @@ SIGTERM/SIGINT 신호
 - ADR-004: YAML 정책 형식
 - ADR-005: C++/Go 언어 분리
 - ADR-006: SQL 파서 범위
+- ADR-007: SSL/TLS AsyncStream 설계
 - `docs/data-flow.md`: 시나리오별 상세 흐름
 - `docs/uds-protocol.md`: Go CLI ↔ C++ 통신 프로토콜
