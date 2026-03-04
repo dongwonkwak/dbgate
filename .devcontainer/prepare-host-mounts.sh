@@ -6,21 +6,21 @@ home_dir="${HOME}"
 ensure_dir() {
   local path="$1"
   if [ ! -d "$path" ]; then
-    mkdir -p "$path"
+    mkdir -p -m 700 "$path"
   fi
 }
 
 ensure_json_file() {
   local path="$1"
   if [ ! -e "$path" ]; then
-    printf '{}\n' >"$path"
+    (umask 077 && printf '{}\n' >"$path")
   fi
 }
 
 ensure_file() {
   local path="$1"
   if [ ! -e "$path" ]; then
-    : >"$path"
+    (umask 077 && : >"$path")
   fi
 }
 
