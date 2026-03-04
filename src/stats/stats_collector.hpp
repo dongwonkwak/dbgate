@@ -21,11 +21,11 @@
 //   두 경로 간 mutex 없이 atomic 로드/스토어로 분리한다.
 // ---------------------------------------------------------------------------
 
-#include "common/types.hpp"
-
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+
+#include "common/types.hpp"
 
 // ---------------------------------------------------------------------------
 // StatsSnapshot
@@ -34,13 +34,14 @@
 //   block_rate: blocked_queries / total_queries (total == 0 이면 0.0)
 // ---------------------------------------------------------------------------
 struct StatsSnapshot {
-    std::uint64_t                              total_connections{0};
-    std::uint64_t                              active_sessions{0};
-    std::uint64_t                              total_queries{0};
-    std::uint64_t                              blocked_queries{0};
-    double                                     qps{0.0};
-    double                                     block_rate{0.0};
-    std::chrono::system_clock::time_point      captured_at{};
+    std::uint64_t total_connections{0};
+    std::uint64_t active_sessions{0};
+    std::uint64_t total_queries{0};
+    std::uint64_t blocked_queries{0};
+    std::uint64_t monitored_blocks{0};
+    double qps{0.0};
+    double block_rate{0.0};
+    std::chrono::system_clock::time_point captured_at{};
 };
 
 // ---------------------------------------------------------------------------
@@ -54,22 +55,21 @@ struct StatsSnapshot {
 class StatsCollector {
 public:
     StatsCollector() noexcept
-        : total_connections_{0}
-        , active_sessions_{0}
-        , total_queries_{0}
-        , blocked_queries_{0}
-        , window_queries_{0}
-        , window_start_(std::chrono::system_clock::now())
-    {}
+        : total_connections_{0},
+          active_sessions_{0},
+          total_queries_{0},
+          blocked_queries_{0},
+          window_queries_{0},
+          window_start_(std::chrono::system_clock::now()) {}
 
     ~StatsCollector() = default;
 
     // 복사 금지 (atomic 은 복사 불가)
-    StatsCollector(const StatsCollector&)            = delete;
+    StatsCollector(const StatsCollector&) = delete;
     StatsCollector& operator=(const StatsCollector&) = delete;
 
     // 이동 금지 (atomic 소유권 명확화)
-    StatsCollector(StatsCollector&&)            = delete;
+    StatsCollector(StatsCollector&&) = delete;
     StatsCollector& operator=(StatsCollector&&) = delete;
 
     // on_connection_open
@@ -100,6 +100,13 @@ public:
         }
     }
 
+    // on_monitored_block
+    //   monitor 모드에서 "차단되었을" 쿼리 발생 시 호출.
+    //   blocked_queries 와 분리된 별도 카운터 (block_rate 정확성 유지).
+    void on_monitored_block() noexcept {
+        monitored_blocks_.fetch_add(1, std::memory_order_relaxed);
+    }
+
     // snapshot
     //   현재 통계의 불변 스냅샷을 반환한다 (조회 경로).
     //
@@ -107,16 +114,16 @@ public:
     //   window_start_ 이후 경과 시간과 window_queries_ 를 이용해 계산.
     //   Phase 3 에서 1초 슬라이딩 윈도우로 교체 예정.
     [[nodiscard]] StatsSnapshot snapshot() const noexcept {
-        const auto now          = std::chrono::system_clock::now();
-        const auto total_conn   = total_connections_.load(std::memory_order_relaxed);
-        const auto active_sess  = active_sessions_.load(std::memory_order_relaxed);
-        const auto total_q      = total_queries_.load(std::memory_order_relaxed);
-        const auto blocked_q    = blocked_queries_.load(std::memory_order_relaxed);
-        const auto window_q     = window_queries_.load(std::memory_order_relaxed);
+        const auto now = std::chrono::system_clock::now();
+        const auto total_conn = total_connections_.load(std::memory_order_relaxed);
+        const auto active_sess = active_sessions_.load(std::memory_order_relaxed);
+        const auto total_q = total_queries_.load(std::memory_order_relaxed);
+        const auto blocked_q = blocked_queries_.load(std::memory_order_relaxed);
+        const auto monitored_b = monitored_blocks_.load(std::memory_order_relaxed);
+        const auto window_q = window_queries_.load(std::memory_order_relaxed);
         const auto window_start = window_start_.load();
 
-        const double elapsed_sec = std::chrono::duration<double>(
-            now - window_start).count();
+        const double elapsed_sec = std::chrono::duration<double>(now - window_start).count();
 
         double qps = 0.0;
         if (elapsed_sec > 0.0) {
@@ -130,23 +137,25 @@ public:
 
         return StatsSnapshot{
             .total_connections = total_conn,
-            .active_sessions   = active_sess,
-            .total_queries     = total_q,
-            .blocked_queries   = blocked_q,
-            .qps               = qps,
-            .block_rate        = block_rate,
-            .captured_at       = now,
+            .active_sessions = active_sess,
+            .total_queries = total_q,
+            .blocked_queries = blocked_q,
+            .monitored_blocks = monitored_b,
+            .qps = qps,
+            .block_rate = block_rate,
+            .captured_at = now,
         };
     }
 
 private:
-    std::atomic<std::uint64_t>                              total_connections_;
-    std::atomic<std::uint64_t>                              active_sessions_;
-    std::atomic<std::uint64_t>                              total_queries_;
-    std::atomic<std::uint64_t>                              blocked_queries_;
+    std::atomic<std::uint64_t> total_connections_;
+    std::atomic<std::uint64_t> active_sessions_;
+    std::atomic<std::uint64_t> total_queries_;
+    std::atomic<std::uint64_t> blocked_queries_;
+    std::atomic<std::uint64_t> monitored_blocks_{0};
 
     // QPS 슬라이딩 윈도우용 카운터/타임스탬프
     // Phase 3 에서 1초 윈도우 교체 시 ring buffer 방식으로 변경 예정.
-    std::atomic<std::uint64_t>                              window_queries_;
-    std::atomic<std::chrono::system_clock::time_point>      window_start_;
+    std::atomic<std::uint64_t> window_queries_;
+    std::atomic<std::chrono::system_clock::time_point> window_start_;
 };

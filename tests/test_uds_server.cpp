@@ -697,3 +697,39 @@ TEST_F(UdsServerTest, PolicyExplain_WithoutPolicyEngine_ReturnsNotImplemented) {
     EXPECT_NE(resp.find("501"), std::string::npos)
         << "Response should contain 501 code. Got: " << resp;
 }
+
+// ---------------------------------------------------------------------------
+// Stats_ContainsMonitoredBlocks (DON-49)
+//   on_monitored_block() 를 호출한 후 "stats" 커맨드를 전송하면
+//   JSON 응답에 "monitored_blocks" 필드가 포함되어야 한다.
+//
+//   [검증 포인트]
+//   - "monitored_blocks" 키 포함
+//   - on_monitored_block() 호출 횟수만큼 값이 반영됨
+//     (JSON 파서 없이 문자열 탐색으로 검증)
+//
+//   [패턴]
+//   StatsCommand_ReturnsValidSnapshot 테스트와 동일한 픽스처(UdsServerTest)를 사용한다.
+// ---------------------------------------------------------------------------
+TEST_F(UdsServerTest, Stats_ContainsMonitoredBlocks) {
+    // monitor 모드에서 차단된 쿼리를 시뮬레이션: on_monitored_block() 2회 호출
+    stats_->on_monitored_block();
+    stats_->on_monitored_block();
+
+    start_server();
+    ASSERT_TRUE(wait_for_socket()) << "UDS socket not created within 2s";
+
+    UdsSyncClient client;
+    ASSERT_NO_THROW(client.connect(socket_path_))
+        << "Client must connect to UDS server successfully";
+
+    client.send(R"({"command":"stats","version":1})");
+
+    const std::string resp = client.recv();
+    ASSERT_FALSE(resp.empty()) << "stats command must return a non-empty response";
+
+    EXPECT_NE(resp.find(R"("ok":true)"), std::string::npos)
+        << "stats response must contain \"ok\":true. Got: " << resp;
+    EXPECT_NE(resp.find(R"("monitored_blocks")"), std::string::npos)
+        << "stats payload must contain 'monitored_blocks' field (DON-49). Got: " << resp;
+}

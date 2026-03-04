@@ -19,6 +19,7 @@ type StatsSnapshot struct {
 	ActiveSessions   uint64    `json:"active_sessions"`
 	TotalQueries     uint64    `json:"total_queries"`
 	BlockedQueries   uint64    `json:"blocked_queries"`
+	MonitoredBlocks  uint64    `json:"monitored_blocks"`
 	QPS              float64   `json:"qps"`
 	BlockRate        float64   `json:"block_rate"`
 	CapturedAt       time.Time `json:"captured_at"`
@@ -51,6 +52,7 @@ type PolicyExplainResult struct {
 	EvaluationPath    string   `json:"evaluation_path"`          // step-by-step evaluation trace
 	ParsedCommand     string   `json:"parsed_command,omitempty"` // e.g. "SELECT", "DROP"
 	ParsedTables      []string `json:"parsed_tables,omitempty"`  // extracted table names
+	MonitorMode       bool     `json:"monitor_mode"`             // true when policy engine is in monitor-only mode
 }
 
 // Response is the common UDS response wrapper from the C++ dbgate core.

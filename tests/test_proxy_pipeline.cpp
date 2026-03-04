@@ -122,6 +122,7 @@ struct PipelineResult {
     std::string reason;
     bool injection_detected{false};
     bool procedure_detected{false};
+    bool monitor_mode{false};  // sql_rules/access_rule monitor 모드에서 통과된 경우
 };
 
 // ---------------------------------------------------------------------------
@@ -180,12 +181,47 @@ PipelineResult simulate_pipeline(std::string_view sql,
     const bool is_blocked = (policy_result.action == PolicyAction::kBlock);
     stats.on_query(is_blocked);
 
+    // monitor 모드: session.cpp 의 동작을 그대로 재현
+    // policy_result.monitor_mode == true 이면 on_monitored_block() 호출
+    if (policy_result.monitor_mode) {
+        stats.on_monitored_block();
+    }
+
     return PipelineResult{
         .action = policy_result.action,
         .reason = policy_result.reason,
         .injection_detected = false,
         .procedure_detected = proc_found,
+        .monitor_mode = policy_result.monitor_mode,
     };
+}
+
+// ---------------------------------------------------------------------------
+// make_monitor_config
+//   sql_rules.mode = kMonitor 로 설정된 PolicyConfig.
+//   block_statements: DROP, TRUNCATE
+//   block_patterns: UNION SELECT 인젝션
+//   access_control: testuser 에게 SELECT/INSERT/UPDATE/DELETE 허용.
+//   unknown_user 는 access_control 에 없음 → no-access-rule(kBlock).
+// ---------------------------------------------------------------------------
+std::shared_ptr<PolicyConfig> make_monitor_config() {
+    auto cfg = std::make_shared<PolicyConfig>();
+
+    cfg->sql_rules.block_statements = {"DROP", "TRUNCATE"};
+    cfg->sql_rules.block_patterns = {"UNION\\s+SELECT"};
+    cfg->sql_rules.mode = RuleMode::kMonitor;  // monitor 모드
+
+    // testuser 만 등록 (unknown_user 는 no-access-rule → kBlock)
+    AccessRule rule{};
+    rule.user = "testuser";
+    rule.source_ip_cidr = "";
+    rule.allowed_tables = {"*"};
+    rule.allowed_operations = {"SELECT", "INSERT", "UPDATE", "DELETE", "DROP"};
+    rule.blocked_operations = {};
+    rule.mode = RuleMode::kEnforce;
+    cfg->access_control.push_back(std::move(rule));
+
+    return cfg;
 }
 
 }  // namespace
@@ -539,3 +575,103 @@ TEST_F(ProxyPipeline, PiggybackInjection_IsBlocked) {
 // e2e 통합 테스트(MySQL 실제 연결)에서 검증합니다.
 // 파이프라인 테스트는 SqlParser/PolicyEngine 검증에 중점을 둡니다.
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Monitor 모드 우회 버그 회귀 테스트 (DON-49 수정 검증)
+//
+// [배경]
+// 수정 전: sql_rules.mode=monitor 에서 block_statements/block_patterns 매칭 시
+//   즉시 kLog 반환 → access_control(no-access-rule) 체크 건너뜀
+//   → 미등록 사용자(unknown_user)가 DROP 같은 차단 쿼리를 통과시킬 수 있었음
+//
+// [수정 후 보장]
+// 1. monitor 모드여도 no-access-rule(미등록 사용자) → kBlock (fail-close 유지)
+// 2. monitor 모드 + 등록된 사용자 + block_statement 매칭 → kLog (monitor 정상 동작)
+// 3. 통계: monitor kLog → on_monitored_block() 호출, blocked_queries 미증가
+//
+// [파이프라인 통합 포인트]
+// SqlParser → PolicyEngine.evaluate() → StatsCollector
+// (session.cpp 의 on_query/on_monitored_block 호출 경로를 simulate_pipeline 에서 재현)
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Monitor_UnknownUser_BlockStatement_StillBlocked
+//   sql_rules.mode=monitor + 미등록 사용자(unknown_user) + DROP
+//   → access_control no-access-rule 에 의해 kBlock.
+//   → stats: blocked_queries 증가, monitored_blocks 변화 없음.
+// ---------------------------------------------------------------------------
+TEST_F(ProxyPipeline, Monitor_UnknownUser_BlockStatement_StillBlocked) {
+    // monitor 모드 config 으로 엔진 교체
+    const auto monitor_cfg = make_monitor_config();
+    const PolicyEngine monitor_engine(monitor_cfg);
+
+    // unknown_user 는 access_control 에 없음 → no-access-rule
+    const auto unknown_session = make_session("unknown_user");
+
+    auto snap_before = stats_->snapshot();
+
+    const auto result = simulate_pipeline(
+        "DROP TABLE users", monitor_engine, *inj_det_, *proc_det_, unknown_session, *stats_);
+
+    EXPECT_EQ(result.action, PolicyAction::kBlock)
+        << "monitor 모드여도 no-access-rule(미등록 사용자)이면 kBlock이어야 한다 (fail-close)";
+    EXPECT_FALSE(result.monitor_mode)
+        << "no-access-rule 에 의한 차단은 monitor_mode 플래그를 세우지 않아야 한다";
+
+    auto snap_after = stats_->snapshot();
+    EXPECT_EQ(snap_after.blocked_queries, snap_before.blocked_queries + 1)
+        << "kBlock 은 blocked_queries 를 증가시켜야 한다";
+    EXPECT_EQ(snap_after.monitored_blocks, snap_before.monitored_blocks)
+        << "kBlock(no-access-rule) 은 monitored_blocks 를 증가시키지 않아야 한다";
+}
+
+// ---------------------------------------------------------------------------
+// Monitor_UnknownUser_BlockPattern_StillBlocked
+//   sql_rules.mode=monitor + 미등록 사용자 + UNION SELECT(block_pattern)
+//   → no-access-rule 에 의해 kBlock.
+// ---------------------------------------------------------------------------
+TEST_F(ProxyPipeline, Monitor_UnknownUser_BlockPattern_StillBlocked) {
+    const auto monitor_cfg = make_monitor_config();
+    const PolicyEngine monitor_engine(monitor_cfg);
+    const auto unknown_session = make_session("unknown_user");
+
+    const auto result = simulate_pipeline("SELECT id FROM users UNION SELECT password FROM admin",
+                                          monitor_engine,
+                                          *inj_det_,
+                                          *proc_det_,
+                                          unknown_session,
+                                          *stats_);
+
+    // InjectionDetector 도 UNION SELECT 를 탐지할 수 있으므로 kBlock 여부만 검증
+    EXPECT_EQ(result.action, PolicyAction::kBlock)
+        << "monitor 모드여도 no-access-rule(미등록 사용자)이면 kBlock이어야 한다 (fail-close)";
+}
+
+// ---------------------------------------------------------------------------
+// Monitor_RegisteredUser_BlockStatement_IsKLog_WithStats
+//   sql_rules.mode=monitor + 등록된 사용자(testuser) + DROP
+//   → access_control 통과 후 kLog (monitor 정상 동작).
+//   → stats: monitored_blocks 증가, blocked_queries 미증가.
+// ---------------------------------------------------------------------------
+TEST_F(ProxyPipeline, Monitor_RegisteredUser_BlockStatement_IsKLog_WithStats) {
+    const auto monitor_cfg = make_monitor_config();
+    const PolicyEngine monitor_engine(monitor_cfg);
+
+    // testuser 는 make_monitor_config() 에 등록됨 + allowed_operations 에 DROP 포함
+    const auto registered_session = make_session("testuser");
+
+    auto snap_before = stats_->snapshot();
+
+    const auto result = simulate_pipeline(
+        "DROP TABLE logs", monitor_engine, *inj_det_, *proc_det_, registered_session, *stats_);
+
+    EXPECT_EQ(result.action, PolicyAction::kLog)
+        << "monitor 모드 + 등록된 사용자 + block_statement 매칭 → kLog 이어야 한다";
+    EXPECT_TRUE(result.monitor_mode) << "kLog 결과는 monitor_mode=true 플래그를 가져야 한다";
+
+    auto snap_after = stats_->snapshot();
+    EXPECT_EQ(snap_after.monitored_blocks, snap_before.monitored_blocks + 1)
+        << "kLog(monitor) 는 on_monitored_block() 을 통해 monitored_blocks 를 증가시켜야 한다";
+    EXPECT_EQ(snap_after.blocked_queries, snap_before.blocked_queries)
+        << "kLog(monitor) 는 blocked_queries 를 증가시키지 않아야 한다";
+}

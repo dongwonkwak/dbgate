@@ -15,12 +15,12 @@
 //   정책을 별도로 적용할 것.
 // ---------------------------------------------------------------------------
 
-#include "common/types.hpp"  // std::uint64_t 등 기본 타입 (SessionContext 불포함)
-
 #include <chrono>
 #include <cstdint>
 #include <string>
 #include <vector>
+
+#include "common/types.hpp"  // std::uint64_t 등 기본 타입 (SessionContext 불포함)
 
 // ---------------------------------------------------------------------------
 // LogLevel
@@ -28,8 +28,8 @@
 // ---------------------------------------------------------------------------
 enum class LogLevel : std::uint8_t {
     kDebug = 0,
-    kInfo  = 1,
-    kWarn  = 2,
+    kInfo = 1,
+    kWarn = 2,
     kError = 3,
 };
 
@@ -39,12 +39,12 @@ enum class LogLevel : std::uint8_t {
 //   event: "connect" | "disconnect"
 // ---------------------------------------------------------------------------
 struct ConnectionLog {
-    std::uint64_t                              session_id{0};
-    std::string                                event{};        // "connect" | "disconnect"
-    std::string                                client_ip{};
-    std::uint16_t                              client_port{0};
-    std::string                                db_user{};
-    std::chrono::system_clock::time_point      timestamp{};
+    std::uint64_t session_id{0};
+    std::string event{};  // "connect" | "disconnect"
+    std::string client_ip{};
+    std::uint16_t client_port{0};
+    std::string db_user{};
+    std::chrono::system_clock::time_point timestamp{};
 };
 
 // ---------------------------------------------------------------------------
@@ -58,15 +58,15 @@ struct ConnectionLog {
 //     호출자: static_cast<uint8_t>(policy_result.action)
 // ---------------------------------------------------------------------------
 struct QueryLog {
-    std::uint64_t                              session_id{0};
-    std::string                                db_user{};
-    std::string                                client_ip{};
-    std::string                                raw_sql{};      // 원문 SQL (마스킹 주의)
-    std::uint8_t                               command_raw{0}; // SqlCommand as uint8_t
-    std::vector<std::string>                   tables{};       // 접근 테이블명 목록
-    std::uint8_t                               action_raw{0};  // PolicyAction as uint8_t
-    std::chrono::system_clock::time_point      timestamp{};
-    std::chrono::microseconds                  duration{0};    // 정책 평가 소요 시간
+    std::uint64_t session_id{0};
+    std::string db_user{};
+    std::string client_ip{};
+    std::string raw_sql{};              // 원문 SQL (마스킹 주의)
+    std::uint8_t command_raw{0};        // SqlCommand as uint8_t
+    std::vector<std::string> tables{};  // 접근 테이블명 목록
+    std::uint8_t action_raw{0};         // PolicyAction as uint8_t
+    std::chrono::system_clock::time_point timestamp{};
+    std::chrono::microseconds duration{0};  // 정책 평가 소요 시간
 };
 
 // ---------------------------------------------------------------------------
@@ -76,11 +76,12 @@ struct QueryLog {
 //   reason: 사람이 읽을 수 있는 차단 사유 (클라이언트에 직접 노출 금지)
 // ---------------------------------------------------------------------------
 struct BlockLog {
-    std::uint64_t                              session_id{0};
-    std::string                                db_user{};
-    std::string                                client_ip{};
-    std::string                                raw_sql{};      // 원문 SQL (마스킹 주의)
-    std::string                                matched_rule{}; // 매칭 규칙 ID
-    std::string                                reason{};       // 차단 사유
-    std::chrono::system_clock::time_point      timestamp{};
+    std::uint64_t session_id{0};
+    std::string db_user{};
+    std::string client_ip{};
+    std::string raw_sql{};       // 원문 SQL (마스킹 주의)
+    std::string matched_rule{};  // 매칭 규칙 ID
+    std::string reason{};        // 차단 사유
+    std::chrono::system_clock::time_point timestamp{};
+    bool would_block{false};  // monitor 모드: 실제 차단 없이 로그만
 };

@@ -59,6 +59,7 @@ struct PolicyResult {
     PolicyAction action{PolicyAction::kBlock};  // 기본값 kBlock (fail-close)
     std::string matched_rule{};                 // 매칭된 규칙 식별자
     std::string reason{};                       // 판정 이유 (감사 로그용)
+    bool monitor_mode{false};  // true: monitor 모드에 의해 kBlock→kLog 다운그레이드됨
 };
 
 // ---------------------------------------------------------------------------
@@ -83,6 +84,7 @@ struct ExplainResult {
     std::string reason{};                       // 판정 이유 (로깅용)
     std::string matched_access_rule{};          // "user@cidr" 형식, access rule 매칭 시 채움
     std::string evaluation_path{};              // 단계별 평가 경로 trace
+    bool monitor_mode{false};  // true: monitor 모드에 의해 kBlock→kLog 다운그레이드됨
 };
 
 // ---------------------------------------------------------------------------

@@ -135,6 +135,7 @@ func runStats(socketPath string, timeout time.Duration) error {
 	fmt.Printf("Active Sessions:  %8d\n", snap.ActiveSessions)
 	fmt.Printf("Total Queries:    %8d\n", snap.TotalQueries)
 	fmt.Printf("Blocked Queries:  %8d\n", snap.BlockedQueries)
+	fmt.Printf("Monitored Blocks: %8d\n", snap.MonitoredBlocks)
 	fmt.Printf("Total Connections:%8d\n", snap.TotalConnections)
 	fmt.Printf("Captured At:      %s\n", snap.CapturedAt.Format("2006-01-02 15:04:05 UTC"))
 
@@ -159,7 +160,11 @@ func runPolicyExplain(socketPath string, timeout time.Duration, sql, user, ip st
 		return nil
 	}
 
-	fmt.Printf("Action  : %s\n", result.Action)
+	action := result.Action
+	if result.MonitorMode {
+		action += " [MONITOR MODE]"
+	}
+	fmt.Printf("Action  : %s\n", action)
 	fmt.Printf("Rule    : %s\n", result.MatchedRule)
 	fmt.Printf("Reason  : %s\n", result.Reason)
 	if result.MatchedAccessRule != "" {

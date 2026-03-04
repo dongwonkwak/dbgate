@@ -12,6 +12,7 @@ access_control:
     allowed_tables: ["*"]
     allowed_operations: ["*"]
     time_restriction: null
+    mode: enforce
 
   - user: "readonly_user"
     source_ip: "192.168.1.0/24"
@@ -20,15 +21,28 @@ access_control:
     time_restriction:
       allow: "09:00-18:00"
       timezone: "Asia/Seoul"
+    mode: enforce
 
   - user: "app_service"
     source_ip: "172.16.0.0/12"
     allowed_tables: ["users", "orders"]
     allowed_operations: ["SELECT", "INSERT", "UPDATE"]
     blocked_operations: ["DROP", "TRUNCATE", "ALTER"]
+    mode: enforce
+
+  # DON-49: 신규 서비스 계정 단계적 롤아웃 — monitor 모드로 정책 적용 영향 관찰
+  # monitor 모드에서는 차단 판정이 실제로 차단되지 않고 kLog(감사 로그)로 기록된다.
+  # 영향 확인 후 mode: enforce 로 전환할 것.
+  - user: "new_batch_service"
+    source_ip: "172.16.0.0/12"
+    allowed_tables: ["orders", "products"]
+    allowed_operations: ["SELECT", "INSERT"]
+    blocked_operations: ["DROP", "TRUNCATE", "ALTER", "DELETE"]
+    mode: monitor
 
 # SQL 구문 차단 규칙
 sql_rules:
+  mode: enforce
   block_statements:
     - DROP
     - TRUNCATE

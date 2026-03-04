@@ -807,6 +807,22 @@ auto Session::run() -> boost::asio::awaitable<void> {
                 continue;
             }
 
+            // monitor 모드: 차단되었을 쿼리를 로그로만 기록하고 실제로는 통과시킨다.
+            // policy_result.action == kLog && monitor_mode == true 인 경우.
+            if (policy_result.monitor_mode) {
+                logger_->log_block(BlockLog{
+                    .session_id = session_id_,
+                    .db_user = ctx_.db_user,
+                    .client_ip = ctx_.client_ip,
+                    .raw_sql = cmd.query,
+                    .matched_rule = policy_result.matched_rule,
+                    .reason = policy_result.reason,
+                    .timestamp = std::chrono::system_clock::now(),
+                    .would_block = true,
+                });
+                stats_->on_monitored_block();
+            }
+
             {
                 auto fwd = co_await write_packet_raw(server_stream_, pkt);
                 if (!fwd) {

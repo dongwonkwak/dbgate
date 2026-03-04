@@ -19,6 +19,21 @@
 #include <vector>
 
 // ---------------------------------------------------------------------------
+// RuleMode
+//   정책 룰의 실행 모드.
+//   kEnforce: 기본값 — 매칭 시 실제 차단/허용 수행.
+//   kMonitor: 매칭 시 차단 판정을 로그로만 기록 (실제 차단 없음).
+//             kBlock → kLog 다운그레이드 + monitor_mode=true 플래그.
+//
+//   [fail-close]
+//   기본값 0 = kEnforce 이므로 초기화 누락 시에도 차단 동작.
+// ---------------------------------------------------------------------------
+enum class RuleMode : std::uint8_t {
+    kEnforce = 0,
+    kMonitor = 1,
+};
+
+// ---------------------------------------------------------------------------
 // TimeRestriction
 //   시간대별 접근 제어 설정.
 //   allow_range 형식: "HH:MM-HH:MM" (예: "09:00-18:00")
@@ -45,14 +60,17 @@ struct TimeRestriction {
 //   [보안 주의] IP 스푸핑 방어는 네트워크 레이어 소관.
 // ---------------------------------------------------------------------------
 struct AccessRule {
-    std::string              user{};                // MySQL 사용자 이름 ("*" = 와일드카드)
-    std::string              source_ip_cidr{};      // 허용 소스 IP CIDR (빈값 = 전체)
+    std::string user{};                             // MySQL 사용자 이름 ("*" = 와일드카드)
+    std::string source_ip_cidr{};                   // 허용 소스 IP CIDR (빈값 = 전체)
     std::vector<std::string> allowed_tables{"*"};   // 접근 허용 테이블 목록
     std::vector<std::string> allowed_operations{};  // 허용 SQL 커맨드 목록
     std::vector<std::string> blocked_operations{};  // 차단 SQL 커맨드 목록 (우선)
 
     // 시간대 제한 (설정 없으면 24시간 허용)
     std::optional<TimeRestriction> time_restriction{};
+
+    // 룰 실행 모드 (기본 kEnforce — fail-close)
+    RuleMode mode{RuleMode::kEnforce};
 };
 
 // ---------------------------------------------------------------------------
@@ -64,6 +82,9 @@ struct AccessRule {
 struct SqlRule {
     std::vector<std::string> block_statements{};  // 차단할 SQL 구문 종류
     std::vector<std::string> block_patterns{};    // 정규식 기반 차단 패턴
+
+    // 섹션 레벨 실행 모드 (기본 kEnforce — fail-close)
+    RuleMode mode{RuleMode::kEnforce};
 };
 
 // ---------------------------------------------------------------------------
@@ -78,10 +99,10 @@ struct SqlRule {
 //   - mode 가 "whitelist" 이고 whitelist 가 비어 있으면 모든 CALL 차단.
 // ---------------------------------------------------------------------------
 struct ProcedureControl {
-    std::string              mode{"whitelist"};      // "whitelist" | "blacklist"
-    std::vector<std::string> whitelist{};            // 허용/차단 프로시저 목록
-    bool                     block_dynamic_sql{true};   // PREPARE/EXECUTE 차단
-    bool                     block_create_alter{true};  // CREATE/ALTER PROCEDURE 차단
+    std::string mode{"whitelist"};         // "whitelist" | "blacklist"
+    std::vector<std::string> whitelist{};  // 허용/차단 프로시저 목록
+    bool block_dynamic_sql{true};          // PREPARE/EXECUTE 차단
+    bool block_create_alter{true};         // CREATE/ALTER PROCEDURE 차단
 };
 
 // ---------------------------------------------------------------------------
@@ -91,8 +112,8 @@ struct ProcedureControl {
 //   block_schema_access = true 이면 information_schema, mysql DB 접근 차단.
 // ---------------------------------------------------------------------------
 struct DataProtection {
-    std::uint32_t max_result_rows{0};           // 0 = 제한 없음
-    bool          block_schema_access{true};    // 스키마 메타데이터 접근 차단
+    std::uint32_t max_result_rows{0};  // 0 = 제한 없음
+    bool block_schema_access{true};    // 스키마 메타데이터 접근 차단
 };
 
 // ---------------------------------------------------------------------------
@@ -102,8 +123,8 @@ struct DataProtection {
 //   log_format: "json" | "text"
 // ---------------------------------------------------------------------------
 struct GlobalConfig {
-    std::string   log_level{"info"};
-    std::string   log_format{"json"};
+    std::string log_level{"info"};
+    std::string log_format{"json"};
     std::uint32_t max_connections{1000};
     std::uint32_t connection_timeout_sec{30};
 };
@@ -119,9 +140,9 @@ struct GlobalConfig {
 //   - 갱신 중 평가가 진행 중인 경우 이전 config 로 완료됨 (eventual consistency).
 // ---------------------------------------------------------------------------
 struct PolicyConfig {
-    GlobalConfig             global{};
-    std::vector<AccessRule>  access_control{};
-    SqlRule                  sql_rules{};
-    ProcedureControl         procedure_control{};
-    DataProtection           data_protection{};
+    GlobalConfig global{};
+    std::vector<AccessRule> access_control{};
+    SqlRule sql_rules{};
+    ProcedureControl procedure_control{};
+    DataProtection data_protection{};
 };
