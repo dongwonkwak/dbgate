@@ -1707,3 +1707,271 @@ TEST(PolicyEngine, Reload_MultipleCalls_LastConfigApplied) {
         EXPECT_EQ(result.action, PolicyAction::kAllow);
     }
 }
+
+// ===========================================================================
+// explain(): 정책 평가 경로 추적 (dry-run)
+//
+// [테스트 원칙]
+// - explain() 결과의 action 은 evaluate() 결과와 일치해야 한다.
+// - evaluation_path 는 각 판정 단계를 추적한다.
+// - matched_access_rule 은 access_control 룰 매칭 시 "user@cidr" 형식.
+// ===========================================================================
+
+TEST(PolicyEngine, Explain_NullptrConfig_BlocksWithPath) {
+    // nullptr config → fail-close, evaluation_path = "config_null"
+    const PolicyEngine engine(nullptr);
+    const auto query = make_query();
+    const auto session = make_session();
+    const auto result = engine.explain(query, session);
+
+    EXPECT_EQ(result.action, PolicyAction::kBlock);
+    EXPECT_EQ(result.matched_rule, "no-config");
+    EXPECT_EQ(result.evaluation_path, "config_null");
+    EXPECT_EQ(result.matched_access_rule, "");
+}
+
+TEST(PolicyEngine, Explain_UnknownCommand_BlocksWithPath) {
+    const PolicyEngine engine(make_basic_config());
+    const auto query = make_query(SqlCommand::kUnknown, {}, "???");
+    const auto session = make_session();
+    const auto result = engine.explain(query, session);
+
+    EXPECT_EQ(result.action, PolicyAction::kBlock);
+    EXPECT_EQ(result.matched_rule, "unknown-command");
+    EXPECT_NE(result.evaluation_path.find("config_loaded"), std::string::npos);
+    EXPECT_NE(result.evaluation_path.find("command_unknown"), std::string::npos);
+}
+
+TEST(PolicyEngine, Explain_BlockStatement_Drop) {
+    const PolicyEngine engine(make_basic_config());
+    const auto query = make_query(SqlCommand::kDrop, {"users"}, "DROP TABLE users");
+    const auto result = engine.explain(query, make_session());
+
+    EXPECT_EQ(result.action, PolicyAction::kBlock);
+    EXPECT_EQ(result.matched_rule, "block-statement");
+    EXPECT_NE(result.reason.find("DROP"), std::string::npos);
+    // evaluation_path 에 block_statement 단계 포함
+    EXPECT_NE(result.evaluation_path.find("block_statement"), std::string::npos);
+    EXPECT_NE(result.evaluation_path.find("DROP"), std::string::npos);
+    // access_control 단계 이전에 차단됐으므로 matched_access_rule 은 빈 문자열
+    EXPECT_EQ(result.matched_access_rule, "");
+}
+
+TEST(PolicyEngine, Explain_BlockPattern_UnionSelect) {
+    const PolicyEngine engine(make_basic_config());
+    const auto query =
+        make_query(SqlCommand::kSelect, {"users"}, "SELECT * FROM users UNION SELECT 1,2,3");
+    const auto result = engine.explain(query, make_session());
+
+    EXPECT_EQ(result.action, PolicyAction::kBlock);
+    EXPECT_EQ(result.matched_rule, "block-pattern");
+    EXPECT_NE(result.evaluation_path.find("block_pattern"), std::string::npos);
+    EXPECT_EQ(result.matched_access_rule, "");
+}
+
+TEST(PolicyEngine, Explain_NoAccessRule_BlocksWithPath) {
+    // 알려지지 않은 사용자 → no-access-rule 차단
+    const PolicyEngine engine(make_basic_config());
+    const auto query = make_query(SqlCommand::kSelect, {"users"}, "SELECT * FROM users");
+    const auto session = make_session("unknown_user", "10.0.0.1");
+    const auto result = engine.explain(query, session);
+
+    EXPECT_EQ(result.action, PolicyAction::kBlock);
+    EXPECT_EQ(result.matched_rule, "no-access-rule");
+    EXPECT_NE(result.evaluation_path.find("no_access_rule"), std::string::npos);
+    EXPECT_EQ(result.matched_access_rule, "");
+}
+
+TEST(PolicyEngine, Explain_AccessAllowed_SelectUsers) {
+    const PolicyEngine engine(make_basic_config());
+    const auto query = make_query(SqlCommand::kSelect, {"users"}, "SELECT * FROM users");
+    const auto session = make_session();
+    const auto result = engine.explain(query, session);
+
+    EXPECT_EQ(result.action, PolicyAction::kAllow);
+    // evaluation_path 에 config_loaded, access_rule_matched, access_allowed 포함
+    EXPECT_NE(result.evaluation_path.find("config_loaded"), std::string::npos);
+    EXPECT_NE(result.evaluation_path.find("access_rule_matched"), std::string::npos);
+    EXPECT_NE(result.evaluation_path.find("access_allowed"), std::string::npos);
+    // matched_access_rule 은 "testuser@192.168.1.0/24" 형식
+    EXPECT_NE(result.matched_access_rule.find("testuser"), std::string::npos);
+    EXPECT_NE(result.matched_access_rule.find("192.168.1.0/24"), std::string::npos);
+}
+
+TEST(PolicyEngine, Explain_TableDenied_Path) {
+    const PolicyEngine engine(make_basic_config());
+    // allowed_tables = {"users", "orders", "products"} — "secrets" 는 미허용
+    const auto query = make_query(SqlCommand::kSelect, {"secrets"}, "SELECT * FROM secrets");
+    const auto session = make_session();
+    const auto result = engine.explain(query, session);
+
+    EXPECT_EQ(result.action, PolicyAction::kBlock);
+    EXPECT_EQ(result.matched_rule, "table-denied");
+    EXPECT_NE(result.evaluation_path.find("table_denied"), std::string::npos);
+    EXPECT_NE(result.evaluation_path.find("secrets"), std::string::npos);
+    // access_rule 은 매칭됐으므로 matched_access_rule 이 채워져야 함
+    EXPECT_NE(result.matched_access_rule, "");
+}
+
+TEST(PolicyEngine, Explain_OperationDenied_Delete) {
+    const PolicyEngine engine(make_basic_config());
+    // allowed_operations = {"SELECT", "INSERT", "UPDATE"} — DELETE 는 미허용
+    const auto query = make_query(SqlCommand::kDelete, {"users"}, "DELETE FROM users WHERE id=1");
+    const auto session = make_session();
+    const auto result = engine.explain(query, session);
+
+    EXPECT_EQ(result.action, PolicyAction::kBlock);
+    EXPECT_EQ(result.matched_rule, "operation-denied");
+    EXPECT_NE(result.evaluation_path.find("operation_denied"), std::string::npos);
+    EXPECT_NE(result.matched_access_rule, "");
+}
+
+TEST(PolicyEngine, Explain_BlockedOperation_InPath) {
+    // blocked_operations 에 DELETE 추가
+    auto cfg = make_basic_config();
+    cfg->access_control[0].blocked_operations = {"DELETE"};
+    cfg->access_control[0].allowed_operations = {"*"};
+    const PolicyEngine engine(cfg);
+
+    const auto query = make_query(SqlCommand::kDelete, {"users"}, "DELETE FROM users WHERE id=1");
+    const auto result = engine.explain(query, make_session());
+
+    EXPECT_EQ(result.action, PolicyAction::kBlock);
+    EXPECT_EQ(result.matched_rule, "blocked-operation");
+    EXPECT_NE(result.evaluation_path.find("blocked_operation"), std::string::npos);
+    EXPECT_NE(result.matched_access_rule, "");
+}
+
+TEST(PolicyEngine, Explain_ProcedureDynamicSql_BlocksInPath) {
+    const PolicyEngine engine(make_basic_config());
+    const auto query = make_query(SqlCommand::kPrepare, {}, "PREPARE stmt FROM 'SELECT 1'");
+    // allowed_operations 에 PREPARE 추가 (단계 9 통과 목적)
+    auto cfg = make_basic_config();
+    cfg->access_control[0].allowed_operations = {"*"};
+    const PolicyEngine engine2(cfg);
+
+    const auto result = engine2.explain(query, make_session());
+    EXPECT_EQ(result.action, PolicyAction::kBlock);
+    EXPECT_EQ(result.matched_rule, "procedure-dynamic-sql");
+    EXPECT_NE(result.evaluation_path.find("dynamic_sql_blocked"), std::string::npos);
+}
+
+TEST(PolicyEngine, Explain_SchemaAccess_Blocked) {
+    auto cfg = make_basic_config();
+    cfg->access_control[0].allowed_tables = {"*"};
+    const PolicyEngine engine(cfg);
+
+    const auto query = make_query(SqlCommand::kSelect,
+                                  {"information_schema.tables"},
+                                  "SELECT * FROM information_schema.tables");
+    const auto result = engine.explain(query, make_session());
+
+    EXPECT_EQ(result.action, PolicyAction::kBlock);
+    EXPECT_EQ(result.matched_rule, "schema-access");
+    EXPECT_NE(result.evaluation_path.find("schema_access_blocked"), std::string::npos);
+    EXPECT_NE(result.matched_access_rule, "");
+}
+
+TEST(PolicyEngine, Explain_EvaluationPath_CompleteTrace) {
+    // 허용 경로의 evaluation_path 가 주요 단계를 모두 포함하는지 검증
+    const PolicyEngine engine(make_basic_config());
+    const auto query = make_query(SqlCommand::kSelect, {"users"}, "SELECT id FROM users");
+    const auto session = make_session();
+    const auto result = engine.explain(query, session);
+
+    EXPECT_EQ(result.action, PolicyAction::kAllow);
+    // 핵심 단계 검증
+    EXPECT_NE(result.evaluation_path.find("config_loaded"), std::string::npos);
+    EXPECT_NE(result.evaluation_path.find("command_known(SELECT)"), std::string::npos);
+    EXPECT_NE(result.evaluation_path.find("block_statements_passed"), std::string::npos);
+    EXPECT_NE(result.evaluation_path.find("block_patterns_passed"), std::string::npos);
+    EXPECT_NE(result.evaluation_path.find("access_rule_matched"), std::string::npos);
+    EXPECT_NE(result.evaluation_path.find("tables_passed"), std::string::npos);
+    EXPECT_NE(result.evaluation_path.find("access_allowed(SELECT)"), std::string::npos);
+}
+
+TEST(PolicyEngine, Explain_MatchesEvaluate_Allow) {
+    // explain() 결과가 evaluate() 결과와 action 이 일치하는지 검증 (허용 케이스)
+    const PolicyEngine engine(make_basic_config());
+    const auto query = make_query(SqlCommand::kSelect, {"users"}, "SELECT id FROM users");
+    const auto session = make_session();
+
+    const auto eval_result = engine.evaluate(query, session);
+    const auto expl_result = engine.explain(query, session);
+
+    EXPECT_EQ(eval_result.action, expl_result.action);
+    EXPECT_EQ(eval_result.matched_rule, expl_result.matched_rule);
+}
+
+TEST(PolicyEngine, Explain_MatchesEvaluate_Block_Drop) {
+    // explain() 결과가 evaluate() 결과와 일치하는지 검증 (차단 케이스)
+    const PolicyEngine engine(make_basic_config());
+    const auto query = make_query(SqlCommand::kDrop, {"users"}, "DROP TABLE users");
+    const auto session = make_session();
+
+    const auto eval_result = engine.evaluate(query, session);
+    const auto expl_result = engine.explain(query, session);
+
+    EXPECT_EQ(eval_result.action, expl_result.action);
+    EXPECT_EQ(eval_result.matched_rule, expl_result.matched_rule);
+}
+
+TEST(PolicyEngine, Explain_MatchesEvaluate_Block_NoAccessRule) {
+    // explain() 결과가 evaluate() 와 일치하는지: no-access-rule 차단
+    const PolicyEngine engine(make_basic_config());
+    const auto query = make_query(SqlCommand::kSelect, {"users"}, "SELECT * FROM users");
+    const auto session = make_session("unknown_user", "10.0.0.1");
+
+    const auto eval_result = engine.evaluate(query, session);
+    const auto expl_result = engine.explain(query, session);
+
+    EXPECT_EQ(eval_result.action, expl_result.action);
+    EXPECT_EQ(eval_result.matched_rule, expl_result.matched_rule);
+}
+
+// ===========================================================================
+// explain_error(): ParseError → ExplainResult (fail-close)
+// ===========================================================================
+
+TEST(PolicyEngine, ExplainError_AlwaysBlocks) {
+    const PolicyEngine engine(make_basic_config());
+    ParseError err{};
+    err.code = ParseErrorCode::kInvalidSql;
+    err.message = "syntax error near 'SELECCT'";
+
+    const auto result = engine.explain_error(err, make_session());
+
+    EXPECT_EQ(result.action, PolicyAction::kBlock);
+    EXPECT_EQ(result.matched_rule, "parse-error");
+    EXPECT_NE(result.reason.find("syntax error"), std::string::npos);
+    EXPECT_EQ(result.evaluation_path, "parse_failed");
+    EXPECT_EQ(result.matched_access_rule, "");
+}
+
+TEST(PolicyEngine, ExplainError_NullptrConfig_StillBlocks) {
+    // nullptr config 에서도 explain_error 는 kBlock 반환
+    const PolicyEngine engine(nullptr);
+    ParseError err{};
+    err.code = ParseErrorCode::kMalformedPacket;
+    err.message = "malformed packet";
+
+    const auto result = engine.explain_error(err, make_session());
+
+    EXPECT_EQ(result.action, PolicyAction::kBlock);
+    EXPECT_EQ(result.matched_rule, "parse-error");
+    EXPECT_EQ(result.evaluation_path, "parse_failed");
+}
+
+TEST(PolicyEngine, ExplainError_MatchesEvaluateError) {
+    // explain_error() 결과가 evaluate_error() 와 action/matched_rule 이 일치하는지 검증
+    const PolicyEngine engine(make_basic_config());
+    ParseError err{};
+    err.code = ParseErrorCode::kInvalidSql;
+    err.message = "unexpected token";
+
+    const auto eval_result = engine.evaluate_error(err, make_session());
+    const auto expl_result = engine.explain_error(err, make_session());
+
+    EXPECT_EQ(eval_result.action, expl_result.action);
+    EXPECT_EQ(eval_result.matched_rule, expl_result.matched_rule);
+}

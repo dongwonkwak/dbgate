@@ -32,7 +32,7 @@
 #include <memory>
 #include <string>
 
-#include "common/types.hpp"   // SessionContext, ParseError
+#include "common/types.hpp"       // SessionContext, ParseError
 #include "parser/sql_parser.hpp"  // ParsedQuery
 #include "rule.hpp"               // PolicyConfig
 
@@ -44,7 +44,7 @@
 enum class PolicyAction : std::uint8_t {
     kAllow = 0,  // 허용 (명시적 allow 규칙 일치 시만)
     kBlock = 1,  // 차단 (default deny 또는 명시적 block 규칙)
-    kLog   = 2,  // 허용 + 감사 로그 (경보)
+    kLog = 2,    // 허용 + 감사 로그 (경보)
 };
 
 // ---------------------------------------------------------------------------
@@ -57,8 +57,32 @@ enum class PolicyAction : std::uint8_t {
 // ---------------------------------------------------------------------------
 struct PolicyResult {
     PolicyAction action{PolicyAction::kBlock};  // 기본값 kBlock (fail-close)
-    std::string  matched_rule{};                // 매칭된 규칙 식별자
-    std::string  reason{};                      // 판정 이유 (감사 로그용)
+    std::string matched_rule{};                 // 매칭된 규칙 식별자
+    std::string reason{};                       // 판정 이유 (감사 로그용)
+};
+
+// ---------------------------------------------------------------------------
+// ExplainResult
+//   explain() / explain_error() 의 반환값.
+//   실제 차단/허용 수행 없이 정책 평가 경로를 추적한다 (dry-run 용도).
+//
+//   [주의 — 데이터패스에서 사용 금지]
+//   explain() 은 디버깅/감사 목적 전용이다.
+//   프로덕션 데이터패스(proxy 레이어)에서는 반드시 evaluate() 를 사용해야 한다.
+//   실수로 explain() 을 데이터패스에 연결하면 실제 차단 동작이 발생하지 않는다.
+//
+//   matched_access_rule: access_control 룰 매칭 시 "user@cidr" 형식으로 채움.
+//                        매칭 없으면 빈 문자열.
+//   evaluation_path:     단계별 추적 문자열.
+//                        예: "config_loaded > access_rule_matched(admin@10.0.0.0/8) >
+//                             command_blocked(DROP)"
+// ---------------------------------------------------------------------------
+struct ExplainResult {
+    PolicyAction action{PolicyAction::kBlock};  // 기본값 kBlock (fail-close)
+    std::string matched_rule{};                 // 매칭된 규칙 식별자
+    std::string reason{};                       // 판정 이유 (로깅용)
+    std::string matched_access_rule{};          // "user@cidr" 형식, access rule 매칭 시 채움
+    std::string evaluation_path{};              // 단계별 평가 경로 trace
 };
 
 // ---------------------------------------------------------------------------
@@ -80,10 +104,10 @@ public:
     // 복사/이동 금지:
     // atomic<shared_ptr<...>> 멤버는 복사/이동 연산이 삭제되어 있으므로
     // PolicyEngine도 값 복사/이동을 지원하지 않는다.
-    PolicyEngine(const PolicyEngine&)            = delete;
+    PolicyEngine(const PolicyEngine&) = delete;
     PolicyEngine& operator=(const PolicyEngine&) = delete;
-    PolicyEngine(PolicyEngine&&)                 = delete;
-    PolicyEngine& operator=(PolicyEngine&&)      = delete;
+    PolicyEngine(PolicyEngine&&) = delete;
+    PolicyEngine& operator=(PolicyEngine&&) = delete;
 
     // evaluate
     //   파싱된 쿼리와 세션 컨텍스트를 기반으로 정책을 평가한다.
@@ -101,9 +125,8 @@ public:
     //   [오탐 주의]
     //   access_control 의 user 필드가 "*" 와일드카드일 때 모든 사용자에게
     //   적용되므로, 규칙 순서와 우선순위를 config 에서 명확히 정의해야 한다.
-    [[nodiscard]] PolicyResult evaluate(
-        const ParsedQuery&     query,
-        const SessionContext&  session) const;
+    [[nodiscard]] PolicyResult evaluate(const ParsedQuery& query,
+                                        const SessionContext& session) const;
 
     // evaluate_error
     //   파서 오류 발생 시 호출. 반드시 PolicyAction::kBlock 을 반환한다.
@@ -111,9 +134,28 @@ public:
     //   [fail-close 보장]
     //   이 함수는 어떠한 경우에도 kAllow 또는 kLog 를 반환해서는 안 된다.
     //   구현 레이어에서 예외가 발생하더라도 kBlock 이 반환되도록 noexcept 권장.
-    [[nodiscard]] PolicyResult evaluate_error(
-        const ParseError&     error,
-        const SessionContext& session) const noexcept;
+    [[nodiscard]] PolicyResult evaluate_error(const ParseError& error,
+                                              const SessionContext& session) const noexcept;
+
+    // explain
+    //   evaluate() 와 동일한 결정 로직을 따르되, 실제 차단/로깅 없이
+    //   ExplainResult 만 반환한다 (디버깅/감사 목적 전용 dry-run).
+    //
+    //   [데이터패스에서 사용 금지]
+    //   프로덕션 데이터패스에서는 evaluate() 를 사용해야 한다.
+    //   explain() 은 실제 차단 동작을 수행하지 않는다.
+    //
+    //   [fail-close 원칙 유지]
+    //   config null, unknown command 등 오류 상황에서 action=kBlock 반환.
+    [[nodiscard]] ExplainResult explain(const ParsedQuery& query,
+                                        const SessionContext& session) const;
+
+    // explain_error
+    //   ParseError 를 받아 ExplainResult 를 반환한다.
+    //   evaluate_error() 와 동일하게 반드시 action=kBlock 반환.
+    //   noexcept 보장.
+    [[nodiscard]] ExplainResult explain_error(const ParseError& error,
+                                              const SessionContext& session) const noexcept;
 
     // reload
     //   Hot Reload: 새 정책 설정으로 원자적 교체.

@@ -163,6 +163,58 @@ SELECT * FROM information_schema.tables
 
 ---
 
+## 정책 설명 API (explain / explain_error)
+
+`explain()` / `explain_error()`는 **디버깅/감사 목적 전용** dry-run API다. 실제 차단/허용 동작은 수행하지 않고 `ExplainResult`만 반환한다.
+
+> **데이터패스에서 사용 금지**: 프로덕션 데이터패스(proxy 레이어)에서는 반드시 `evaluate()` / `evaluate_error()`를 사용해야 한다. `explain()`은 실제 차단을 수행하지 않는다.
+
+### ExplainResult 구조
+
+| 필드 | 타입 | 설명 |
+|------|------|------|
+| `action` | `PolicyAction` | 판정 결과 (`kAllow` / `kBlock`). 기본값 `kBlock` (fail-close) |
+| `matched_rule` | `std::string` | 매칭된 규칙 식별자 (evaluate 결과와 동일) |
+| `reason` | `std::string` | 판정 이유 (로깅용, 클라이언트 노출 금지) |
+| `matched_access_rule` | `std::string` | `"user@cidr"` 형식. access_control 룰 매칭 이후 단계에서만 채워짐 |
+| `evaluation_path` | `std::string` | `">"` 구분 단계별 평가 경로 trace |
+
+### evaluation_path 예시
+
+허용 경로:
+```
+config_loaded > command_known(SELECT) > block_statements_passed > block_patterns_passed
+  > access_rule_matched(testuser@192.168.1.0/24) > blocked_operations_passed
+  > tables_passed > operation_allowed(SELECT) > access_allowed(SELECT)
+```
+
+차단 경로 (DROP 구문 차단):
+```
+config_loaded > command_known(DROP) > block_statement(DROP)
+```
+
+차단 경로 (파서 오류):
+```
+parse_failed
+```
+
+### fail-close 원칙 유지
+
+`explain()` / `explain_error()`도 `evaluate()` / `evaluate_error()`와 동일하게 fail-close를 준수한다.
+
+| 상황 | action |
+|------|--------|
+| `config_` == `nullptr` | `kBlock` / `evaluation_path = "config_null"` |
+| `SqlCommand::kUnknown` | `kBlock` |
+| 파서 오류 (`explain_error`) | `kBlock` / `evaluation_path = "parse_failed"` (noexcept) |
+| 모든 오류/예외 | `kBlock` |
+
+### evaluate()와의 결과 일관성
+
+`explain()`의 `action`과 `matched_rule`은 동일 입력에 대해 `evaluate()`와 반드시 일치한다. 로직을 공유하므로 판정 결과가 다를 경우 버그를 의미한다.
+
+---
+
 ## PolicyLoader
 
 ### 로드 절차

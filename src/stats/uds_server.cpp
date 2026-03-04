@@ -2,20 +2,22 @@
 // uds_server.cpp
 //
 // UdsServer 구현 — Unix Domain Socket 서버.
-// Go CLI/대시보드에 StatsSnapshot을 노출한다.
+// Go CLI/대시보드에 StatsSnapshot 및 policy_explain 을 노출한다.
 //
 // [프로토콜]
 //   요청/응답 모두 4byte LE 길이 프리픽스 + JSON 바디.
 //
 // [지원 커맨드]
-//   "stats"         — StatsSnapshot JSON 반환
-//   "sessions"      — 501 placeholder (Phase 3)
-//   "policy_reload" — 501 placeholder (Phase 3)
-//   기타            — error 응답
+//   "stats"          — StatsSnapshot JSON 반환
+//   "policy_explain" — SQL 정책 평가 dry-run (DON-48)
+//   "sessions"       — 501 placeholder (Phase 3)
+//   "policy_reload"  — 501 placeholder (Phase 3)
+//   기타             — error 응답
 //
 // [격리 원칙]
 //   UDS I/O 실패는 데이터패스로 전파하지 않는다.
 //   stats 접근은 read-only (StatsCollector::snapshot()) 만 수행한다.
+//   policy_explain 실패(파싱 오류 포함)는 데이터패스로 전파하지 않는다.
 // ---------------------------------------------------------------------------
 
 #include "stats/uds_server.hpp"
@@ -29,6 +31,7 @@
 #include <boost/asio/write.hpp>
 #include <chrono>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -190,6 +193,180 @@ std::string parse_command(std::string_view json) {
 // 단일 클라이언트에서 수신할 최대 메시지 크기 (4MiB)
 constexpr uint32_t kMaxRequestSize = 4U * 1024U * 1024U;
 
+// ---------------------------------------------------------------------------
+// parse_string_field
+//   JSON 문자열에서 특정 키의 문자열 값을 추출한다.
+//   "key":"value" 패턴만 지원. 중첩 객체/배열 미지원.
+//   파싱 실패 시 std::nullopt 반환.
+// ---------------------------------------------------------------------------
+std::optional<std::string> parse_string_field(std::string_view json, std::string_view key) {
+    // "key": 형태로 탐색 (따옴표 포함)
+    const std::string search_key = fmt::format("\"{}\":", key);
+    const auto pos = json.find(search_key);
+    if (pos == std::string_view::npos) {
+        return std::nullopt;
+    }
+    auto start = pos + search_key.size();
+    // 공백 건너뜀
+    while (start < json.size() && json[start] == ' ') {
+        ++start;
+    }
+    if (start >= json.size() || json[start] != '"') {
+        return std::nullopt;
+    }
+    ++start;  // 여는 따옴표 건너뜀
+    std::string value;
+    while (start < json.size()) {
+        const char c = json[start++];
+        if (c == '"') {
+            break;
+        }
+        if (c == '\\' && start < json.size()) {
+            // 단순 이스케이프 처리
+            const char escaped = json[start++];
+            switch (escaped) {
+                case '"':
+                    value += '"';
+                    break;
+                case '\\':
+                    value += '\\';
+                    break;
+                case 'n':
+                    value += '\n';
+                    break;
+                case 'r':
+                    value += '\r';
+                    break;
+                case 't':
+                    value += '\t';
+                    break;
+                default:
+                    value += escaped;
+                    break;
+            }
+        } else {
+            value += c;
+        }
+    }
+    return value;
+}
+
+// ---------------------------------------------------------------------------
+// parse_payload_string_field
+//   요청 JSON 에서 payload 오브젝트 내 특정 문자열 필드를 추출한다.
+//   {"command":"...", "payload": {"key": "value", ...}} 패턴을 처리한다.
+//   payload 키를 찾지 못하거나 필드가 없으면 std::nullopt 반환.
+// ---------------------------------------------------------------------------
+std::optional<std::string> parse_payload_string_field(std::string_view json,
+                                                      std::string_view field_key) {
+    constexpr std::string_view payload_key = "\"payload\":";
+    const auto payload_pos = json.find(payload_key);
+    if (payload_pos == std::string_view::npos) {
+        return std::nullopt;
+    }
+    auto start = payload_pos + payload_key.size();
+    // 공백 건너뜀
+    while (start < json.size() && json[start] == ' ') {
+        ++start;
+    }
+    if (start >= json.size() || json[start] != '{') {
+        return std::nullopt;
+    }
+    // payload 오브젝트 끝 찾기 (중첩 없음 가정)
+    const auto end = json.find('}', start + 1);
+    if (end == std::string_view::npos) {
+        return std::nullopt;
+    }
+    const auto payload_json = json.substr(start, end - start + 1);
+    return parse_string_field(payload_json, field_key);
+}
+
+// ---------------------------------------------------------------------------
+// policy_action_to_string
+//   PolicyAction → JSON 응답용 문자열 변환.
+// ---------------------------------------------------------------------------
+std::string_view policy_action_to_string(PolicyAction action) {
+    switch (action) {
+        case PolicyAction::kAllow:
+            return "allow";
+        case PolicyAction::kLog:
+            return "log";
+        case PolicyAction::kBlock:
+        default:
+            return "block";
+    }
+}
+
+// ---------------------------------------------------------------------------
+// sql_command_name
+//   SqlCommand → 문자열 변환 (JSON 응답 parsed_command 필드용).
+// ---------------------------------------------------------------------------
+std::string_view sql_command_name(SqlCommand cmd) {
+    switch (cmd) {
+        case SqlCommand::kSelect:
+            return "SELECT";
+        case SqlCommand::kInsert:
+            return "INSERT";
+        case SqlCommand::kUpdate:
+            return "UPDATE";
+        case SqlCommand::kDelete:
+            return "DELETE";
+        case SqlCommand::kDrop:
+            return "DROP";
+        case SqlCommand::kTruncate:
+            return "TRUNCATE";
+        case SqlCommand::kAlter:
+            return "ALTER";
+        case SqlCommand::kCreate:
+            return "CREATE";
+        case SqlCommand::kCall:
+            return "CALL";
+        case SqlCommand::kPrepare:
+            return "PREPARE";
+        case SqlCommand::kExecute:
+            return "EXECUTE";
+        case SqlCommand::kUnknown:
+        default:
+            return "UNKNOWN";
+    }
+}
+
+// ---------------------------------------------------------------------------
+// serialize_explain_result
+//   ExplainResult + ParsedQuery(optional) → JSON payload 문자열.
+//   parsed_command, parsed_tables 는 파싱 성공 시만 포함.
+// ---------------------------------------------------------------------------
+std::string serialize_explain_result(const ExplainResult& result, const ParsedQuery* parsed_query) {
+    // 고정 필드 직렬화
+    std::string out;
+    out += '{';
+    out += R"("action":")" + std::string(policy_action_to_string(result.action)) + '"';
+    out += R"(,"matched_rule":")" + json_escape(result.matched_rule) + '"';
+    out += R"(,"reason":")" + json_escape(result.reason) + '"';
+    out += R"(,"matched_access_rule":")" + json_escape(result.matched_access_rule) + '"';
+    out += R"(,"evaluation_path":")" + json_escape(result.evaluation_path) + '"';
+
+    // 파싱 성공 시 parsed_command, parsed_tables 추가
+    if (parsed_query != nullptr) {
+        out +=
+            R"(,"parsed_command":")" + std::string(sql_command_name(parsed_query->command)) + '"';
+
+        out += R"(,"parsed_tables":[)";
+        bool first = true;
+        for (const auto& tbl : parsed_query->tables) {
+            if (!first) {
+                out += ',';
+            }
+            out += '"' + json_escape(tbl) + '"';
+            first = false;
+        }
+        out += ']';
+    }
+
+    out += '}';
+    return out;
+}
+
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -199,7 +376,25 @@ constexpr uint32_t kMaxRequestSize = 4U * 1024U * 1024U;
 UdsServer::UdsServer(const std::filesystem::path& socket_path,
                      std::shared_ptr<StatsCollector> stats,
                      asio::io_context& ioc)
-    : socket_path_{socket_path}, stats_{std::move(stats)}, ioc_{ioc}, acceptor_{ioc} {}
+    : socket_path_{socket_path},
+      stats_{std::move(stats)},
+      policy_engine_{nullptr},
+      sql_parser_{nullptr},
+      ioc_{ioc},
+      acceptor_{ioc} {}
+
+// NOLINTNEXTLINE(modernize-pass-by-value)
+UdsServer::UdsServer(const std::filesystem::path& socket_path,
+                     std::shared_ptr<StatsCollector> stats,
+                     std::shared_ptr<PolicyEngine> policy_engine,
+                     std::shared_ptr<SqlParser> sql_parser,
+                     asio::io_context& ioc)
+    : socket_path_{socket_path},
+      stats_{std::move(stats)},
+      policy_engine_{std::move(policy_engine)},
+      sql_parser_{std::move(sql_parser)},
+      ioc_{ioc},
+      acceptor_{ioc} {}
 
 UdsServer::~UdsServer() {
     try {
@@ -369,6 +564,9 @@ asio::awaitable<void> UdsServer::handle_client(asio::local::stream_protocol::soc
         // stats — StatsSnapshot 직렬화 후 반환
         const StatsSnapshot snap = stats_->snapshot();
         response_body = make_ok_response(serialize_snapshot(snap));
+    } else if (cmd == "policy_explain") {
+        // policy_explain — SQL 정책 평가 dry-run (DON-48)
+        response_body = handle_policy_explain(request_json);
     } else if (cmd == "sessions") {
         // Phase 3 구현 예정
         response_body = make_not_implemented_response("sessions");
@@ -401,4 +599,84 @@ asio::awaitable<void> UdsServer::handle_client(asio::local::stream_protocol::soc
     }
 
     spdlog::debug("[uds_server] handled command='{}' response_bytes={}", cmd, write_n);
+}
+
+// ---------------------------------------------------------------------------
+// handle_policy_explain
+//   payload 필드 파싱 → SqlParser::parse() → PolicyEngine::explain() 또는
+//   explain_error() 호출 → JSON 응답 반환.
+//
+//   [fail-close]
+//   - sql/user/source_ip 누락 → ok:false 반환
+//   - policy_engine_ 또는 sql_parser_ nullptr → not-implemented 반환
+//   - 예외 발생 → ok:false 반환 (데이터패스 비전파)
+// ---------------------------------------------------------------------------
+std::string UdsServer::handle_policy_explain(std::string_view request_json) {
+    // policy_engine / sql_parser 미주입 시 not-implemented 반환
+    if (!policy_engine_ || !sql_parser_) {
+        spdlog::warn("[uds_server] policy_explain: policy_engine or sql_parser not configured");
+        return make_not_implemented_response("policy_explain");
+    }
+
+    // ── payload 필드 파싱 ────────────────────────────────────────────────
+    const auto sql_opt = parse_payload_string_field(request_json, "sql");
+    const auto user_opt = parse_payload_string_field(request_json, "user");
+    const auto source_ip_opt = parse_payload_string_field(request_json, "source_ip");
+
+    if (!sql_opt) {
+        spdlog::warn("[uds_server] policy_explain: missing required field: sql");
+        return make_error_response("missing required field: sql");
+    }
+    if (!user_opt) {
+        spdlog::warn("[uds_server] policy_explain: missing required field: user");
+        return make_error_response("missing required field: user");
+    }
+    if (!source_ip_opt) {
+        spdlog::warn("[uds_server] policy_explain: missing required field: source_ip");
+        return make_error_response("missing required field: source_ip");
+    }
+
+    const std::string& sql_str = *sql_opt;
+    const std::string& user_str = *user_opt;
+    const std::string& source_ip_str = *source_ip_opt;
+
+    // ── SessionContext 구성 ──────────────────────────────────────────────
+    SessionContext session;
+    session.db_user = user_str;
+    session.client_ip = source_ip_str;
+
+    // ── SQL 파싱 → explain 호출 ──────────────────────────────────────────
+    try {
+        const auto parse_result = sql_parser_->parse(sql_str);
+
+        if (parse_result) {
+            // 파싱 성공 → explain(query, session)
+            const ParsedQuery& query = *parse_result;
+            const ExplainResult explain = policy_engine_->explain(query, session);
+
+            spdlog::debug("[uds_server] policy_explain: sql='{}' user='{}' ip='{}' action='{}'",
+                          sql_str,
+                          user_str,
+                          source_ip_str,
+                          policy_action_to_string(explain.action));
+
+            return make_ok_response(serialize_explain_result(explain, &query));
+        } else {
+            // 파싱 실패 → explain_error(error, session)
+            const ParseError& parse_error = parse_result.error();
+            const ExplainResult explain = policy_engine_->explain_error(parse_error, session);
+
+            spdlog::debug("[uds_server] policy_explain: parse failed sql='{}' reason='{}'",
+                          sql_str,
+                          parse_error.message);
+
+            return make_ok_response(serialize_explain_result(explain, nullptr));
+        }
+    } catch (const std::exception& e) {
+        spdlog::error("[uds_server] policy_explain: exception: {}", e.what());
+        return make_error_response("internal error during policy evaluation");
+    } catch (...) {
+        spdlog::error("[uds_server] policy_explain: unknown exception");
+        return make_error_response("internal error during policy evaluation");
+    }
 }

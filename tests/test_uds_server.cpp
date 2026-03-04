@@ -5,6 +5,11 @@
 //
 // [테스트 범위]
 // - "stats" 커맨드 → 유효한 JSON {"ok":true,"payload":{...}} 응답
+// - "policy_explain" 커맨드 → 정책 평가 dry-run 응답 (DON-48)
+//   - 유효한 SQL → ok:true + action/matched_rule/parsed_command/parsed_tables
+//   - 차단 SQL (DROP) → ok:true + action:block
+//   - payload 필드 누락 → ok:false + error
+//   - policy_engine/sql_parser 미주입 → not-implemented 응답
 // - 미지원 커맨드("unknown_cmd") → {"ok":false,"error":"..."} 응답
 // - "command" 필드 없는 JSON → {"ok":false,"error":"..."} 응답
 // - 잘못된 프레임(0-length body, 과대 body length) → 서버가 안전하게 처리
@@ -46,6 +51,9 @@
 #include <thread>
 #include <vector>
 
+#include "parser/sql_parser.hpp"
+#include "policy/policy_engine.hpp"
+#include "policy/rule.hpp"
 #include "stats/stats_collector.hpp"
 #include "stats/uds_server.hpp"
 
@@ -56,6 +64,23 @@ using stream_protocol = asio::local::stream_protocol;
 // 익명 네임스페이스: 테스트 내부 헬퍼
 // ---------------------------------------------------------------------------
 namespace {
+
+// make_explain_policy_config
+//   policy_explain 테스트용 최소 PolicyConfig.
+//   app_service 유저에게 SELECT/INSERT/UPDATE 허용, DROP 차단.
+std::shared_ptr<PolicyConfig> make_explain_policy_config() {
+    auto cfg = std::make_shared<PolicyConfig>();
+    cfg->sql_rules.block_statements = {"DROP", "TRUNCATE"};
+
+    AccessRule rule;
+    rule.user = "app_service";
+    rule.source_ip_cidr = "172.16.0.0/12";
+    rule.allowed_tables = {"*"};
+    rule.allowed_operations = {"SELECT", "INSERT", "UPDATE", "DELETE"};
+    cfg->access_control.push_back(std::move(rule));
+
+    return cfg;
+}
 
 // 임시 소켓 경로 생성 (PID + 단조 카운터로 테스트 간 충돌 방지)
 std::filesystem::path temp_socket_path(const char* tag) {
@@ -389,4 +414,262 @@ TEST_F(UdsServerTest, MultipleClients_Concurrent) {
 TEST_F(UdsServerTest, StopBeforeRun_NoCrash) {
     // run() 없이 stop() 만 호출 — acceptor 는 닫혀 있으므로 no-op
     ASSERT_NO_THROW(server_->stop()) << "stop() before run() must not throw or crash";
+}
+
+// ===========================================================================
+// UdsPolicyExplainTest 픽스처 (DON-48)
+//   PolicyEngine + SqlParser 를 주입한 UdsServer 에서 policy_explain 커맨드를
+//   테스트한다.
+//
+//   [정책 설정]
+//   - DROP / TRUNCATE → block_statements (항상 차단)
+//   - app_service 유저 + 172.16.0.0/12 → SELECT/INSERT/UPDATE/DELETE 허용
+// ===========================================================================
+class UdsPolicyExplainTest : public ::testing::Test {
+protected:
+    void SetUp() override {
+        socket_path_ = temp_socket_path("explain");
+        stats_ = std::make_shared<StatsCollector>();
+        ioc_ = std::make_unique<asio::io_context>();
+
+        auto policy_config = make_explain_policy_config();
+        policy_engine_ = std::make_shared<PolicyEngine>(std::move(policy_config));
+        sql_parser_ = std::make_shared<SqlParser>();
+
+        server_ =
+            std::make_unique<UdsServer>(socket_path_, stats_, policy_engine_, sql_parser_, *ioc_);
+    }
+
+    void TearDown() override {
+        stop_server();
+        (void)std::filesystem::remove(
+            socket_path_);  // NOLINT(bugprone-unused-return-value,cert-err33-c)
+    }
+
+    void start_server() {
+        asio::co_spawn(*ioc_, server_->run(), asio::detached);
+        server_thread_ = std::thread([this]() { ioc_->run(); });
+    }
+
+    void stop_server() {
+        if (server_) {
+            server_->stop();
+        }
+        ioc_->stop();
+        if (server_thread_.joinable()) {
+            server_thread_.join();
+        }
+    }
+
+    bool wait_for_socket(std::chrono::milliseconds timeout = std::chrono::seconds{2}) {
+        const auto deadline = std::chrono::steady_clock::now() + timeout;
+        while (std::chrono::steady_clock::now() < deadline) {
+            if (std::filesystem::exists(socket_path_)) {
+                return true;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds{10});
+        }
+        return false;
+    }
+
+    std::filesystem::path
+        socket_path_;  // NOLINT(cppcoreguidelines-non-private-member-variables-in-classes,readability-identifier-naming)
+    std::shared_ptr<StatsCollector>
+        stats_;  // NOLINT(cppcoreguidelines-non-private-member-variables-in-classes,readability-identifier-naming)
+    std::shared_ptr<PolicyEngine>
+        policy_engine_;  // NOLINT(cppcoreguidelines-non-private-member-variables-in-classes,readability-identifier-naming)
+    std::shared_ptr<SqlParser>
+        sql_parser_;  // NOLINT(cppcoreguidelines-non-private-member-variables-in-classes,readability-identifier-naming)
+    std::unique_ptr<asio::io_context>
+        ioc_;  // NOLINT(cppcoreguidelines-non-private-member-variables-in-classes,readability-identifier-naming)
+    std::unique_ptr<UdsServer>
+        server_;  // NOLINT(cppcoreguidelines-non-private-member-variables-in-classes,readability-identifier-naming)
+    std::thread
+        server_thread_;  // NOLINT(cppcoreguidelines-non-private-member-variables-in-classes,readability-identifier-naming)
+};
+
+// ---------------------------------------------------------------------------
+// PolicyExplain_AllowedSql_ReturnsOkWithAction
+//   허용된 SQL (SELECT) 에 대해 ok:true + action 필드가 반환되어야 한다.
+//
+//   [검증 포인트]
+//   - "ok":true 포함
+//   - "action" 필드 포함
+//   - "parsed_command" 포함 (파싱 성공)
+//   - "parsed_tables" 포함
+// ---------------------------------------------------------------------------
+TEST_F(UdsPolicyExplainTest, PolicyExplain_AllowedSql_ReturnsOkWithAction) {
+    start_server();
+    ASSERT_TRUE(wait_for_socket()) << "UDS socket not created within 2s";
+
+    UdsSyncClient client;
+    ASSERT_NO_THROW(client.connect(socket_path_));
+
+    constexpr std::string_view req =
+        R"({"command":"policy_explain","version":1,"payload":{"sql":"SELECT * FROM users","user":"app_service","source_ip":"172.16.0.1"}})";
+    client.send(req);
+
+    const std::string resp = client.recv();
+    ASSERT_FALSE(resp.empty()) << "policy_explain must return a non-empty response";
+
+    EXPECT_NE(resp.find(R"("ok":true)"), std::string::npos)
+        << "policy_explain must return ok:true. Got: " << resp;
+    EXPECT_NE(resp.find(R"("action")"), std::string::npos)
+        << "response payload must contain 'action' field. Got: " << resp;
+    EXPECT_NE(resp.find(R"("parsed_command")"), std::string::npos)
+        << "response payload must contain 'parsed_command'. Got: " << resp;
+    EXPECT_NE(resp.find(R"("parsed_tables")"), std::string::npos)
+        << "response payload must contain 'parsed_tables'. Got: " << resp;
+    EXPECT_NE(resp.find(R"("SELECT")"), std::string::npos)
+        << "parsed_command must be SELECT. Got: " << resp;
+}
+
+// ---------------------------------------------------------------------------
+// PolicyExplain_BlockedSql_ReturnsActionBlock
+//   차단 SQL (DROP TABLE) 에 대해 ok:true + action:block 이 반환되어야 한다.
+//
+//   [검증 포인트]
+//   - "ok":true 포함 (explain 자체는 성공)
+//   - "action":"block" 포함 (정책 평가 결과)
+//   - "matched_rule" 포함
+// ---------------------------------------------------------------------------
+TEST_F(UdsPolicyExplainTest, PolicyExplain_BlockedSql_ReturnsActionBlock) {
+    start_server();
+    ASSERT_TRUE(wait_for_socket()) << "UDS socket not created within 2s";
+
+    UdsSyncClient client;
+    ASSERT_NO_THROW(client.connect(socket_path_));
+
+    constexpr std::string_view req =
+        R"({"command":"policy_explain","version":1,"payload":{"sql":"DROP TABLE users","user":"app_service","source_ip":"172.16.0.1"}})";
+    client.send(req);
+
+    const std::string resp = client.recv();
+    ASSERT_FALSE(resp.empty()) << "policy_explain must return a non-empty response";
+
+    EXPECT_NE(resp.find(R"("ok":true)"), std::string::npos)
+        << "policy_explain (explain itself) must return ok:true. Got: " << resp;
+    EXPECT_NE(resp.find(R"("action":"block")"), std::string::npos)
+        << "DROP must result in action:block. Got: " << resp;
+    EXPECT_NE(resp.find(R"("matched_rule")"), std::string::npos)
+        << "response must contain matched_rule. Got: " << resp;
+}
+
+// ---------------------------------------------------------------------------
+// PolicyExplain_MissingSqlField_ReturnsError
+//   payload 에 "sql" 필드가 없으면 ok:false + error 가 반환되어야 한다.
+//
+//   [fail-close 검증]
+// ---------------------------------------------------------------------------
+TEST_F(UdsPolicyExplainTest, PolicyExplain_MissingSqlField_ReturnsError) {
+    start_server();
+    ASSERT_TRUE(wait_for_socket()) << "UDS socket not created within 2s";
+
+    UdsSyncClient client;
+    ASSERT_NO_THROW(client.connect(socket_path_));
+
+    // sql 필드 누락
+    constexpr std::string_view req =
+        R"({"command":"policy_explain","version":1,"payload":{"user":"app_service","source_ip":"172.16.0.1"}})";
+    client.send(req);
+
+    const std::string resp = client.recv();
+    ASSERT_FALSE(resp.empty()) << "Missing sql field must return an error response";
+
+    EXPECT_NE(resp.find(R"("ok":false)"), std::string::npos)
+        << "Missing sql must return ok:false. Got: " << resp;
+    EXPECT_NE(resp.find(R"("error")"), std::string::npos)
+        << "Response must contain error field. Got: " << resp;
+    EXPECT_NE(resp.find("sql"), std::string::npos)
+        << "Error message should mention 'sql'. Got: " << resp;
+}
+
+// ---------------------------------------------------------------------------
+// PolicyExplain_MissingUserField_ReturnsError
+//   payload 에 "user" 필드가 없으면 ok:false + error 가 반환되어야 한다.
+// ---------------------------------------------------------------------------
+TEST_F(UdsPolicyExplainTest, PolicyExplain_MissingUserField_ReturnsError) {
+    start_server();
+    ASSERT_TRUE(wait_for_socket()) << "UDS socket not created within 2s";
+
+    UdsSyncClient client;
+    ASSERT_NO_THROW(client.connect(socket_path_));
+
+    constexpr std::string_view req =
+        R"({"command":"policy_explain","version":1,"payload":{"sql":"SELECT 1","source_ip":"172.16.0.1"}})";
+    client.send(req);
+
+    const std::string resp = client.recv();
+    ASSERT_FALSE(resp.empty());
+    EXPECT_NE(resp.find(R"("ok":false)"), std::string::npos)
+        << "Missing user must return ok:false. Got: " << resp;
+}
+
+// ---------------------------------------------------------------------------
+// PolicyExplain_MissingSourceIpField_ReturnsError
+//   payload 에 "source_ip" 필드가 없으면 ok:false + error 가 반환되어야 한다.
+// ---------------------------------------------------------------------------
+TEST_F(UdsPolicyExplainTest, PolicyExplain_MissingSourceIpField_ReturnsError) {
+    start_server();
+    ASSERT_TRUE(wait_for_socket()) << "UDS socket not created within 2s";
+
+    UdsSyncClient client;
+    ASSERT_NO_THROW(client.connect(socket_path_));
+
+    constexpr std::string_view req =
+        R"({"command":"policy_explain","version":1,"payload":{"sql":"SELECT 1","user":"app_service"}})";
+    client.send(req);
+
+    const std::string resp = client.recv();
+    ASSERT_FALSE(resp.empty());
+    EXPECT_NE(resp.find(R"("ok":false)"), std::string::npos)
+        << "Missing source_ip must return ok:false. Got: " << resp;
+}
+
+// ---------------------------------------------------------------------------
+// PolicyExplain_NoPayloadField_ReturnsError
+//   payload 필드 자체가 없는 JSON → ok:false 반환.
+// ---------------------------------------------------------------------------
+TEST_F(UdsPolicyExplainTest, PolicyExplain_NoPayloadField_ReturnsError) {
+    start_server();
+    ASSERT_TRUE(wait_for_socket()) << "UDS socket not created within 2s";
+
+    UdsSyncClient client;
+    ASSERT_NO_THROW(client.connect(socket_path_));
+
+    constexpr std::string_view req = R"({"command":"policy_explain","version":1})";
+    client.send(req);
+
+    const std::string resp = client.recv();
+    ASSERT_FALSE(resp.empty());
+    EXPECT_NE(resp.find(R"("ok":false)"), std::string::npos)
+        << "No payload must return ok:false. Got: " << resp;
+}
+
+// ---------------------------------------------------------------------------
+// PolicyExplain_WithoutPolicyEngine_ReturnsNotImplemented
+//   policy_engine 없이 생성된 UdsServer 에서 policy_explain 커맨드는
+//   not-implemented 응답을 반환해야 한다.
+//
+//   [검증] stats 전용 생성자(policy_engine = nullptr)는 policy_explain 비활성.
+// ---------------------------------------------------------------------------
+TEST_F(UdsServerTest, PolicyExplain_WithoutPolicyEngine_ReturnsNotImplemented) {
+    // UdsServerTest 픽스처는 stats 전용 생성자 사용 (policy_engine = nullptr)
+    start_server();
+    ASSERT_TRUE(wait_for_socket()) << "UDS socket not created within 2s";
+
+    UdsSyncClient client;
+    ASSERT_NO_THROW(client.connect(socket_path_));
+
+    constexpr std::string_view req =
+        R"({"command":"policy_explain","version":1,"payload":{"sql":"SELECT 1","user":"u","source_ip":"1.2.3.4"}})";
+    client.send(req);
+
+    const std::string resp = client.recv();
+    ASSERT_FALSE(resp.empty());
+    // policy_engine 없이는 not-implemented (ok:false + code:501) 반환
+    EXPECT_NE(resp.find(R"("ok":false)"), std::string::npos)
+        << "Without policy_engine, policy_explain must return ok:false. Got: " << resp;
+    EXPECT_NE(resp.find("501"), std::string::npos)
+        << "Response should contain 501 code. Got: " << resp;
 }
