@@ -556,6 +556,30 @@ TEST_F(UdsPolicyExplainTest, PolicyExplain_BlockedSql_ReturnsActionBlock) {
 }
 
 // ---------------------------------------------------------------------------
+// PolicyExplain_SqlContainingJsonLiteral_DoesNotBreakPayloadBoundary
+//   sql 문자열 내부에 JSON 리터럴("}")이 있어도 payload 경계를 올바르게 찾아
+//   user/source_ip 필드 파싱이 깨지지 않아야 한다.
+// ---------------------------------------------------------------------------
+TEST_F(UdsPolicyExplainTest, PolicyExplain_SqlContainingJsonLiteral_DoesNotBreakPayloadBoundary) {
+    start_server();
+    ASSERT_TRUE(wait_for_socket()) << "UDS socket not created within 2s";
+
+    UdsSyncClient client;
+    ASSERT_NO_THROW(client.connect(socket_path_));
+
+    constexpr std::string_view req =
+        R"REQ({"command":"policy_explain","version":1,"payload":{"sql":"INSERT INTO logs(payload) VALUES ('{\"k\":1}')","user":"app_service","source_ip":"172.16.0.1"}})REQ";
+    client.send(req);
+
+    const std::string resp = client.recv();
+    ASSERT_FALSE(resp.empty()) << "policy_explain must return a non-empty response";
+    EXPECT_NE(resp.find(R"("ok":true)"), std::string::npos)
+        << "SQL 문자열 내부 JSON 리터럴이 있어도 explain은 성공해야 한다. Got: " << resp;
+    EXPECT_EQ(resp.find("missing required field"), std::string::npos)
+        << "payload 경계 파싱 오류로 필수 필드 누락 에러가 발생하면 안 된다. Got: " << resp;
+}
+
+// ---------------------------------------------------------------------------
 // PolicyExplain_MissingSqlField_ReturnsError
 //   payload 에 "sql" 필드가 없으면 ok:false + error 가 반환되어야 한다.
 //

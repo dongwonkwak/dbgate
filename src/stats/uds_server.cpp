@@ -252,6 +252,61 @@ std::optional<std::string> parse_string_field(std::string_view json, std::string
 }
 
 // ---------------------------------------------------------------------------
+// find_json_object_end
+//   object_start(여는 '{' 위치)부터 매칭되는 닫는 '}' 위치를 찾는다.
+//   문자열 리터럴/이스케이프를 고려해 문자열 내부의 중괄호는 무시한다.
+//   매칭 실패 시 std::string_view::npos 반환.
+// ---------------------------------------------------------------------------
+std::string_view::size_type find_json_object_end(std::string_view json,
+                                                 std::string_view::size_type object_start) {
+    if (object_start >= json.size() || json[object_start] != '{') {
+        return std::string_view::npos;
+    }
+
+    std::size_t depth = 0;
+    bool in_string = false;
+    bool escaped = false;
+    for (std::string_view::size_type i = object_start; i < json.size(); ++i) {
+        const char c = json[i];
+
+        if (in_string) {
+            if (escaped) {
+                escaped = false;
+                continue;
+            }
+            if (c == '\\') {
+                escaped = true;
+                continue;
+            }
+            if (c == '"') {
+                in_string = false;
+            }
+            continue;
+        }
+
+        if (c == '"') {
+            in_string = true;
+            continue;
+        }
+        if (c == '{') {
+            ++depth;
+            continue;
+        }
+        if (c == '}') {
+            if (depth == 0) {
+                return std::string_view::npos;
+            }
+            --depth;
+            if (depth == 0) {
+                return i;
+            }
+        }
+    }
+
+    return std::string_view::npos;
+}
+
+// ---------------------------------------------------------------------------
 // parse_payload_string_field
 //   요청 JSON 에서 payload 오브젝트 내 특정 문자열 필드를 추출한다.
 //   {"command":"...", "payload": {"key": "value", ...}} 패턴을 처리한다.
@@ -272,8 +327,8 @@ std::optional<std::string> parse_payload_string_field(std::string_view json,
     if (start >= json.size() || json[start] != '{') {
         return std::nullopt;
     }
-    // payload 오브젝트 끝 찾기 (중첩 없음 가정)
-    const auto end = json.find('}', start + 1);
+    // payload 오브젝트 끝 찾기 (문자열 리터럴 내부 중괄호 무시)
+    const auto end = find_json_object_end(json, start);
     if (end == std::string_view::npos) {
         return std::nullopt;
     }
