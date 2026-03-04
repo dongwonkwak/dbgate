@@ -4,6 +4,11 @@
 
 set -euo pipefail
 
+# devcontainer에서는 VSCode formatOnSave가 대신하므로 훅 스킵
+if [ "${DBGATE_SKIP_POST_FORMAT:-}" = "1" ]; then
+  exit 0
+fi
+
 INPUT=$(cat)
 FILE_PATH=$(echo "$INPUT" | jq -r '.tool_input.file_path // empty')
 

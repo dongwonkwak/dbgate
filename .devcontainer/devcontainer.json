@@ -99,6 +99,7 @@
   ],
   "containerEnv": {
     "CLAUDE_CONFIG_DIR": "/root/.claude",
-    "POWERLEVEL9K_DISABLE_GITSTATUS": "true"
+    "POWERLEVEL9K_DISABLE_GITSTATUS": "true",
+    "DBGATE_SKIP_POST_FORMAT": "1"
   }
 }
