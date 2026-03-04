@@ -77,7 +77,10 @@ for domain in \
     "vscode.blob.core.windows.net" \
     "proxy.golang.org" \
     "sum.golang.org" \
-    "update.code.visualstudio.com"; do
+    "update.code.visualstudio.com" \
+    "codeload.github.com" \
+    "objects.githubusercontent.com" \
+    "github-releases.githubusercontent.com"; do
     echo "Resolving $domain..."
     ips=$(dig +noall +answer A "$domain" | awk '$4 == "A" {print $5}')
     if [ -z "$ips" ]; then
