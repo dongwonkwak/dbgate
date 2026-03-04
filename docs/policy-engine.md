@@ -153,6 +153,206 @@ SELECT * FROM information_schema.tables
 
 ---
 
+## Monitor Mode (단계적 배포)
+
+Monitor mode는 새로운 차단 정책을 실제 차단 없이 먼저 테스트할 수 있는 기능입니다. 정책 규칙에서 차단 판정이 나더라도 로그만 기록하고 실제 쿼리는 허용합니다.
+
+### 용도
+
+- **정책 변경 검증**: 새 차단 규칙을 프로덕션에 적용하기 전에 "만약 적용되면 어떤 쿼리들이 차단되는가"를 확인
+- **거짓 양성 감지**: 정책이 의도치 않게 정상 쿼리를 차단하지는 않는지 확인
+- **점진적 롤아웃**: 정책을 enforce mode로 전환하기 전에 문제점 파악
+
+### 설정 방법
+
+Monitor mode는 두 가지 레벨에서 설정할 수 있습니다.
+
+#### 1. 접근 제어 규칙 (`access_control`) — rule-level monitor mode
+
+개별 사용자/IP 규칙에만 monitor mode를 적용할 수 있습니다:
+
+```yaml
+access_control:
+  - user: app_service
+    source_ip: 192.168.1.0/24
+    mode: monitor      # 이 규칙만 monitor 모드
+    allowed_tables: ["users", "orders"]
+    allowed_operations: ["SELECT", "INSERT"]
+
+  - user: readonly_user
+    mode: enforce      # (기본값) 일반 차단 모드
+    allowed_tables: ["*"]
+    allowed_operations: ["SELECT"]
+```
+
+#### 2. SQL 규칙 (`sql_rules`) — section-level monitor mode
+
+모든 SQL 구문/패턴 차단 규칙에 monitor mode를 적용:
+
+```yaml
+sql_rules:
+  mode: monitor        # 전체 SQL 룰 모니터링
+  block_statements:
+    - DROP
+    - TRUNCATE
+    - GRANT
+  block_patterns:
+    - "(?i)union.*select"
+    - "(?i)select.*from.*where.*or.*=.*"
+```
+
+### Monitor Mode 동작
+
+Monitor mode가 적용된 규칙이 일치하면:
+
+1. **판정 다운그레이드**: `PolicyAction::kBlock` → `PolicyAction::kLog`
+2. **플래그 설정**: `PolicyResult.monitor_mode = true`
+3. **로그 기록**: 로그에 `[monitor]` 프리픽스 추가
+4. **실제 차단 없음**: 쿼리는 **허용**되어 클라이언트에 전달됨
+
+**예시**:
+```cpp
+PolicyResult result = engine.evaluate(query, session);
+
+// Monitor mode 규칙에 매칭된 경우:
+// - result.action == PolicyAction::kLog
+// - result.monitor_mode == true
+// - result.matched_rule == "access-rule:app_service"
+// - result.reason == "[monitor] Operation denied: SELECT"
+// - 쿼리는 차단되지 않음
+```
+
+### 예외: 일부 규칙은 Monitor Mode 영향을 받지 않음
+
+#### No-Access-Rule (기본값 거부)
+
+매칭된 access_control 규칙이 없는 경우 발생합니다. Monitor mode와 관계없이 **항상 차단**됩니다:
+
+```yaml
+access_control:
+  - user: admin
+    source_ip: 10.0.0.0/8
+    allowed_tables: ["*"]
+```
+
+```sql
+-- 이 SQL은 위 규칙을 매칭하지 않는 사용자가 실행
+-- 결과: PolicyAction::kBlock (monitored_blocks 가 아님)
+SELECT * FROM users;
+```
+
+#### 파서 오류 (`evaluate_error`)
+
+SQL 파싱 실패로 인한 차단은 monitor mode와 무관하게 **항상 차단**됩니다:
+
+```cpp
+// 파서 오류 발생 시
+if (!parsed) {
+    result = engine.evaluate_error(error, session);
+    // 항상 result.action == PolicyAction::kBlock
+    // monitor_mode 플래그는 설정되지 않음
+}
+```
+
+### 통계 추적
+
+Monitor mode로 차단된 쿼리는 별도 카운터로 추적됩니다:
+
+| 카운터 | 의미 | Monitor Mode 영향 |
+|--------|------|------------------|
+| `blocked_queries` | 실제로 차단된 쿼리 | 미포함 (monitor 규칙 무관) |
+| `monitored_blocks` | Monitor mode로 "차단되었을" 쿼리 | 포함 (block_rate 영향 X) |
+
+**block_rate 정확성**:
+```
+block_rate = blocked_queries / total_queries
+           (monitored_blocks 제외)
+```
+
+Monitor mode 정책의 영향을 모니터링하면서도 실제 차단율 지표는 왜곡되지 않도록 설계되었습니다.
+
+### 로그 형식
+
+Monitor mode로 차단된 쿼리는 block log에서 식별할 수 있습니다:
+
+```json
+{
+  "timestamp": "2026-03-04T10:15:00Z",
+  "event": "query_would_block",
+  "user": "app_service",
+  "source_ip": "192.168.1.100",
+  "raw_sql": "DROP TABLE users",
+  "action": "log",
+  "matched_rule": "block-statement",
+  "monitor_mode": true,
+  "would_block": true,
+  "reason": "[monitor] SQL statement blocked: DROP"
+}
+```
+
+주요 필드:
+- `event`: `"query_would_block"` (실제 차단이 아님을 명시)
+- `action`: `"log"` (차단이 수행되지 않음)
+- `monitor_mode`: `true` (monitor mode 규칙에 의한 기록)
+- `would_block`: `true` (enforce mode였다면 차단됐을 것)
+
+### 배포 패턴
+
+#### 패턴 1: 신규 규칙 검증
+
+```yaml
+# 1단계: monitor mode로 배포
+access_control:
+  - user: app_service
+    mode: monitor
+    blocked_operations: ["DROP", "TRUNCATE"]
+
+# 검증 기간: 1-2주 동안 monitored_blocks 모니터링
+# 통계 쿼리:
+#   SELECT monitored_blocks, blocked_queries FROM stats;
+# 거짓 양성이 없으면 다음 단계 진행
+
+# 2단계: enforce mode로 전환
+access_control:
+  - user: app_service
+    mode: enforce      # monitor → enforce
+    blocked_operations: ["DROP", "TRUNCATE"]
+```
+
+#### 패턴 2: 점진적 롤아웃
+
+```yaml
+access_control:
+  - user: internal_user
+    mode: enforce      # 기존 규칙: 강력하게 적용
+    blocked_operations: ["DROP"]
+
+  - user: app_service
+    mode: monitor      # 신규 규칙: 먼저 모니터링
+    blocked_operations: ["DROP", "TRUNCATE", "ALTER"]
+```
+
+### 정책 설명 API (`policy_explain`)
+
+`policy_explain` 커맨드의 응답에도 `monitor_mode` 플래그가 포함됩니다:
+
+```json
+{
+  "ok": true,
+  "payload": {
+    "action": "log",
+    "matched_rule": "block-statement",
+    "reason": "[monitor] SQL statement blocked: DROP",
+    "monitor_mode": true,
+    "evaluation_path": "config_loaded > block_statement(DROP)"
+  }
+}
+```
+
+이를 통해 CLI 또는 대시보드에서 "이 정책은 현재 monitor mode로 실행 중"임을 명시적으로 표시할 수 있습니다.
+
+---
+
 ## 파서 오류 처리 (evaluate_error)
 
 파서가 `std::unexpected(ParseError)`를 반환하면 세션이 `evaluate_error(error, session)`을 호출한다.

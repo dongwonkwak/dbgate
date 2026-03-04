@@ -325,13 +325,18 @@ PolicyEngine::PolicyEngine(std::shared_ptr<PolicyConfig> config) : config_(std::
 // 모든 예외는 catch 후 kBlock 반환 (fail-close).
 // ---------------------------------------------------------------------------
 PolicyResult PolicyEngine::evaluate(const ParsedQuery& query, const SessionContext& session) const {
+    // apply_monitor: monitor 모드일 때 kBlock → kLog 다운그레이드.
+    // monitor 모드에서는 실제 차단 없이 로그만 기록한다.
+    auto apply_monitor = [](PolicyResult r, RuleMode m) -> PolicyResult {
+        if (m == RuleMode::kMonitor && r.action == PolicyAction::kBlock) {
+            r.action = PolicyAction::kLog;
+            r.monitor_mode = true;
+            r.reason = "[monitor] " + r.reason;
+        }
+        return r;
+    };
+
     // Step 1: config_ nullptr 체크
-    // config_ 는 std::atomic<std::shared_ptr<PolicyConfig>> (C++20) 이다.
-    // load() 로 로컬 shared_ptr 를 취득한다.
-    // reload() 가 store() 로 새 값으로 교체하더라도 이 로컬 복사본은
-    // 이전 config 객체의 수명을 유지한다 (shared_ptr 참조 카운트 보장).
-    // std::memory_order_acquire 를 사용하여 store 이전의 메모리 쓰기가
-    // 이 load 이후에 보이도록 보장한다.
     const auto config = config_.load(std::memory_order_acquire);
     if (!config) {
         spdlog::error("policy_engine: config is null, blocking query (fail-close) session={}",
@@ -362,9 +367,11 @@ PolicyResult PolicyEngine::evaluate(const ParsedQuery& query, const SessionConte
                          stmt,
                          session.session_id,
                          session.db_user);
-            return PolicyResult{.action = PolicyAction::kBlock,
-                                .matched_rule = "block-statement",
-                                .reason = fmt::format("SQL statement blocked: {}", stmt)};
+            return apply_monitor(
+                PolicyResult{.action = PolicyAction::kBlock,
+                             .matched_rule = "block-statement",
+                             .reason = fmt::format("SQL statement blocked: {}", stmt)},
+                config->sql_rules.mode);
         }
     }
 
@@ -380,9 +387,11 @@ PolicyResult PolicyEngine::evaluate(const ParsedQuery& query, const SessionConte
                              pattern,
                              session.session_id,
                              session.db_user);
-                return PolicyResult{.action = PolicyAction::kBlock,
-                                    .matched_rule = "block-pattern",
-                                    .reason = fmt::format("SQL pattern blocked: {}", pattern)};
+                return apply_monitor(
+                    PolicyResult{.action = PolicyAction::kBlock,
+                                 .matched_rule = "block-pattern",
+                                 .reason = fmt::format("SQL pattern blocked: {}", pattern)},
+                    config->sql_rules.mode);
             }
         } catch (const std::regex_error& e) {
             // 잘못된 regex: 건너뜀 (false negative 증가, 로더에서 이미 경고)
@@ -431,11 +440,13 @@ PolicyResult PolicyEngine::evaluate(const ParsedQuery& query, const SessionConte
                          blocked_op,
                          session.session_id,
                          session.db_user);
-            return PolicyResult{
-                .action = PolicyAction::kBlock,
-                .matched_rule = "blocked-operation",
-                .reason = fmt::format(
-                    "Operation blocked for user '{}': {}", session.db_user, blocked_op)};
+            return apply_monitor(
+                PolicyResult{
+                    .action = PolicyAction::kBlock,
+                    .matched_rule = "blocked-operation",
+                    .reason = fmt::format(
+                        "Operation blocked for user '{}': {}", session.db_user, blocked_op)},
+                matched_rule->mode);
         }
     }
 
@@ -449,11 +460,13 @@ PolicyResult PolicyEngine::evaluate(const ParsedQuery& query, const SessionConte
                 "policy_engine: invalid allow_range '{}' for user='{}', blocking (fail-close)",
                 tr.allow_range,
                 session.db_user);
-            return PolicyResult{
-                .action = PolicyAction::kBlock,
-                .matched_rule = "time-restriction",
-                .reason = fmt::format("Invalid time restriction configuration for user '{}'",
-                                      session.db_user)};
+            return apply_monitor(
+                PolicyResult{
+                    .action = PolicyAction::kBlock,
+                    .matched_rule = "time-restriction",
+                    .reason = fmt::format("Invalid time restriction configuration for user '{}'",
+                                          session.db_user)},
+                matched_rule->mode);
         }
         if (!is_within_time_range(range.value(), tr.timezone)) {
             spdlog::info(
@@ -463,9 +476,10 @@ PolicyResult PolicyEngine::evaluate(const ParsedQuery& query, const SessionConte
                 tr.timezone,
                 session.session_id,
                 session.db_user);
-            return PolicyResult{.action = PolicyAction::kBlock,
-                                .matched_rule = "time-restriction",
-                                .reason = "Access outside allowed hours"};
+            return apply_monitor(PolicyResult{.action = PolicyAction::kBlock,
+                                              .matched_rule = "time-restriction",
+                                              .reason = "Access outside allowed hours"},
+                                 matched_rule->mode);
         }
     }
 
@@ -486,9 +500,11 @@ PolicyResult PolicyEngine::evaluate(const ParsedQuery& query, const SessionConte
                     table,
                     session.db_user,
                     session.session_id);
-                return PolicyResult{.action = PolicyAction::kBlock,
-                                    .matched_rule = "table-denied",
-                                    .reason = fmt::format("Table access denied: {}", table)};
+                return apply_monitor(
+                    PolicyResult{.action = PolicyAction::kBlock,
+                                 .matched_rule = "table-denied",
+                                 .reason = fmt::format("Table access denied: {}", table)},
+                    matched_rule->mode);
             }
         }
     }
@@ -510,9 +526,11 @@ PolicyResult PolicyEngine::evaluate(const ParsedQuery& query, const SessionConte
                     cmd_str,
                     session.db_user,
                     session.session_id);
-                return PolicyResult{.action = PolicyAction::kBlock,
-                                    .matched_rule = "operation-denied",
-                                    .reason = fmt::format("Operation not allowed: {}", cmd_str)};
+                return apply_monitor(
+                    PolicyResult{.action = PolicyAction::kBlock,
+                                 .matched_rule = "operation-denied",
+                                 .reason = fmt::format("Operation not allowed: {}", cmd_str)},
+                    matched_rule->mode);
             }
         }
     }
@@ -532,10 +550,12 @@ PolicyResult PolicyEngine::evaluate(const ParsedQuery& query, const SessionConte
                     cmd_str,
                     session.session_id,
                     session.db_user);
-                return PolicyResult{
-                    .action = PolicyAction::kBlock,
-                    .matched_rule = "procedure-dynamic-sql",
-                    .reason = fmt::format("Dynamic SQL ({}) blocked by policy", cmd_str)};
+                return apply_monitor(
+                    PolicyResult{
+                        .action = PolicyAction::kBlock,
+                        .matched_rule = "procedure-dynamic-sql",
+                        .reason = fmt::format("Dynamic SQL ({}) blocked by policy", cmd_str)},
+                    matched_rule->mode);
             }
         } else if (query.command == SqlCommand::kCall) {
             // CALL: 화이트리스트/블랙리스트 모드
@@ -553,10 +573,12 @@ PolicyResult PolicyEngine::evaluate(const ParsedQuery& query, const SessionConte
                         proc_name,
                         session.session_id,
                         session.db_user);
-                    return PolicyResult{
-                        .action = PolicyAction::kBlock,
-                        .matched_rule = "procedure-whitelist",
-                        .reason = fmt::format("Procedure '{}' not in whitelist", proc_name)};
+                    return apply_monitor(
+                        PolicyResult{
+                            .action = PolicyAction::kBlock,
+                            .matched_rule = "procedure-whitelist",
+                            .reason = fmt::format("Procedure '{}' not in whitelist", proc_name)},
+                        matched_rule->mode);
                 }
             } else if (pc.mode == "blacklist") {
                 // 블랙리스트 모드: whitelist(블랙리스트로 재사용) 에 있으면 차단
@@ -569,10 +591,12 @@ PolicyResult PolicyEngine::evaluate(const ParsedQuery& query, const SessionConte
                         proc_name,
                         session.session_id,
                         session.db_user);
-                    return PolicyResult{
-                        .action = PolicyAction::kBlock,
-                        .matched_rule = "procedure-blacklist",
-                        .reason = fmt::format("Procedure '{}' is blacklisted", proc_name)};
+                    return apply_monitor(
+                        PolicyResult{
+                            .action = PolicyAction::kBlock,
+                            .matched_rule = "procedure-blacklist",
+                            .reason = fmt::format("Procedure '{}' is blacklisted", proc_name)},
+                        matched_rule->mode);
                 }
             }
         }
@@ -589,9 +613,11 @@ PolicyResult PolicyEngine::evaluate(const ParsedQuery& query, const SessionConte
                 cmd_str,
                 session.session_id,
                 session.db_user);
-            return PolicyResult{.action = PolicyAction::kBlock,
-                                .matched_rule = "procedure-create-alter",
-                                .reason = fmt::format("{} blocked by procedure policy", cmd_str)};
+            return apply_monitor(
+                PolicyResult{.action = PolicyAction::kBlock,
+                             .matched_rule = "procedure-create-alter",
+                             .reason = fmt::format("{} blocked by procedure policy", cmd_str)},
+                matched_rule->mode);
         }
     }
 
@@ -628,9 +654,10 @@ PolicyResult PolicyEngine::evaluate(const ParsedQuery& query, const SessionConte
                         schema_part,
                         session.session_id,
                         session.db_user);
-                    return PolicyResult{.action = PolicyAction::kBlock,
-                                        .matched_rule = "schema-access",
-                                        .reason = "Schema access blocked"};
+                    return apply_monitor(PolicyResult{.action = PolicyAction::kBlock,
+                                                      .matched_rule = "schema-access",
+                                                      .reason = "Schema access blocked"},
+                                         matched_rule->mode);
                 }
             }
         }
@@ -668,6 +695,16 @@ PolicyResult PolicyEngine::evaluate(const ParsedQuery& query, const SessionConte
 // evaluation_path 는 어떤 단계에서 판정됐는지 추적할 수 있다.
 // ---------------------------------------------------------------------------
 ExplainResult PolicyEngine::explain(const ParsedQuery& query, const SessionContext& session) const {
+    // apply_monitor_explain: monitor 모드일 때 kBlock → kLog 다운그레이드.
+    auto apply_monitor_explain = [](ExplainResult r, RuleMode m) -> ExplainResult {
+        if (m == RuleMode::kMonitor && r.action == PolicyAction::kBlock) {
+            r.action = PolicyAction::kLog;
+            r.monitor_mode = true;
+            r.reason = "[monitor] " + r.reason;
+        }
+        return r;
+    };
+
     // evaluation_path 를 단계별로 누적
     std::string path{};
 
@@ -711,11 +748,13 @@ ExplainResult PolicyEngine::explain(const ParsedQuery& query, const SessionConte
                 stmt,
                 session.session_id,
                 session.db_user);
-            return ExplainResult{.action = PolicyAction::kBlock,
-                                 .matched_rule = "block-statement",
-                                 .reason = fmt::format("SQL statement blocked: {}", stmt),
-                                 .matched_access_rule = "",
-                                 .evaluation_path = path};
+            return apply_monitor_explain(
+                ExplainResult{.action = PolicyAction::kBlock,
+                              .matched_rule = "block-statement",
+                              .reason = fmt::format("SQL statement blocked: {}", stmt),
+                              .matched_access_rule = "",
+                              .evaluation_path = path},
+                config->sql_rules.mode);
         }
     }
     path += " > block_statements_passed";
@@ -734,11 +773,13 @@ ExplainResult PolicyEngine::explain(const ParsedQuery& query, const SessionConte
                     pattern,
                     session.session_id,
                     session.db_user);
-                return ExplainResult{.action = PolicyAction::kBlock,
-                                     .matched_rule = "block-pattern",
-                                     .reason = fmt::format("SQL pattern blocked: {}", pattern),
-                                     .matched_access_rule = "",
-                                     .evaluation_path = path};
+                return apply_monitor_explain(
+                    ExplainResult{.action = PolicyAction::kBlock,
+                                  .matched_rule = "block-pattern",
+                                  .reason = fmt::format("SQL pattern blocked: {}", pattern),
+                                  .matched_access_rule = "",
+                                  .evaluation_path = path},
+                    config->sql_rules.mode);
             }
         } catch (const std::regex_error& e) {
             // 잘못된 regex: 건너뜀 (false negative 증가, 로더에서 이미 경고)
@@ -794,13 +835,15 @@ ExplainResult PolicyEngine::explain(const ParsedQuery& query, const SessionConte
                 blocked_op,
                 session.session_id,
                 session.db_user);
-            return ExplainResult{
-                .action = PolicyAction::kBlock,
-                .matched_rule = "blocked-operation",
-                .reason =
-                    fmt::format("Operation blocked for user '{}': {}", session.db_user, blocked_op),
-                .matched_access_rule = access_rule_id,
-                .evaluation_path = path};
+            return apply_monitor_explain(
+                ExplainResult{
+                    .action = PolicyAction::kBlock,
+                    .matched_rule = "blocked-operation",
+                    .reason = fmt::format(
+                        "Operation blocked for user '{}': {}", session.db_user, blocked_op),
+                    .matched_access_rule = access_rule_id,
+                    .evaluation_path = path},
+                matched_rule->mode);
         }
     }
     path += " > blocked_operations_passed";
@@ -817,13 +860,15 @@ ExplainResult PolicyEngine::explain(const ParsedQuery& query, const SessionConte
                 "blocking (fail-close)",
                 tr.allow_range,
                 session.db_user);
-            return ExplainResult{
-                .action = PolicyAction::kBlock,
-                .matched_rule = "time-restriction",
-                .reason = fmt::format("Invalid time restriction configuration for user '{}'",
-                                      session.db_user),
-                .matched_access_rule = access_rule_id,
-                .evaluation_path = path};
+            return apply_monitor_explain(
+                ExplainResult{
+                    .action = PolicyAction::kBlock,
+                    .matched_rule = "time-restriction",
+                    .reason = fmt::format("Invalid time restriction configuration for user '{}'",
+                                          session.db_user),
+                    .matched_access_rule = access_rule_id,
+                    .evaluation_path = path},
+                matched_rule->mode);
         }
         if (!is_within_time_range(range.value(), tr.timezone)) {
             path += fmt::format(
@@ -835,11 +880,12 @@ ExplainResult PolicyEngine::explain(const ParsedQuery& query, const SessionConte
                 tr.timezone,
                 session.session_id,
                 session.db_user);
-            return ExplainResult{.action = PolicyAction::kBlock,
-                                 .matched_rule = "time-restriction",
-                                 .reason = "Access outside allowed hours",
-                                 .matched_access_rule = access_rule_id,
-                                 .evaluation_path = path};
+            return apply_monitor_explain(ExplainResult{.action = PolicyAction::kBlock,
+                                                       .matched_rule = "time-restriction",
+                                                       .reason = "Access outside allowed hours",
+                                                       .matched_access_rule = access_rule_id,
+                                                       .evaluation_path = path},
+                                         matched_rule->mode);
         }
         path += fmt::format(" > time_restriction_passed({})", tr.allow_range);
     }
@@ -861,11 +907,13 @@ ExplainResult PolicyEngine::explain(const ParsedQuery& query, const SessionConte
                     table,
                     session.db_user,
                     session.session_id);
-                return ExplainResult{.action = PolicyAction::kBlock,
-                                     .matched_rule = "table-denied",
-                                     .reason = fmt::format("Table access denied: {}", table),
-                                     .matched_access_rule = access_rule_id,
-                                     .evaluation_path = path};
+                return apply_monitor_explain(
+                    ExplainResult{.action = PolicyAction::kBlock,
+                                  .matched_rule = "table-denied",
+                                  .reason = fmt::format("Table access denied: {}", table),
+                                  .matched_access_rule = access_rule_id,
+                                  .evaluation_path = path},
+                    matched_rule->mode);
             }
         }
     }
@@ -888,11 +936,13 @@ ExplainResult PolicyEngine::explain(const ParsedQuery& query, const SessionConte
                     cmd_str,
                     session.db_user,
                     session.session_id);
-                return ExplainResult{.action = PolicyAction::kBlock,
-                                     .matched_rule = "operation-denied",
-                                     .reason = fmt::format("Operation not allowed: {}", cmd_str),
-                                     .matched_access_rule = access_rule_id,
-                                     .evaluation_path = path};
+                return apply_monitor_explain(
+                    ExplainResult{.action = PolicyAction::kBlock,
+                                  .matched_rule = "operation-denied",
+                                  .reason = fmt::format("Operation not allowed: {}", cmd_str),
+                                  .matched_access_rule = access_rule_id,
+                                  .evaluation_path = path},
+                    matched_rule->mode);
             }
         }
     }
@@ -912,12 +962,14 @@ ExplainResult PolicyEngine::explain(const ParsedQuery& query, const SessionConte
                     cmd_str,
                     session.session_id,
                     session.db_user);
-                return ExplainResult{
-                    .action = PolicyAction::kBlock,
-                    .matched_rule = "procedure-dynamic-sql",
-                    .reason = fmt::format("Dynamic SQL ({}) blocked by policy", cmd_str),
-                    .matched_access_rule = access_rule_id,
-                    .evaluation_path = path};
+                return apply_monitor_explain(
+                    ExplainResult{
+                        .action = PolicyAction::kBlock,
+                        .matched_rule = "procedure-dynamic-sql",
+                        .reason = fmt::format("Dynamic SQL ({}) blocked by policy", cmd_str),
+                        .matched_access_rule = access_rule_id,
+                        .evaluation_path = path},
+                    matched_rule->mode);
             }
         } else if (query.command == SqlCommand::kCall) {
             const std::string proc_name = query.tables.empty() ? "" : query.tables.front();
@@ -934,12 +986,14 @@ ExplainResult PolicyEngine::explain(const ParsedQuery& query, const SessionConte
                         proc_name,
                         session.session_id,
                         session.db_user);
-                    return ExplainResult{
-                        .action = PolicyAction::kBlock,
-                        .matched_rule = "procedure-whitelist",
-                        .reason = fmt::format("Procedure '{}' not in whitelist", proc_name),
-                        .matched_access_rule = access_rule_id,
-                        .evaluation_path = path};
+                    return apply_monitor_explain(
+                        ExplainResult{
+                            .action = PolicyAction::kBlock,
+                            .matched_rule = "procedure-whitelist",
+                            .reason = fmt::format("Procedure '{}' not in whitelist", proc_name),
+                            .matched_access_rule = access_rule_id,
+                            .evaluation_path = path},
+                        matched_rule->mode);
                 }
                 path += fmt::format(" > procedure_in_whitelist({})", proc_name);
             } else if (pc.mode == "blacklist") {
@@ -954,12 +1008,14 @@ ExplainResult PolicyEngine::explain(const ParsedQuery& query, const SessionConte
                         proc_name,
                         session.session_id,
                         session.db_user);
-                    return ExplainResult{
-                        .action = PolicyAction::kBlock,
-                        .matched_rule = "procedure-blacklist",
-                        .reason = fmt::format("Procedure '{}' is blacklisted", proc_name),
-                        .matched_access_rule = access_rule_id,
-                        .evaluation_path = path};
+                    return apply_monitor_explain(
+                        ExplainResult{
+                            .action = PolicyAction::kBlock,
+                            .matched_rule = "procedure-blacklist",
+                            .reason = fmt::format("Procedure '{}' is blacklisted", proc_name),
+                            .matched_access_rule = access_rule_id,
+                            .evaluation_path = path},
+                        matched_rule->mode);
                 }
                 path += fmt::format(" > procedure_not_in_blacklist({})", proc_name);
             }
@@ -977,11 +1033,13 @@ ExplainResult PolicyEngine::explain(const ParsedQuery& query, const SessionConte
                 cmd_str,
                 session.session_id,
                 session.db_user);
-            return ExplainResult{.action = PolicyAction::kBlock,
-                                 .matched_rule = "procedure-create-alter",
-                                 .reason = fmt::format("{} blocked by procedure policy", cmd_str),
-                                 .matched_access_rule = access_rule_id,
-                                 .evaluation_path = path};
+            return apply_monitor_explain(
+                ExplainResult{.action = PolicyAction::kBlock,
+                              .matched_rule = "procedure-create-alter",
+                              .reason = fmt::format("{} blocked by procedure policy", cmd_str),
+                              .matched_access_rule = access_rule_id,
+                              .evaluation_path = path},
+                matched_rule->mode);
         }
     }
 
@@ -1005,11 +1063,13 @@ ExplainResult PolicyEngine::explain(const ParsedQuery& query, const SessionConte
                         schema_part,
                         session.session_id,
                         session.db_user);
-                    return ExplainResult{.action = PolicyAction::kBlock,
-                                         .matched_rule = "schema-access",
-                                         .reason = "Schema access blocked",
-                                         .matched_access_rule = access_rule_id,
-                                         .evaluation_path = path};
+                    return apply_monitor_explain(
+                        ExplainResult{.action = PolicyAction::kBlock,
+                                      .matched_rule = "schema-access",
+                                      .reason = "Schema access blocked",
+                                      .matched_access_rule = access_rule_id,
+                                      .evaluation_path = path},
+                        matched_rule->mode);
                 }
             }
         }

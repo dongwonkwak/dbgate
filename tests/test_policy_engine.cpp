@@ -1975,3 +1975,163 @@ TEST(PolicyEngine, ExplainError_MatchesEvaluateError) {
     EXPECT_EQ(eval_result.action, expl_result.action);
     EXPECT_EQ(eval_result.matched_rule, expl_result.matched_rule);
 }
+
+// ===========================================================================
+// Monitor Mode (DON-49)
+//
+// [설계 원칙]
+// - RuleMode::kMonitor 일 때 kBlock 판정을 kLog 로 다운그레이드한다.
+// - monitor_mode = true 플래그와 reason 에 "[monitor]" 접두사가 포함되어야 한다.
+// - no-access-rule, unknown-command 등 fail-close 판정은 monitor 모드에
+//   영향받지 않는다 (access_rule 이 매칭되지 않았으므로 mode 필드 미조회).
+// - kEnforce(기본값) 하에서는 기존 동작이 그대로 유지되어야 한다 (하위 호환).
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// MonitorMode_SqlRule_BlockStatement
+//   sql_rules.mode = kMonitor 일 때 block_statements 에 걸리는 DROP 쿼리가
+//   kLog 로 다운그레이드되고 monitor_mode = true 가 설정되어야 한다.
+//
+//   [검증 포인트]
+//   - action == kLog (kBlock 이 아님)
+//   - monitor_mode == true
+//   - reason 에 "[monitor]" 포함
+// ---------------------------------------------------------------------------
+TEST(PolicyEngine, MonitorMode_SqlRule_BlockStatement) {
+    auto cfg = make_basic_config();
+    cfg->sql_rules.mode = RuleMode::kMonitor;
+    const PolicyEngine engine(cfg);
+
+    // DROP 은 block_statements 에 있으므로 kMonitor 에서 kLog 로 다운그레이드
+    const auto query = make_query(SqlCommand::kDrop, {"users"}, "DROP TABLE users");
+    const auto result = engine.evaluate(query, make_session());
+
+    EXPECT_EQ(result.action, PolicyAction::kLog)
+        << "Monitor mode must downgrade kBlock to kLog. Got matched_rule=" << result.matched_rule;
+    EXPECT_TRUE(result.monitor_mode) << "monitor_mode must be true when sql_rules.mode = kMonitor";
+    EXPECT_NE(result.reason.find("[monitor]"), std::string::npos)
+        << "reason must contain '[monitor]' prefix in monitor mode. Got: " << result.reason;
+}
+
+// ---------------------------------------------------------------------------
+// MonitorMode_SqlRule_BlockPattern
+//   sql_rules.mode = kMonitor 일 때 block_patterns 에 걸리는 UNION SELECT 가
+//   kLog 로 다운그레이드되어야 한다.
+// ---------------------------------------------------------------------------
+TEST(PolicyEngine, MonitorMode_SqlRule_BlockPattern) {
+    auto cfg = make_basic_config();
+    cfg->sql_rules.mode = RuleMode::kMonitor;
+    const PolicyEngine engine(cfg);
+
+    const auto query =
+        make_query(SqlCommand::kSelect, {"users"}, "SELECT * FROM users UNION SELECT 1,2,3");
+    const auto result = engine.evaluate(query, make_session());
+
+    EXPECT_EQ(result.action, PolicyAction::kLog)
+        << "Monitor mode must downgrade block_pattern to kLog. Got action="
+        << static_cast<int>(result.action);
+    EXPECT_TRUE(result.monitor_mode)
+        << "monitor_mode must be true for block_pattern hit in kMonitor mode";
+}
+
+// ---------------------------------------------------------------------------
+// MonitorMode_AccessRule_BlockedOp
+//   access_control 룰의 mode = kMonitor 일 때 blocked_operations 에 걸리는
+//   DELETE 쿼리가 kLog 로 다운그레이드되어야 한다.
+//
+//   [설계 의도]
+//   AccessRule.mode 는 해당 룰이 매칭된 이후의 blocked_operations /
+//   operation-denied 등 access-rule 레벨 차단에 적용된다.
+// ---------------------------------------------------------------------------
+TEST(PolicyEngine, MonitorMode_AccessRule_BlockedOp) {
+    auto cfg = make_basic_config();
+    cfg->access_control[0].mode = RuleMode::kMonitor;
+    cfg->access_control[0].blocked_operations = {"DELETE"};
+    // DELETE 를 allowed_operations 에 포함하여 allowed_operations 단계는 통과,
+    // blocked_operations 체크에서 차단되도록 한다.
+    cfg->access_control[0].allowed_operations = {"SELECT", "INSERT", "UPDATE", "DELETE"};
+    const PolicyEngine engine(cfg);
+
+    const auto query = make_query(SqlCommand::kDelete, {"users"}, "DELETE FROM users WHERE id=1");
+    const auto result = engine.evaluate(query, make_session());
+
+    EXPECT_EQ(result.action, PolicyAction::kLog)
+        << "Monitor mode on access rule must downgrade blocked_operation to kLog. "
+        << "Got action=" << static_cast<int>(result.action)
+        << " matched_rule=" << result.matched_rule;
+    EXPECT_TRUE(result.monitor_mode)
+        << "monitor_mode must be true when access rule mode = kMonitor";
+}
+
+// ---------------------------------------------------------------------------
+// MonitorMode_Default_IsEnforce
+//   make_basic_config() 의 기본 RuleMode 는 kEnforce 이므로
+//   DROP 쿼리는 여전히 kBlock 을 반환해야 한다 (하위 호환 보장).
+// ---------------------------------------------------------------------------
+TEST(PolicyEngine, MonitorMode_Default_IsEnforce) {
+    // make_basic_config() 는 mode 를 명시하지 않으므로 기본값 kEnforce
+    const PolicyEngine engine(make_basic_config());
+
+    const auto query = make_query(SqlCommand::kDrop, {"users"}, "DROP TABLE users");
+    const auto result = engine.evaluate(query, make_session());
+
+    EXPECT_EQ(result.action, PolicyAction::kBlock)
+        << "Default (kEnforce) mode must keep kBlock. Got action="
+        << static_cast<int>(result.action);
+    EXPECT_FALSE(result.monitor_mode) << "monitor_mode must be false in default (kEnforce) mode";
+}
+
+// ---------------------------------------------------------------------------
+// MonitorMode_NoAccessRule_StillBlocks
+//   sql_rules.mode = kMonitor 이더라도, access_control 에 매칭되는 룰이 없으면
+//   no-access-rule 기본 deny 는 monitor 모드의 영향을 받지 않고 kBlock 유지.
+//
+//   [근거]
+//   monitor 모드는 "매칭된 룰의 mode 필드"를 읽는다.
+//   no-access-rule 은 어떤 access rule 도 매칭되지 않은 경우이므로
+//   mode 필드를 조회할 룰이 없다 → fail-close (kBlock) 유지.
+// ---------------------------------------------------------------------------
+TEST(PolicyEngine, MonitorMode_NoAccessRule_StillBlocks) {
+    auto cfg = make_basic_config();
+    cfg->sql_rules.mode = RuleMode::kMonitor;
+    // unknown_user 는 access_control 에 없음 → no-access-rule
+    const PolicyEngine engine(cfg);
+
+    const auto session = make_session("unknown_user", "10.0.0.1");
+    // SELECT 는 sql_rules.block_statements 를 통과하지만
+    // access_control 에서 no-access-rule → kBlock
+    // sql_rules monitor 모드는 sql_rules 수준 차단에만 적용됨
+    const auto query = make_query(SqlCommand::kSelect, {"users"}, "SELECT * FROM users");
+    const auto result = engine.evaluate(query, session);
+
+    EXPECT_EQ(result.action, PolicyAction::kBlock)
+        << "no-access-rule must not be downgraded by sql_rules monitor mode. "
+        << "Got action=" << static_cast<int>(result.action);
+    EXPECT_EQ(result.matched_rule, "no-access-rule");
+}
+
+// ---------------------------------------------------------------------------
+// Explain_MonitorMode
+//   sql_rules.mode = kMonitor 일 때 explain() 도 동일하게 kLog 와
+//   monitor_mode = true 를 반환해야 한다.
+//
+//   [검증 포인트]
+//   - action == kLog
+//   - monitor_mode == true
+//   - evaluation_path 에 "block_statement" 포함 (평가 경로 추적)
+// ---------------------------------------------------------------------------
+TEST(PolicyEngine, Explain_MonitorMode) {
+    auto cfg = make_basic_config();
+    cfg->sql_rules.mode = RuleMode::kMonitor;
+    const PolicyEngine engine(cfg);
+
+    const auto query = make_query(SqlCommand::kDrop, {"users"}, "DROP TABLE users");
+    const auto result = engine.explain(query, make_session());
+
+    EXPECT_EQ(result.action, PolicyAction::kLog)
+        << "explain() with monitor mode must return kLog. Got action="
+        << static_cast<int>(result.action);
+    EXPECT_TRUE(result.monitor_mode) << "explain() must set monitor_mode=true in kMonitor mode";
+    EXPECT_NE(result.evaluation_path.find("block_statement"), std::string::npos)
+        << "evaluation_path must contain 'block_statement'. Got: " << result.evaluation_path;
+}

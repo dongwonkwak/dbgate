@@ -286,3 +286,39 @@ TEST(StatsCollector, ConcurrentAccess_NoDataRace) {
     EXPECT_NEAR(snap.block_rate, 0.5, 0.01)
         << "block_rate should be ~0.5 with alternating block/allow";
 }
+
+// ---------------------------------------------------------------------------
+// OnMonitoredBlock_IncrementsCounter (DON-49)
+//   on_monitored_block() 호출 시 monitored_blocks 가 증가하고
+//   blocked_queries 와는 완전히 분리된 카운터여야 한다.
+//
+//   [검증 포인트]
+//   - 초기값 monitored_blocks == 0
+//   - on_monitored_block() 3회 → monitored_blocks == 3
+//   - blocked_queries 는 0 유지 (별도 카운터)
+//   - total_queries 도 0 유지 (on_query 호출 없음)
+// ---------------------------------------------------------------------------
+TEST(StatsCollector, OnMonitoredBlock_IncrementsCounter) {
+    StatsCollector stats;
+
+    // 초기 상태 확인
+    {
+        const auto snap = stats.snapshot();
+        EXPECT_EQ(snap.monitored_blocks, 0U) << "monitored_blocks must be 0 at init";
+        EXPECT_EQ(snap.blocked_queries, 0U) << "blocked_queries must be 0 at init";
+    }
+
+    // on_monitored_block() 3회 호출
+    stats.on_monitored_block();
+    stats.on_monitored_block();
+    stats.on_monitored_block();
+
+    const auto snap = stats.snapshot();
+
+    EXPECT_EQ(snap.monitored_blocks, 3U)
+        << "monitored_blocks should be 3 after three on_monitored_block() calls";
+    EXPECT_EQ(snap.blocked_queries, 0U)
+        << "blocked_queries must remain 0 — on_monitored_block does not affect blocked_queries";
+    EXPECT_EQ(snap.total_queries, 0U)
+        << "total_queries must remain 0 — on_monitored_block does not call on_query";
+}

@@ -226,14 +226,18 @@ void StructuredLogger::log_block(const BlockLog& entry) {
     }
 
     // JSON 구성
+    // would_block==true: dry-run 모드에서 차단됐을 것임을 나타냄 (실제 차단 아님)
+    const char* event_name = entry.would_block ? "query_would_block" : "query_blocked";
+    const char* would_block_val = entry.would_block ? "true" : "false";
+
     std::ostringstream json;
-    json << R"({"event":"query_blocked","session_id":)" << entry.session_id << R"(,"db_user":")"
-         << escape_json_string(entry.db_user) << R"(","client_ip":")"
+    json << R"({"event":")" << event_name << R"(","session_id":)" << entry.session_id
+         << R"(,"db_user":")" << escape_json_string(entry.db_user) << R"(","client_ip":")"
          << escape_json_string(entry.client_ip) << R"(","raw_sql":")"
          << escape_json_string(entry.raw_sql) << R"(","matched_rule":")"
          << escape_json_string(entry.matched_rule) << R"(","reason":")"
-         << escape_json_string(entry.reason) << R"(","timestamp":")"
-         << format_iso8601(entry.timestamp) << R"("})";
+         << escape_json_string(entry.reason) << R"(","would_block":)" << would_block_val
+         << R"(,"timestamp":")" << format_iso8601(entry.timestamp) << R"("})";
 
     logger_->warn(json.str());
 }

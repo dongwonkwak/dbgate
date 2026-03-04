@@ -34,6 +34,7 @@
 #include <spdlog/spdlog.h>
 #include <yaml-cpp/yaml.h>
 
+#include <algorithm>
 #include <charconv>
 #include <filesystem>
 #include <regex>
@@ -148,6 +149,25 @@ void validate_block_patterns(const std::vector<std::string>& patterns) {
 }
 
 // ---------------------------------------------------------------------------
+// 내부 헬퍼: YAML 노드에서 RuleMode 를 파싱한다.
+//
+// - "monitor" (정확히 일치) → kMonitor
+// - 그 외 모든 값 (없음, null, 다른 문자열) → kEnforce
+//
+// [fail-close 설계]
+// 값이 없거나 알 수 없는 값이면 kEnforce (차단 모드) 를 반환한다.
+// 오탐 가능성보다 보안 우선. kMonitor 는 명시적으로 "monitor" 를 써야 활성화된다.
+// ---------------------------------------------------------------------------
+[[nodiscard]] RuleMode parse_rule_mode(const YAML::Node& node) {
+    if (node && node.IsScalar()) {
+        if (node.as<std::string>() == "monitor") {
+            return RuleMode::kMonitor;
+        }
+    }
+    return RuleMode::kEnforce;
+}
+
+// ---------------------------------------------------------------------------
 // 내부 헬퍼: GlobalConfig 파싱
 // ---------------------------------------------------------------------------
 [[nodiscard]] GlobalConfig parse_global(const YAML::Node& global_node) {
@@ -221,6 +241,9 @@ void validate_block_patterns(const std::vector<std::string>& patterns) {
     // time_restriction 파싱
     rule.time_restriction = parse_time_restriction(rule_node["time_restriction"]);
 
+    // mode 파싱 (없거나 알 수 없는 값 → kEnforce, fail-close)
+    rule.mode = parse_rule_mode(rule_node["mode"]);
+
     return rule;
 }
 
@@ -235,6 +258,9 @@ void validate_block_patterns(const std::vector<std::string>& patterns) {
 
     rules.block_statements = read_string_sequence(sql_node["block_statements"]);
     rules.block_patterns = read_string_sequence(sql_node["block_patterns"]);
+
+    // mode 파싱 (없거나 알 수 없는 값 → kEnforce, fail-close)
+    rules.mode = parse_rule_mode(sql_node["mode"]);
 
     return rules;
 }
@@ -405,12 +431,23 @@ std::expected<PolicyConfig, std::string> PolicyLoader::load(
     // 5. block_patterns 유효성 사전 검증 (오류 경고만 — 파싱 실패 아님)
     validate_block_patterns(cfg.sql_rules.block_patterns);
 
+    // monitor モード 룰 집계 (운영자 감사 목적)
+    // static_cast: std::count_if 반환형이 ptrdiff_t(부호 있음)이므로 명시적 변환
+    const auto monitor_access_rules = static_cast<std::size_t>(std::count_if(
+        cfg.access_control.begin(), cfg.access_control.end(), [](const AccessRule& r) {
+            return r.mode == RuleMode::kMonitor;
+        }));
+    const bool sql_monitor = (cfg.sql_rules.mode == RuleMode::kMonitor);
+
     spdlog::info(
         "policy_loader: policy loaded successfully — "
-        "access_rules={}, block_statements={}, block_patterns={}",
+        "access_rules={} (monitor={}), block_statements={}, block_patterns={}, "
+        "sql_rules_mode={}",
         cfg.access_control.size(),
+        monitor_access_rules,
         cfg.sql_rules.block_statements.size(),
-        cfg.sql_rules.block_patterns.size());
+        cfg.sql_rules.block_patterns.size(),
+        sql_monitor ? "monitor" : "enforce");
 
     return cfg;
 }

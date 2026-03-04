@@ -154,6 +154,7 @@ SQL 정책 평가를 dry-run으로 실행합니다. 실제 쿼리 차단/허용 
     "reason": "SQL statement blocked: DROP",
     "matched_access_rule": "app_service@172.16.0.0/12",
     "evaluation_path": "config_loaded > access_rule_matched > block_statement_matched(DROP)",
+    "monitor_mode": false,
     "parsed_command": "DROP",
     "parsed_tables": ["users"]
   }
@@ -169,8 +170,32 @@ SQL 정책 평가를 dry-run으로 실행합니다. 실제 쿼리 차단/허용 
 | `reason` | string | 항상 | 판정 이유 (로깅용, 클라이언트 직접 노출 비권장) |
 | `matched_access_rule` | string | 항상 | 매칭된 access_control 룰 (`"user@cidr"` 형식, 없으면 빈 문자열) |
 | `evaluation_path` | string | 항상 | 단계별 평가 경로 trace |
+| `monitor_mode` | bool | 항상 | Monitor mode 규칙에 의해 차단이 다운그레이드되었는지 여부 (DON-49) |
 | `parsed_command` | string | 파싱 성공 시 | SQL 커맨드 (`"SELECT"`, `"DROP"` 등) |
 | `parsed_tables` | array | 파싱 성공 시 | 추출된 테이블명 목록 |
+
+#### `monitor_mode` 필드 설명
+
+Monitor mode 규칙에 의해 차단 판정이 로그로만 기록되는지 여부를 나타냅니다.
+
+- **`true`**: 해당 SQL은 정책 규칙에 매칭되어 차단되었을 것이지만, monitor mode이므로 실제로는 차단되지 않습니다. 로그에는 기록됩니다.
+- **`false`**: 정책 규칙이 enforce mode이거나, 차단 판정이 아닙니다.
+
+**예시 - Monitor Mode 규칙이 매칭된 경우**:
+```json
+{
+  "ok": true,
+  "payload": {
+    "action": "log",
+    "matched_rule": "blocked-operation",
+    "reason": "[monitor] Operation denied: DROP",
+    "monitor_mode": true,
+    "evaluation_path": "config_loaded > access_rule_matched(app_service@192.168.0.0/16) > blocked_operation_matched(DROP)"
+  }
+}
+```
+
+CLI 또는 대시보드에서 이 필드로 "현재 정책은 실제 차단을 수행하지 않는 테스트 상태"임을 표시할 수 있습니다.
 
 **응답** (payload 필드 누락 — fail-close):
 ```json
@@ -345,6 +370,7 @@ SQL 정책 평가를 dry-run으로 실행합니다. 실제 쿼리 차단/허용 
   "active_sessions": 3,
   "total_queries": 1250,
   "blocked_queries": 15,
+  "monitored_blocks": 3,
   "qps": 25.5,
   "block_rate": 0.012,
   "captured_at_ms": 1740218645123
@@ -358,10 +384,30 @@ SQL 정책 평가를 dry-run으로 실행합니다. 실제 쿼리 차단/허용 
 | `total_connections` | uint64 | 프로세스 시작 이후 누적 연결 수 |
 | `active_sessions` | uint64 | 현재 활성 세션 수 |
 | `total_queries` | uint64 | 누적 쿼리 처리 수 (ALLOW + BLOCK) |
-| `blocked_queries` | uint64 | 정책에 의해 차단된 쿼리 수 |
+| `blocked_queries` | uint64 | 정책에 의해 차단된 쿼리 수 (monitor mode 제외) |
+| `monitored_blocks` | uint64 | Monitor mode 규칙에 의해 "차단되었을" 쿼리 수 (DON-49) |
 | `qps` | double | 1초 슬라이딩 윈도우 기반 초당 쿼리 수 |
-| `block_rate` | double | 차단 비율 (0.0 ~ 1.0), `blocked_queries / total_queries` |
+| `block_rate` | double | 차단 비율 (0.0 ~ 1.0), `blocked_queries / total_queries` (monitored_blocks 제외) |
 | `captured_at_ms` | int64 | 스냅샷 생성 시각 (Unix epoch 밀리초) |
+
+#### `monitored_blocks` 설명
+
+Monitor mode로 실행 중인 규칙에 의해 "만약 enforce mode였다면 차단되었을" 쿼리를 별도 카운터로 추적합니다.
+
+- **포함**: Monitor mode 규칙이 일치하여 `PolicyAction::kBlock → kLog` 다운그레이드된 쿼리
+- **미포함**: 실제로 차단된 쿼리, 파서 오류, no-access-rule 차단 등
+- **용도**: 새로운 정책 규칙의 영향도 검증. `block_rate`는 `monitored_blocks` 제외로 계산하여 정책 검증 중에도 실제 차단율 지표 신뢰성 유지
+
+#### 통계 해석 예시
+
+```
+total_queries = 1000
+blocked_queries = 15       (실제 차단)
+monitored_blocks = 3       (monitor mode로 차단되었을 것)
+
+block_rate = 15 / 1000 = 0.015 (1.5%)
+monitored_rate = 3 / 1000 = 0.003 (0.3%, 별도 계산)
+```
 
 ### 계산식
 
@@ -389,6 +435,7 @@ type StatsSnapshot struct {
     ActiveSessions   uint64    `json:"active_sessions"`
     TotalQueries     uint64    `json:"total_queries"`
     BlockedQueries   uint64    `json:"blocked_queries"`
+    MonitoredBlocks  uint64    `json:"monitored_blocks"`
     QPS              float64   `json:"qps"`
     BlockRate        float64   `json:"block_rate"`
     CapturedAt       time.Time `json:"captured_at"`
@@ -415,6 +462,7 @@ type PolicyExplainResult struct {
     Reason             string   `json:"reason"`
     MatchedAccessRule  string   `json:"matched_access_rule"`
     EvaluationPath     string   `json:"evaluation_path"`
+    MonitorMode        bool     `json:"monitor_mode"`         // true: monitor 모드 규칙에 의해 차단 다운그레이드됨
     ParsedCommand      string   `json:"parsed_command,omitempty"`
     ParsedTables       []string `json:"parsed_tables,omitempty"`
 }
@@ -485,11 +533,16 @@ Go CLI                              C++ UdsServer
    │                          JSON 직렬화
    │
    │←─ 응답 송신 ─────────────────────────┤
-   │  [0xA2 0x00 0x00 0x00]
+   │  [0xAE 0x00 0x00 0x00]
    │  {"ok":true,"payload":{
    │    "total_connections":42,
    │    "active_sessions":3,
-   │    ...
+   │    "total_queries":1250,
+   │    "blocked_queries":15,
+   │    "monitored_blocks":3,
+   │    "qps":25.5,
+   │    "block_rate":0.012,
+   │    "captured_at_ms":1740218645123
    │  }}
    │
    ├─ 응답 파싱

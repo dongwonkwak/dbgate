@@ -171,6 +171,7 @@ type rawStats struct {
 	ActiveSessions   uint64  `json:"active_sessions"`
 	TotalQueries     uint64  `json:"total_queries"`
 	BlockedQueries   uint64  `json:"blocked_queries"`
+	MonitoredBlocks  uint64  `json:"monitored_blocks"`
 	QPS              float64 `json:"qps"`
 	BlockRate        float64 `json:"block_rate"`
 	// C++ side serialises the timestamp as Unix epoch milliseconds.
@@ -206,6 +207,7 @@ func (c *Client) GetStats() (*StatsSnapshot, error) {
 		ActiveSessions:   raw.ActiveSessions,
 		TotalQueries:     raw.TotalQueries,
 		BlockedQueries:   raw.BlockedQueries,
+		MonitoredBlocks:  raw.MonitoredBlocks,
 		QPS:              raw.QPS,
 		BlockRate:        raw.BlockRate,
 		CapturedAt:       time.UnixMilli(raw.CapturedAtMs).UTC(),

@@ -97,11 +97,12 @@ std::string serialize_snapshot(const StatsSnapshot& s) {
             .count();
 
     return fmt::format(
-        R"({{"total_connections":{},"active_sessions":{},"total_queries":{},"blocked_queries":{},"qps":{:.4f},"block_rate":{:.4f},"captured_at_ms":{}}})",
+        R"({{"total_connections":{},"active_sessions":{},"total_queries":{},"blocked_queries":{},"monitored_blocks":{},"qps":{:.4f},"block_rate":{:.4f},"captured_at_ms":{}}})",
         s.total_connections,
         s.active_sessions,
         s.total_queries,
         s.blocked_queries,
+        s.monitored_blocks,
         s.qps,
         s.block_rate,
         epoch_ms);
@@ -400,6 +401,8 @@ std::string serialize_explain_result(const ExplainResult& result, const ParsedQu
     out += R"(,"reason":")" + json_escape(result.reason) + '"';
     out += R"(,"matched_access_rule":")" + json_escape(result.matched_access_rule) + '"';
     out += R"(,"evaluation_path":")" + json_escape(result.evaluation_path) + '"';
+    out += R"(,"monitor_mode":)";
+    out += result.monitor_mode ? "true" : "false";
 
     // 파싱 성공 시 parsed_command, parsed_tables 추가
     if (parsed_query != nullptr) {
