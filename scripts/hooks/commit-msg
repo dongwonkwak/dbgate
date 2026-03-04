@@ -10,11 +10,11 @@ PATTERN='^(feat|fix|docs|chore|test|refactor|perf|style|ci|revert)\([a-z][a-z0-9
 MERGE_PATTERN='^Merge '
 
 # Merge 커밋 제외
-if echo "$COMMIT_MSG" | grep -qP "$MERGE_PATTERN"; then
+if echo "$COMMIT_MSG" | grep -qE "$MERGE_PATTERN"; then
   exit 0
 fi
 
-if ! echo "$COMMIT_MSG" | grep -qP "$PATTERN"; then
+if ! echo "$COMMIT_MSG" | grep -qE "$PATTERN"; then
   echo ""
   echo "❌ 커밋 메시지 형식 오류: $COMMIT_MSG"
   echo ""

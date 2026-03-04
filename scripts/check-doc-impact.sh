@@ -79,9 +79,11 @@ export DOC_IMPACT_RANGE_SPEC="$RANGE_SPEC"
 export DOC_IMPACT_CHANGED_FILES="$CHANGED_FILES"
 export DOC_IMPACT_OWNERSHIP_MAP="$OWNERSHIP_MAP"
 
-ruby <<'RUBY'
+LANG=en_US.UTF-8 ruby <<'RUBY'
+# frozen_string_literal: false
 require "yaml"
 require "open3"
+Encoding.default_external = Encoding::UTF_8
 
 def env!(key)
   v = ENV[key]
