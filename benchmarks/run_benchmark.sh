@@ -34,6 +34,7 @@ MYSQL_USER="${MYSQL_USER:-dbgate}"
 MYSQL_PASSWORD="${MYSQL_PASSWORD:-dbgate_pass}"
 MYSQL_DATABASE="${MYSQL_DATABASE:-dbgate_bench}"
 PROXY_PORT="${PROXY_PORT:-13306}"
+PROXY_LISTEN_ADDR="${PROXY_LISTEN_ADDR:-127.0.0.1}"
 HEALTH_CHECK_PORT="${HEALTH_CHECK_PORT:-8084}"
 DBGATE_BIN="${DBGATE_BIN:-build/default/dbgate}"
 POLICY_PATH="${POLICY_PATH:-benchmarks/policy-benchmark.yaml}"
@@ -253,6 +254,7 @@ main() {
 
         MYSQL_HOST="$MYSQL_HOST" \
         MYSQL_PORT="$MYSQL_PORT" \
+        PROXY_LISTEN_ADDR="$PROXY_LISTEN_ADDR" \
         PROXY_LISTEN_PORT="$PROXY_PORT" \
         POLICY_PATH="$POLICY_PATH" \
         LOG_PATH="/tmp/dbgate-bench.log" \
