@@ -269,6 +269,7 @@ docker compose logs -f haproxy
 | 대상 | 엔드포인트 | 설명 |
 |------|-----------|------|
 | HAProxy 통계 | `http://localhost:8404/stats` | 백엔드 상태, 연결 수, 에러율 |
+| dbgate 대시보드 | `http://localhost:8081` | 실시간 QPS, 차단율, 세션 현황 |
 | dbgate 헬스체크 | `http://dbgate-N:8080/health` | 인스턴스별 상태 |
 | UDS 통계 | 컨테이너 내부 `/run/dbgate/dbgate.sock` | 세션/쿼리/차단 지표 |
 
@@ -305,6 +306,75 @@ docker-compose.yaml에서 오버라이드 가능한 주요 환경변수:
 | `CONNECTION_TIMEOUT_SEC` | `30` | 세션 유휴 타임아웃(초) |
 
 전체 환경변수 목록은 [환경변수 기반 설정](#환경변수-기반-설정-docker로컬) 섹션 참조.
+
+## 웹 대시보드 (dbgate-dashboard)
+
+### 개요
+
+`dbgate-dashboard`는 Go + htmx 기반의 웹 대시보드로, C++ 코어의 UDS 통계를 실시간으로 시각화한다.
+
+- 기본 포트: `:8081` (내부 전용, `127.0.0.1` 바인딩)
+- 갱신 주기: 통계 2초, 세션 5초 (htmx polling)
+- 외부 의존성 없음: htmx, Pico CSS를 바이너리에 내장 (에어갭 환경 대응)
+
+### 기동
+
+```bash
+# 바이너리 직접 실행
+dbgate-dashboard --socket /tmp/dbgate.sock --listen :8081
+
+# Docker Compose 사용
+cd deploy
+docker compose up -d dbgate-dashboard
+```
+
+### 플래그
+
+| 플래그 | 기본값 | 설명 |
+|--------|--------|------|
+| `--listen` | `:8081` | HTTP 리슨 주소 |
+| `--socket` | `/tmp/dbgate.sock` | dbgate UDS 소켓 경로 |
+| `--timeout` | `5s` | UDS 요청 타임아웃 |
+
+### 접속 확인
+
+```bash
+# 대시보드 페이지 확인
+curl -s http://localhost:8081/ | head -20
+
+# 통계 API 직접 호출
+curl -s http://localhost:8081/api/stats
+```
+
+### 엔드포인트
+
+| 경로 | 설명 |
+|------|------|
+| `GET /` | 메인 대시보드 페이지 |
+| `GET /api/stats` | 통계 HTML 프래그먼트 (htmx partial) |
+| `GET /api/sessions` | 세션 HTML 프래그먼트 |
+| `GET /api/chart-data` | QPS 차트 데이터 (JSON via script tag) |
+| `GET /static/*` | 정적 에셋 (htmx.min.js, pico.min.css, dashboard.js) |
+
+### 트러블슈팅
+
+| 증상 | 원인 | 조치 |
+|------|------|------|
+| "Failed to fetch statistics" 표시 | UDS 소켓 연결 실패 | dbgate 인스턴스 상태 확인, `--socket` 경로 확인 |
+| "Coming Soon" (세션 섹션) | C++ 측 sessions 명령 미구현 | 정상 동작 — C++ 구현 후 자동 표시 |
+| 페이지 접속 불가 | 대시보드 미기동 또는 포트 충돌 | `docker compose ps`, 포트 확인 |
+| 차트 데이터 없음 | 대시보드 기동 직후 | 통계 수집 후 자동 표시 (최대 2분 히스토리) |
+
+### 중지
+
+```bash
+# Docker Compose
+docker compose stop dbgate-dashboard
+
+# 바이너리 직접 실행 시
+# SIGTERM 또는 SIGINT (Ctrl+C) → graceful shutdown
+kill -TERM $(pgrep dbgate-dashboard)
+```
 
 ## 변경 체크리스트 (문서 유지보수용)
 - CLI 명령/옵션이 실제 `tools/` 구현과 일치하는가?

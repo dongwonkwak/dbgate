@@ -102,6 +102,22 @@ services:
       dbgate-3:
         condition: service_healthy
 
+  # --------------------------------------------------------------------------
+  # Web Dashboard
+  # --------------------------------------------------------------------------
+  dbgate-dashboard:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.tools
+    command: ["dbgate-dashboard", "--socket", "/run/dbgate/dbgate.sock", "--listen", ":8081"]
+    ports:
+      - "127.0.0.1:8081:8081"
+    volumes:
+      - uds-1:/run/dbgate:ro
+    depends_on:
+      dbgate-1:
+        condition: service_healthy
+
 volumes:
   mysql-data:
   uds-1:
