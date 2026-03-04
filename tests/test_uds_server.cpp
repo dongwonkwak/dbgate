@@ -642,6 +642,30 @@ TEST_F(UdsPolicyExplainTest, PolicyExplain_SqlContainingJsonLiteral_DoesNotBreak
 }
 
 // ---------------------------------------------------------------------------
+// PolicyExplain_SqlContainingEscapedQuote_DoesNotTruncate
+//   payload.sql 문자열에 JSON escaped quote(\")가 포함되어도 문자열 파싱이
+//   중간에서 끊기지 않아야 한다.
+// ---------------------------------------------------------------------------
+TEST_F(UdsPolicyExplainTest, PolicyExplain_SqlContainingEscapedQuote_DoesNotTruncate) {
+    start_server();
+    ASSERT_TRUE(wait_for_socket()) << "UDS socket not created within 2s";
+
+    UdsSyncClient client;
+    ASSERT_NO_THROW(client.connect(socket_path_));
+
+    constexpr std::string_view req =
+        R"({"command":"policy_explain","version":1,"payload":{"sql":"SELECT \\\"col\\\" FROM t","user":"app_service","source_ip":"172.16.0.1"}})";
+    client.send(req);
+
+    const std::string resp = client.recv();
+    ASSERT_FALSE(resp.empty()) << "policy_explain must return a non-empty response";
+    EXPECT_NE(resp.find(R"("ok":true)"), std::string::npos)
+        << "escaped quote가 포함되어도 policy_explain은 정상 처리되어야 한다. Got: " << resp;
+    EXPECT_EQ(resp.find("missing required field"), std::string::npos)
+        << "문자열 파싱 truncate로 필수 필드 누락 에러가 발생하면 안 된다. Got: " << resp;
+}
+
+// ---------------------------------------------------------------------------
 // PolicyExplain_MissingSqlField_ReturnsError
 //   payload 에 "sql" 필드가 없으면 ok:false + error 가 반환되어야 한다.
 //

@@ -271,19 +271,33 @@ std::optional<std::string> parse_top_level_string_field(std::string_view object_
         return std::nullopt;
     }
 
-    std::size_t depth = 0;
+    std::size_t object_depth = 0;
+    std::size_t array_depth = 0;
     for (std::string_view::size_type i = 0; i < object_json.size();) {
         const char c = object_json[i];
         if (c == '{') {
-            ++depth;
+            ++object_depth;
             ++i;
             continue;
         }
         if (c == '}') {
-            if (depth == 0) {
+            if (object_depth == 0) {
                 return std::nullopt;
             }
-            --depth;
+            --object_depth;
+            ++i;
+            continue;
+        }
+        if (c == '[') {
+            ++array_depth;
+            ++i;
+            continue;
+        }
+        if (c == ']') {
+            if (array_depth == 0) {
+                return std::nullopt;
+            }
+            --array_depth;
             ++i;
             continue;
         }
@@ -293,8 +307,8 @@ std::optional<std::string> parse_top_level_string_field(std::string_view object_
                 return std::nullopt;
             }
 
-            // depth == 1 이고 문자열 뒤에 ':'가 오면 key 위치다.
-            if (depth == 1) {
+            // object_depth == 1 && array_depth == 0 이고 문자열 뒤에 ':'가 오면 key 위치다.
+            if (object_depth == 1 && array_depth == 0) {
                 auto cursor = string_end + 1;
                 while (cursor < object_json.size() && is_json_whitespace(object_json[cursor])) {
                     ++cursor;
@@ -312,6 +326,15 @@ std::optional<std::string> parse_top_level_string_field(std::string_view object_
                         if (cursor < object_json.size() && object_json[cursor] == '"') {
                             const auto val_end = find_json_string_end(object_json, cursor);
                             if (val_end == std::string_view::npos) {
+                                return std::nullopt;
+                            }
+                            auto after_value = val_end + 1;
+                            while (after_value < object_json.size() &&
+                                   is_json_whitespace(object_json[after_value])) {
+                                ++after_value;
+                            }
+                            if (after_value < object_json.size() && object_json[after_value] != ',' &&
+                                object_json[after_value] != '}') {
                                 return std::nullopt;
                             }
                             // 문자열 값 추출 및 unescape 처리
@@ -362,23 +385,27 @@ std::optional<std::string> parse_string_field(std::string_view json, std::string
     }
     auto start = pos + search_key.size();
     // 공백 건너뜀
-    while (start < json.size() && json[start] == ' ') {
+    while (start < json.size() && is_json_whitespace(json[start])) {
         ++start;
     }
     if (start >= json.size() || json[start] != '"') {
         return std::nullopt;
     }
-    ++start;  // 여는 따옴표 건너뜀
-
-    // 닫는 따옴표까지의 문자열 찾기
-    std::string escaped_value;
-    while (start < json.size()) {
-        const char c = json[start++];
-        if (c == '"') {
-            break;
-        }
-        escaped_value += c;
+    const auto val_start = start;
+    const auto val_end = find_json_string_end(json, val_start);
+    if (val_end == std::string_view::npos) {
+        return std::nullopt;
     }
+    auto cursor = val_end + 1;
+    while (cursor < json.size() && is_json_whitespace(json[cursor])) {
+        ++cursor;
+    }
+    if (cursor < json.size() && json[cursor] != ',' && json[cursor] != '}') {
+        return std::nullopt;
+    }
+
+    const auto escaped_value =
+        json.substr(val_start + 1, static_cast<std::size_t>(val_end - val_start - 1));
 
     return unescape_json_string(escaped_value);
 }
