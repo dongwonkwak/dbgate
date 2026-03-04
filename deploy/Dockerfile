@@ -39,8 +39,13 @@ ENV VCPKG_ROOT=/opt/vcpkg \
     VCPKG_DEFAULT_TRIPLET=x64-linux
 ENV CMAKE_TOOLCHAIN_FILE=${VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake
 
+ARG VCPKG_GIT_REF=2026.01.16
+ARG VCPKG_EXPECTED_SHA=66c0373dc7fca549e5803087b9487edfe3aca0a1
+
 RUN set -eux; \
-    git clone https://github.com/microsoft/vcpkg.git "${VCPKG_ROOT}"; \
+    git clone --depth=1 --branch "${VCPKG_GIT_REF}" https://github.com/microsoft/vcpkg.git "${VCPKG_ROOT}"; \
+    actual_sha="$(git -C "${VCPKG_ROOT}" rev-parse HEAD)"; \
+    test "${actual_sha}" = "${VCPKG_EXPECTED_SHA}"; \
     "${VCPKG_ROOT}/bootstrap-vcpkg.sh" -disableMetrics
 
 # Copy dependency manifest first (cache layer)
