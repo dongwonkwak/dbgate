@@ -223,39 +223,125 @@ uint32_t decode_le4(const std::array<uint8_t, 4>& buf) {
 }
 
 // ---------------------------------------------------------------------------
+// unescape_json_string
+//   JSON 문자열 값의 이스케이프를 처리하여 unescaped 값을 반환한다.
+// ---------------------------------------------------------------------------
+std::string unescape_json_string(std::string_view escaped_value) {
+    std::string result;
+    for (std::size_t i = 0; i < escaped_value.size(); ++i) {
+        const char c = escaped_value[i];
+        if (c == '\\' && i + 1 < escaped_value.size()) {
+            const char next = escaped_value[++i];
+            switch (next) {
+                case '"':
+                    result += '"';
+                    break;
+                case '\\':
+                    result += '\\';
+                    break;
+                case 'n':
+                    result += '\n';
+                    break;
+                case 'r':
+                    result += '\r';
+                    break;
+                case 't':
+                    result += '\t';
+                    break;
+                default:
+                    result += next;
+                    break;
+            }
+        } else {
+            result += c;
+        }
+    }
+    return result;
+}
+
+// ---------------------------------------------------------------------------
+// parse_top_level_string_field
+//   JSON object 문자열의 "최상위" 키에서 문자열 값을 추출한다.
+//   문자열 리터럴 내부의 "key": 패턴은 무시한다 (depth tracking 사용).
+//   파싱 실패 시 std::nullopt 반환.
+// ---------------------------------------------------------------------------
+std::optional<std::string> parse_top_level_string_field(std::string_view object_json,
+                                                        std::string_view field_key) {
+    if (object_json.empty() || object_json.front() != '{') {
+        return std::nullopt;
+    }
+
+    std::size_t depth = 0;
+    for (std::string_view::size_type i = 0; i < object_json.size();) {
+        const char c = object_json[i];
+        if (c == '{') {
+            ++depth;
+            ++i;
+            continue;
+        }
+        if (c == '}') {
+            if (depth == 0) {
+                return std::nullopt;
+            }
+            --depth;
+            ++i;
+            continue;
+        }
+        if (c == '"') {
+            const auto string_end = find_json_string_end(object_json, i);
+            if (string_end == std::string_view::npos) {
+                return std::nullopt;
+            }
+
+            // depth == 1 이고 문자열 뒤에 ':'가 오면 key 위치다.
+            if (depth == 1) {
+                auto cursor = string_end + 1;
+                while (cursor < object_json.size() && is_json_whitespace(object_json[cursor])) {
+                    ++cursor;
+                }
+                if (cursor < object_json.size() && object_json[cursor] == ':') {
+                    const auto key =
+                        object_json.substr(i + 1, static_cast<std::size_t>(string_end - i - 1));
+                    if (key == field_key) {
+                        ++cursor;  // ':'를 건넘
+                        while (cursor < object_json.size() &&
+                               is_json_whitespace(object_json[cursor])) {
+                            ++cursor;
+                        }
+                        // value가 문자열이어야 함
+                        if (cursor < object_json.size() && object_json[cursor] == '"') {
+                            const auto val_end = find_json_string_end(object_json, cursor);
+                            if (val_end == std::string_view::npos) {
+                                return std::nullopt;
+                            }
+                            // 문자열 값 추출 및 unescape 처리
+                            const auto escaped_content =
+                                object_json.substr(cursor + 1, static_cast<std::size_t>(val_end - cursor - 1));
+                            return unescape_json_string(escaped_content);
+                        }
+                        return std::nullopt;
+                    }
+                }
+            }
+
+            i = string_end + 1;
+            continue;
+        }
+
+        ++i;
+    }
+
+    return std::nullopt;
+}
+
+// ---------------------------------------------------------------------------
 // parse_command
-//   JSON 요청 문자열에서 "command" 필드를 단순 파싱한다.
-//   "command":"<value>" 패턴만 지원 (nlohmann/json 의존 없음).
+//   JSON 요청 문자열에서 top-level "command" 필드를 파싱한다.
+//   문자열 값 내부의 "command": 패턴은 무시한다 (depth tracking 사용).
 //   파싱 실패 시 빈 문자열 반환.
 // ---------------------------------------------------------------------------
 std::string parse_command(std::string_view json) {
-    constexpr std::string_view key = R"("command":)";
-    const auto pos = json.find(key);
-    if (pos == std::string_view::npos) {
-        return {};
-    }
-    auto start = pos + key.size();
-    // 공백 건너뜀
-    while (start < json.size() && json[start] == ' ') {
-        ++start;
-    }
-    if (start >= json.size() || json[start] != '"') {
-        return {};
-    }
-    ++start;  // 여는 따옴표 건너뜀
-    std::string cmd;
-    while (start < json.size()) {
-        const char c = json[start++];
-        if (c == '"') {
-            break;
-        }
-        if (c == '\\' && start < json.size()) {
-            cmd += json[start++];  // 단순 escape 처리
-        } else {
-            cmd += c;
-        }
-    }
-    return cmd;
+    return parse_top_level_string_field(json, "command").value_or(std::string{});
 }
 
 // 단일 클라이언트에서 수신할 최대 메시지 크기 (4MiB)
@@ -283,40 +369,18 @@ std::optional<std::string> parse_string_field(std::string_view json, std::string
         return std::nullopt;
     }
     ++start;  // 여는 따옴표 건너뜀
-    std::string value;
+
+    // 닫는 따옴표까지의 문자열 찾기
+    std::string escaped_value;
     while (start < json.size()) {
         const char c = json[start++];
         if (c == '"') {
             break;
         }
-        if (c == '\\' && start < json.size()) {
-            // 단순 이스케이프 처리
-            const char escaped = json[start++];
-            switch (escaped) {
-                case '"':
-                    value += '"';
-                    break;
-                case '\\':
-                    value += '\\';
-                    break;
-                case 'n':
-                    value += '\n';
-                    break;
-                case 'r':
-                    value += '\r';
-                    break;
-                case 't':
-                    value += '\t';
-                    break;
-                default:
-                    value += escaped;
-                    break;
-            }
-        } else {
-            value += c;
-        }
+        escaped_value += c;
     }
-    return value;
+
+    return unescape_json_string(escaped_value);
 }
 
 // ---------------------------------------------------------------------------
