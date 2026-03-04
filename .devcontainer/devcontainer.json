@@ -34,6 +34,25 @@
           "zsh": {
             "path": "zsh"
           }
+        },
+        "files.watcherExclude": {
+          "**/build/**": true,
+          "**/.cache/**": true,
+          "**/.git/objects/**": true,
+          "**/.git/subtree-cache/**": true,
+          "**/node_modules/**": true,
+          "**/vcpkg_installed/**": true
+        },
+        "search.exclude": {
+          "**/build/**": true,
+          "**/.cache/**": true,
+          "**/vcpkg_installed/**": true,
+          "**/node_modules/**": true
+        },
+        "C_Cpp.files.exclude": {
+          "**/build/**": true,
+          "**/.cache/**": true,
+          "**/vcpkg_installed/**": true
         }
       },
       "extensions": [

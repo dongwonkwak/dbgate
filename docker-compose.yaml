@@ -5,6 +5,8 @@ services:
       dockerfile: .devcontainer/Dockerfile
     volumes:
       - .:/workspace:cached
+      - build-cache:/workspace/build
+      - go-cache:/workspace/.cache
     command: sleep infinity
     depends_on:
       mysql:
@@ -38,3 +40,5 @@ services:
 
 volumes:
   mysql-data:
+  build-cache:
+  go-cache:
