@@ -1,0 +1,110 @@
+# =============================================================================
+# dbgate production-like deployment
+# =============================================================================
+# Usage:
+#   cd deploy && docker compose up --build
+#   mysql -h 127.0.0.1 -P 13306 -u dbgate -pdbgate_pass dbgate_test
+#   curl http://localhost:8404/stats
+# =============================================================================
+
+services:
+  # --------------------------------------------------------------------------
+  # MySQL upstream
+  # --------------------------------------------------------------------------
+  mysql:
+    image: mysql:8.0
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpass
+      MYSQL_DATABASE: dbgate_test
+      MYSQL_USER: dbgate
+      MYSQL_PASSWORD: dbgate_pass
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # --------------------------------------------------------------------------
+  # dbgate instances (x3)
+  # --------------------------------------------------------------------------
+  dbgate-1:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    environment:
+      MYSQL_HOST: mysql
+      MYSQL_PORT: "3306"
+      POLICY_PATH: /etc/dbgate/policy.yaml
+      UDS_SOCKET_PATH: /run/dbgate/dbgate.sock
+      LOG_LEVEL: info
+    volumes:
+      - ../config:/etc/dbgate:ro
+      - uds-1:/run/dbgate
+    depends_on:
+      mysql:
+        condition: service_healthy
+    stop_grace_period: 30s
+
+  dbgate-2:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    environment:
+      MYSQL_HOST: mysql
+      MYSQL_PORT: "3306"
+      POLICY_PATH: /etc/dbgate/policy.yaml
+      UDS_SOCKET_PATH: /run/dbgate/dbgate.sock
+      LOG_LEVEL: info
+    volumes:
+      - ../config:/etc/dbgate:ro
+      - uds-2:/run/dbgate
+    depends_on:
+      mysql:
+        condition: service_healthy
+    stop_grace_period: 30s
+
+  dbgate-3:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    environment:
+      MYSQL_HOST: mysql
+      MYSQL_PORT: "3306"
+      POLICY_PATH: /etc/dbgate/policy.yaml
+      UDS_SOCKET_PATH: /run/dbgate/dbgate.sock
+      LOG_LEVEL: info
+    volumes:
+      - ../config:/etc/dbgate:ro
+      - uds-3:/run/dbgate
+    depends_on:
+      mysql:
+        condition: service_healthy
+    stop_grace_period: 30s
+
+  # --------------------------------------------------------------------------
+  # HAProxy load balancer
+  # --------------------------------------------------------------------------
+  haproxy:
+    image: haproxy:2.9-alpine
+    ports:
+      - "13306:13306"
+      - "8404:8404"
+    volumes:
+      - ./haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+    depends_on:
+      dbgate-1:
+        condition: service_healthy
+      dbgate-2:
+        condition: service_healthy
+      dbgate-3:
+        condition: service_healthy
+
+volumes:
+  mysql-data:
+  uds-1:
+  uds-2:
+  uds-3:

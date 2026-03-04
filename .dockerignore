@@ -1,0 +1,38 @@
+# VCS
+.git/
+.gitignore
+
+# Build artifacts
+build/
+
+# Development environment
+.devcontainer/
+.vscode/
+.claude/
+
+# Tests & benchmarks (not needed in production image)
+tests/
+benchmarks/
+
+# Documentation
+docs/
+*.md
+!vcpkg.json
+
+# CI/CD
+.github/
+
+# Editor / OS files
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Go caches (handled inside builder)
+tools/.cache/
+
+# Misc
+.clang-tidy
+.clang-format
+.editorconfig
