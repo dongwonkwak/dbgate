@@ -716,17 +716,17 @@ std::string UdsServer::handle_policy_explain(std::string_view request_json) {
                           policy_action_to_string(explain.action));
 
             return make_ok_response(serialize_explain_result(explain, &query));
-        } else {
-            // 파싱 실패 → explain_error(error, session)
-            const ParseError& parse_error = parse_result.error();
-            const ExplainResult explain = policy_engine_->explain_error(parse_error, session);
-
-            spdlog::debug("[uds_server] policy_explain: parse failed sql='{}' reason='{}'",
-                          sql_str,
-                          parse_error.message);
-
-            return make_ok_response(serialize_explain_result(explain, nullptr));
         }
+
+        // 파싱 실패 → explain_error(error, session)
+        const ParseError& parse_error = parse_result.error();
+        const ExplainResult explain = policy_engine_->explain_error(parse_error, session);
+
+        spdlog::debug("[uds_server] policy_explain: parse failed sql='{}' reason='{}'",
+                      sql_str,
+                      parse_error.message);
+
+        return make_ok_response(serialize_explain_result(explain, nullptr));
     } catch (const std::exception& e) {
         spdlog::error("[uds_server] policy_explain: exception: {}", e.what());
         return make_error_response("internal error during policy evaluation");
