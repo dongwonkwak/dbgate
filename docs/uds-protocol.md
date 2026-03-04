@@ -115,7 +115,90 @@ Meaning:   JSON body는 29 바이트
 
 ---
 
-##### 2. sessions
+##### 2. policy_explain
+
+SQL 정책 평가를 dry-run으로 실행합니다. 실제 쿼리 차단/허용 없이 정책 엔진이
+어떤 판정을 내리는지 추적합니다. 디버깅 및 감사 목적으로 사용합니다.
+
+**주의**: 이 커맨드는 디버깅 전용입니다. 데이터패스(proxy 레이어)에서는 절대
+사용하지 마세요. 실제 차단 동작을 수행하지 않습니다.
+
+**요청**:
+```json
+{
+  "command": "policy_explain",
+  "version": 1,
+  "payload": {
+    "sql": "DROP TABLE users",
+    "user": "app_service",
+    "source_ip": "172.16.0.1"
+  }
+}
+```
+
+**요청 payload 필드**:
+
+| 필드 | 타입 | 필수 | 설명 |
+|------|------|------|------|
+| `sql` | string | ✓ | 평가할 SQL 문자열 |
+| `user` | string | ✓ | MySQL 사용자 이름 |
+| `source_ip` | string | ✓ | 클라이언트 IPv4 주소 |
+
+**응답** (평가 성공):
+```json
+{
+  "ok": true,
+  "payload": {
+    "action": "block",
+    "matched_rule": "block-statement",
+    "reason": "SQL statement blocked: DROP",
+    "matched_access_rule": "app_service@172.16.0.0/12",
+    "evaluation_path": "config_loaded > access_rule_matched > block_statement_matched(DROP)",
+    "parsed_command": "DROP",
+    "parsed_tables": ["users"]
+  }
+}
+```
+
+**응답 payload 필드**:
+
+| 필드 | 타입 | 조건 | 설명 |
+|------|------|------|------|
+| `action` | string | 항상 | `"allow"` / `"block"` / `"log"` |
+| `matched_rule` | string | 항상 | 판정에 사용된 규칙 식별자 (없으면 `"default-deny"`) |
+| `reason` | string | 항상 | 판정 이유 (로깅용, 클라이언트 직접 노출 비권장) |
+| `matched_access_rule` | string | 항상 | 매칭된 access_control 룰 (`"user@cidr"` 형식, 없으면 빈 문자열) |
+| `evaluation_path` | string | 항상 | 단계별 평가 경로 trace |
+| `parsed_command` | string | 파싱 성공 시 | SQL 커맨드 (`"SELECT"`, `"DROP"` 등) |
+| `parsed_tables` | array | 파싱 성공 시 | 추출된 테이블명 목록 |
+
+**응답** (payload 필드 누락 — fail-close):
+```json
+{
+  "ok": false,
+  "error": "missing required field: sql"
+}
+```
+
+**응답** (policy_engine 미주입):
+```json
+{
+  "ok": false,
+  "error": "not implemented",
+  "code": 501,
+  "command": "policy_explain"
+}
+```
+
+**용도**:
+- 정책 파일 변경 전 특정 SQL에 대한 판정 미리 확인
+- 차단 원인 디버깅 (어느 규칙에 의해 차단됐는지 추적)
+- Go CLI `dbgate policy explain` 서브커맨드 백엔드
+- 보안 감사 시 정책 동작 검증
+
+---
+
+##### 3. sessions
 
 활성 세션 목록을 조회합니다. (Phase 3 구현 예정)
 
@@ -313,8 +396,27 @@ type StatsSnapshot struct {
 
 // CommandRequest는 C++ dbgate core로 송신하는 요청
 type CommandRequest struct {
-    Command string `json:"command"`           // "stats" | "sessions" | "policy_reload"
-    Version int    `json:"version,omitempty"` // 기본값 1
+    Command string      `json:"command"`           // "stats" | "policy_explain" | "sessions" | "policy_reload"
+    Version int         `json:"version,omitempty"` // 기본값 1
+    Payload interface{} `json:"payload,omitempty"` // policy_explain 등 커맨드별 payload
+}
+
+// PolicyExplainPayload는 policy_explain 커맨드의 요청 payload
+type PolicyExplainPayload struct {
+    SQL      string `json:"sql"`
+    User     string `json:"user"`
+    SourceIP string `json:"source_ip"`
+}
+
+// PolicyExplainResult는 policy_explain 커맨드의 응답 payload
+type PolicyExplainResult struct {
+    Action             string   `json:"action"`               // "allow" | "block" | "log"
+    MatchedRule        string   `json:"matched_rule"`
+    Reason             string   `json:"reason"`
+    MatchedAccessRule  string   `json:"matched_access_rule"`
+    EvaluationPath     string   `json:"evaluation_path"`
+    ParsedCommand      string   `json:"parsed_command,omitempty"`
+    ParsedTables       []string `json:"parsed_tables,omitempty"`
 }
 
 // Response는 C++ dbgate core의 응답 래퍼
@@ -395,7 +497,38 @@ Go CLI                              C++ UdsServer
    └─ 종료
 ```
 
-### 시나리오 2: Policy Reload (실패)
+### 시나리오 2: Policy Explain (DROP TABLE — 차단)
+
+```
+Go CLI                              C++ UdsServer
+   │                                    │
+   ├─ 요청 송신 ─────────────────────────→
+   │  {"command":"policy_explain",
+   │   "version":1,
+   │   "payload":{"sql":"DROP TABLE users",
+   │              "user":"app_service",
+   │              "source_ip":"172.16.0.1"}}
+   │
+   │                           (SqlParser::parse() 호출)
+   │                           (PolicyEngine::explain() 호출)
+   │                           evaluation_path 구성
+   │
+   │←─ 응답 송신 ─────────────────────────┤
+   │  {"ok":true,"payload":{
+   │    "action":"block",
+   │    "matched_rule":"block-statement",
+   │    "reason":"SQL statement blocked: DROP",
+   │    "matched_access_rule":"app_service@172.16.0.0/12",
+   │    "evaluation_path":"config_loaded > ... > block_statement_matched(DROP)",
+   │    "parsed_command":"DROP",
+   │    "parsed_tables":["users"]
+   │  }}
+   │
+   ├─ 판정 결과 출력
+   └─ 종료
+```
+
+### 시나리오 3: Policy Reload (실패)
 
 ```
 Go CLI                              C++ UdsServer
@@ -652,3 +785,4 @@ func TestStatsCommand(t *testing.T) {
 |------|------|----------|
 | 1.0 | 2026-02-22 | 초안 작성 (Phase 2 인터페이스 정의) |
 | 1.1 | 2026-02-25 | DON-28: UdsServer 구현 완료. `captured_at` → `captured_at_ms` (Unix epoch ms). 동시성 섹션 업데이트. |
+| 1.2 | 2026-03-04 | DON-48: `policy_explain` 커맨드 추가. payload 스펙, 응답 필드, Go 타입 정의 업데이트. |

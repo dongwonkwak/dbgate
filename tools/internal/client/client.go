@@ -31,9 +31,16 @@ func NewClient(socketPath string, timeout time.Duration) *Client {
 	}
 }
 
-// SendCommand sends a command to the C++ dbgate core and returns the parsed Response.
-// The connection is closed after each call.
+// SendCommand sends a simple command (no payload) to the C++ dbgate core and
+// returns the parsed Response. The connection is closed after each call.
 func (c *Client) SendCommand(cmd string) (*Response, error) {
+	return c.sendRequest(CommandRequest{Command: cmd})
+}
+
+// sendRequest marshals req, writes it as a framed UDS message, reads the
+// framed response, and returns the parsed Response.
+// The connection is closed after each call.
+func (c *Client) sendRequest(req CommandRequest) (*Response, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), c.timeout)
 	defer cancel()
 
@@ -54,7 +61,6 @@ func (c *Client) SendCommand(cmd string) (*Response, error) {
 	}
 
 	// Marshal request.
-	req := CommandRequest{Command: cmd}
 	body, err := json.Marshal(req)
 	if err != nil {
 		return nil, fmt.Errorf("marshal request: %w", err)
@@ -99,6 +105,47 @@ func (c *Client) SendCommand(cmd string) (*Response, error) {
 	}
 
 	return &resp, nil
+}
+
+// PolicyExplain sends a "policy_explain" command with the given SQL, user, and
+// sourceIP and returns the decoded PolicyExplainResult.
+// This is a dry-run evaluation — no actual blocking occurs.
+func (c *Client) PolicyExplain(sql, user, sourceIP string) (*PolicyExplainResult, error) {
+	req := CommandRequest{
+		Command: "policy_explain",
+		Payload: PolicyExplainRequest{
+			SQL:      sql,
+			User:     user,
+			SourceIP: sourceIP,
+		},
+	}
+	resp, err := c.sendRequest(req)
+	if err != nil {
+		return nil, err
+	}
+	if !resp.OK {
+		errMsg := resp.Error
+		if errMsg == "" {
+			errMsg = "unknown server error"
+		}
+		return nil, fmt.Errorf("policy_explain: server error: %s", errMsg)
+	}
+	if resp.Payload == nil {
+		return nil, fmt.Errorf("policy_explain: response has no payload")
+	}
+
+	// Re-marshal the payload interface{} so we can unmarshal into PolicyExplainResult.
+	payloadBytes, err := json.Marshal(resp.Payload)
+	if err != nil {
+		return nil, fmt.Errorf("policy_explain: re-marshal payload: %w", err)
+	}
+
+	var result PolicyExplainResult
+	if err := json.Unmarshal(payloadBytes, &result); err != nil {
+		return nil, fmt.Errorf("policy_explain: parse payload: %w", err)
+	}
+
+	return &result, nil
 }
 
 // writeFull writes all bytes in buf to w, looping until all bytes are written

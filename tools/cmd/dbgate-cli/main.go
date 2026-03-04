@@ -9,12 +9,14 @@
 //
 // Commands:
 //
-//	stats          Print QPS, block rate, active sessions, and query counters.
-//	sessions       List active sessions (server-side not yet implemented).
-//	policy reload  Trigger a policy reload (server-side not yet implemented).
+//	stats                  Print QPS, block rate, active sessions, and query counters.
+//	sessions               List active sessions (server-side not yet implemented).
+//	policy reload          Trigger a policy reload (server-side not yet implemented).
+//	policy explain         Dry-run SQL evaluation against the policy engine.
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"time"
@@ -84,7 +86,36 @@ provides commands to inspect statistics, list sessions, and reload policies.`,
 		},
 	}
 
-	policyCmd.AddCommand(policyReloadCmd)
+	// policy explain subcommand
+	var explainSQL string
+	var explainUser string
+	var explainIP string
+	var explainJSON bool
+
+	policyExplainCmd := &cobra.Command{
+		Use:   "explain",
+		Short: "Dry-run SQL evaluation against the policy engine",
+		Long: `Evaluate a SQL statement against the current policy without executing it.
+Useful for debugging policy rules and auditing access control decisions.`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runPolicyExplain(socketPath, timeout, explainSQL, explainUser, explainIP, explainJSON)
+		},
+	}
+	policyExplainCmd.Flags().StringVar(&explainSQL, "sql", "", "SQL statement to evaluate (required)")
+	policyExplainCmd.Flags().StringVar(&explainUser, "user", "", "MySQL username (required)")
+	policyExplainCmd.Flags().StringVar(&explainIP, "ip", "", "Client IPv4 address (required)")
+	policyExplainCmd.Flags().BoolVar(&explainJSON, "json", false, "Output raw JSON response")
+	if err := policyExplainCmd.MarkFlagRequired("sql"); err != nil {
+		panic(err)
+	}
+	if err := policyExplainCmd.MarkFlagRequired("user"); err != nil {
+		panic(err)
+	}
+	if err := policyExplainCmd.MarkFlagRequired("ip"); err != nil {
+		panic(err)
+	}
+
+	policyCmd.AddCommand(policyReloadCmd, policyExplainCmd)
 	root.AddCommand(statsCmd, sessionsCmd, policyCmd)
 
 	return root
@@ -107,6 +138,40 @@ func runStats(socketPath string, timeout time.Duration) error {
 	fmt.Printf("Total Connections:%8d\n", snap.TotalConnections)
 	fmt.Printf("Captured At:      %s\n", snap.CapturedAt.Format("2006-01-02 15:04:05 UTC"))
 
+	return nil
+}
+
+// runPolicyExplain evaluates a SQL statement against the policy engine (dry-run)
+// and prints the result in human-readable or JSON format.
+func runPolicyExplain(socketPath string, timeout time.Duration, sql, user, ip string, asJSON bool) error {
+	c := client.NewClient(socketPath, timeout)
+	result, err := c.PolicyExplain(sql, user, ip)
+	if err != nil {
+		return fmt.Errorf("policy explain: %w", err)
+	}
+
+	if asJSON {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		if err := enc.Encode(result); err != nil {
+			return fmt.Errorf("encode JSON: %w", err)
+		}
+		return nil
+	}
+
+	fmt.Printf("Action  : %s\n", result.Action)
+	fmt.Printf("Rule    : %s\n", result.MatchedRule)
+	fmt.Printf("Reason  : %s\n", result.Reason)
+	if result.MatchedAccessRule != "" {
+		fmt.Printf("Access  : %s\n", result.MatchedAccessRule)
+	}
+	fmt.Printf("Path    : %s\n", result.EvaluationPath)
+	if result.ParsedCommand != "" {
+		fmt.Printf("Command : %s\n", result.ParsedCommand)
+	}
+	if len(result.ParsedTables) > 0 {
+		fmt.Printf("Tables  : %v\n", result.ParsedTables)
+	}
 	return nil
 }
 

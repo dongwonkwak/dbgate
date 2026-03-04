@@ -1,0 +1,57 @@
+{{if .Error}}
+<article class="error-msg">
+    <p><strong>Evaluation Error</strong></p>
+    <p>{{.Error}}</p>
+</article>
+{{else if .Result}}
+<article>
+    <table>
+        <tbody>
+            <tr>
+                <th scope="row">Action</th>
+                <td>
+                    {{if eq .Result.Action "block"}}
+                    <strong style="color: var(--pico-del-color);">block</strong>
+                    {{else if eq .Result.Action "allow"}}
+                    <strong style="color: var(--pico-ins-color);">allow</strong>
+                    {{else}}
+                    <strong>{{.Result.Action}}</strong>
+                    {{end}}
+                </td>
+            </tr>
+            <tr>
+                <th scope="row">Rule</th>
+                <td><code>{{.Result.MatchedRule}}</code></td>
+            </tr>
+            <tr>
+                <th scope="row">Reason</th>
+                <td>{{.Result.Reason}}</td>
+            </tr>
+            {{if .Result.MatchedAccessRule}}
+            <tr>
+                <th scope="row">Access Rule</th>
+                <td><code>{{.Result.MatchedAccessRule}}</code></td>
+            </tr>
+            {{end}}
+            <tr>
+                <th scope="row">Evaluation Path</th>
+                <td><code>{{.Result.EvaluationPath}}</code></td>
+            </tr>
+            {{if .Result.ParsedCommand}}
+            <tr>
+                <th scope="row">SQL Command</th>
+                <td><code>{{.Result.ParsedCommand}}</code></td>
+            </tr>
+            {{end}}
+            {{if .Result.ParsedTables}}
+            <tr>
+                <th scope="row">Tables</th>
+                <td>
+                    {{range .Result.ParsedTables}}<code>{{.}}</code> {{end}}
+                </td>
+            </tr>
+            {{end}}
+        </tbody>
+    </table>
+</article>
+{{end}}

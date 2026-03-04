@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="ko" data-theme="light">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Policy Tester — dbgate Dashboard</title>
+    <link rel="stylesheet" href="/static/pico.min.css">
+    <script src="/static/htmx.min.js"></script>
+    <style>
+        :root {
+            --pico-font-size: 16px;
+        }
+        .coming-soon {
+            text-align: center;
+            padding: 2rem;
+            color: var(--pico-muted-color);
+        }
+        .error-msg {
+            color: var(--pico-del-color);
+            text-align: center;
+            padding: 1rem;
+        }
+        header nav {
+            margin-bottom: 1rem;
+        }
+        .htmx-indicator {
+            opacity: 0;
+            transition: opacity 200ms ease-in;
+        }
+        .htmx-request .htmx-indicator {
+            opacity: 1;
+        }
+    </style>
+</head>
+<body>
+    <main class="container">
+        <header>
+            <nav>
+                <ul>
+                    <li><strong>dbgate Dashboard</strong></li>
+                    <li><a href="/">Overview</a></li>
+                    <li><a href="/policy-tester">Policy Tester</a></li>
+                </ul>
+                <ul>
+                    <li><small class="htmx-indicator" id="loading">running...</small></li>
+                </ul>
+            </nav>
+        </header>
+
+        <section>
+            <h2>Policy Tester</h2>
+            <p><small>Dry-run SQL evaluation — no actual blocking occurs. Use this to debug policy rules before deployment.</small></p>
+            <article>
+                <form hx-post="/api/policy-explain"
+                      hx-target="#policy-result"
+                      hx-swap="innerHTML"
+                      hx-indicator="#loading">
+                    <label for="sql">
+                        SQL Statement
+                        <textarea id="sql"
+                                  name="sql"
+                                  rows="4"
+                                  placeholder="e.g. DROP TABLE users"
+                                  required></textarea>
+                    </label>
+                    <div class="grid">
+                        <label for="user">
+                            MySQL User
+                            <input type="text"
+                                   id="user"
+                                   name="user"
+                                   placeholder="e.g. app_service"
+                                   required>
+                        </label>
+                        <label for="source_ip">
+                            Source IP
+                            <input type="text"
+                                   id="source_ip"
+                                   name="source_ip"
+                                   placeholder="e.g. 172.16.0.1"
+                                   required>
+                        </label>
+                    </div>
+                    <button type="submit">Test Policy</button>
+                </form>
+            </article>
+        </section>
+
+        <section>
+            <h2>Result</h2>
+            <div id="policy-result">
+                <article class="coming-soon">
+                    <p>Submit the form above to evaluate a SQL statement.</p>
+                </article>
+            </div>
+        </section>
+    </main>
+</body>
+</html>

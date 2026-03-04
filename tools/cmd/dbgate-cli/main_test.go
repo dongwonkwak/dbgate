@@ -121,3 +121,61 @@ func TestRunGenericCommand_ConnectionError(t *testing.T) {
 		t.Fatal("expected error for unreachable socket, got nil")
 	}
 }
+
+// makePolicyExplainResponse builds a framed mock policy_explain response payload.
+func makePolicyExplainResponse(action string) []byte {
+	resp := map[string]interface{}{
+		"ok": true,
+		"payload": map[string]interface{}{
+			"action":              action,
+			"matched_rule":        "block-statement",
+			"reason":              "SQL statement blocked: DROP",
+			"matched_access_rule": "app_service@172.16.0.0/12",
+			"evaluation_path":     "config_loaded > access_rule_matched > block_statement_matched(DROP)",
+			"parsed_command":      "DROP",
+			"parsed_tables":       []string{"users"},
+		},
+	}
+	b, _ := json.Marshal(resp)
+	return b
+}
+
+// TestRunPolicyExplain_Block verifies human-readable output for a block decision.
+func TestRunPolicyExplain_Block(t *testing.T) {
+	sockPath := mockUDSServer(t, makePolicyExplainResponse("block"))
+
+	if err := runPolicyExplain(sockPath, 3*time.Second, "DROP TABLE users", "app_service", "172.16.0.1", false); err != nil {
+		t.Fatalf("expected nil error, got: %v", err)
+	}
+}
+
+// TestRunPolicyExplain_JSON verifies that --json flag produces valid JSON output.
+func TestRunPolicyExplain_JSON(t *testing.T) {
+	sockPath := mockUDSServer(t, makePolicyExplainResponse("block"))
+
+	if err := runPolicyExplain(sockPath, 3*time.Second, "DROP TABLE users", "app_service", "172.16.0.1", true); err != nil {
+		t.Fatalf("expected nil error with --json, got: %v", err)
+	}
+}
+
+// TestRunPolicyExplain_ServerError verifies that a non-OK response surfaces as an error.
+func TestRunPolicyExplain_ServerError(t *testing.T) {
+	respJSON, _ := json.Marshal(map[string]interface{}{
+		"ok":    false,
+		"error": "missing required field: sql",
+	})
+	sockPath := mockUDSServer(t, respJSON)
+
+	err := runPolicyExplain(sockPath, 3*time.Second, "", "user", "127.0.0.1", false)
+	if err == nil {
+		t.Fatal("expected error for server-side error, got nil")
+	}
+}
+
+// TestRunPolicyExplain_ConnectionError verifies that an unreachable socket returns an error.
+func TestRunPolicyExplain_ConnectionError(t *testing.T) {
+	err := runPolicyExplain("/nonexistent/path.sock", 500*time.Millisecond, "SELECT 1", "user", "127.0.0.1", false)
+	if err == nil {
+		t.Fatal("expected error for unreachable socket, got nil")
+	}
+}

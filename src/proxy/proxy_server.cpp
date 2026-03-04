@@ -214,7 +214,9 @@ void ProxyServer::run(boost::asio::io_context& io_ctx) {
     // -----------------------------------------------------------------------
     // 5. UdsServer 생성 + co_spawn
     // -----------------------------------------------------------------------
-    uds_server_ = std::make_unique<UdsServer>(config_.uds_socket_path, stats_, io_ctx);
+    auto sql_parser = std::make_shared<SqlParser>();
+    uds_server_ = std::make_unique<UdsServer>(
+        config_.uds_socket_path, stats_, policy_engine_, sql_parser, io_ctx);
 
     boost::asio::co_spawn(
         io_ctx,

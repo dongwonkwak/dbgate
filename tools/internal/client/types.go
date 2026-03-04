@@ -5,7 +5,7 @@
 // Request:  CommandRequest  -> JSON -> [4byte LE len][JSON]
 // Response: Response        <- JSON <- [4byte LE len][JSON]
 //
-// Supported commands: "stats" | "sessions" | "policy_reload"
+// Supported commands: "stats" | "policy_explain" | "sessions" | "policy_reload"
 package client
 
 import (
@@ -26,9 +26,31 @@ type StatsSnapshot struct {
 
 // CommandRequest is a UDS request sent to the C++ dbgate core.
 // Version is optional; defaults to 1 if omitted.
+// Payload is used by commands such as policy_explain that require input parameters.
 type CommandRequest struct {
-	Command string `json:"command"`           // "stats" | "sessions" | "policy_reload"
-	Version int    `json:"version,omitempty"` // protocol version, default 1
+	Command string      `json:"command"`           // "stats" | "policy_explain" | "sessions" | "policy_reload"
+	Version int         `json:"version,omitempty"` // protocol version, default 1
+	Payload interface{} `json:"payload,omitempty"` // optional command payload
+}
+
+// PolicyExplainRequest is the request payload for the "policy_explain" command.
+// All three fields are required by the C++ policy engine.
+type PolicyExplainRequest struct {
+	SQL      string `json:"sql"`       // SQL statement to evaluate
+	User     string `json:"user"`      // MySQL username
+	SourceIP string `json:"source_ip"` // Client IPv4 address
+}
+
+// PolicyExplainResult is the response payload for the "policy_explain" command.
+// It describes the policy engine's evaluation of the given SQL statement.
+type PolicyExplainResult struct {
+	Action            string   `json:"action"`                   // "allow" | "block" | "log"
+	MatchedRule       string   `json:"matched_rule"`             // rule ID used for the decision
+	Reason            string   `json:"reason"`                   // human-readable decision reason
+	MatchedAccessRule string   `json:"matched_access_rule"`      // "user@cidr" or empty string
+	EvaluationPath    string   `json:"evaluation_path"`          // step-by-step evaluation trace
+	ParsedCommand     string   `json:"parsed_command,omitempty"` // e.g. "SELECT", "DROP"
+	ParsedTables      []string `json:"parsed_tables,omitempty"`  // extracted table names
 }
 
 // Response is the common UDS response wrapper from the C++ dbgate core.

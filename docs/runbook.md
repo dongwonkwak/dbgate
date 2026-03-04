@@ -355,6 +355,38 @@ curl -s http://localhost:8081/api/stats
 | `GET /api/sessions` | 세션 HTML 프래그먼트 |
 | `GET /api/chart-data` | QPS 차트 데이터 (JSON via script tag) |
 | `GET /static/*` | 정적 에셋 (htmx.min.js, pico.min.css, dashboard.js) |
+| `GET /policy-tester` | Policy Tester 페이지 (SQL dry-run) |
+| `POST /api/policy-explain` | 정책 explain 결과 (htmx partial) |
+
+### Policy Tester 보안 고려사항
+
+`/policy-tester` 및 `POST /api/policy-explain` 응답에는 `evaluation_path`와 `matched_access_rule` 필드가 포함된다.
+이 정보는 정책 매칭 경로와 접근 규칙 구조를 노출하므로 아래 통제를 반드시 적용한다.
+
+**UDS 소켓 파일 권한**
+
+```bash
+# dbgate 프로세스 기동 후 소켓 권한 확인 (dbgate 사용자만 읽기/쓰기)
+ls -la /tmp/dbgate.sock
+# 예상: srwx------ 1 dbgate dbgate ...
+
+# 권한이 넓으면 수동 조정
+chmod 700 /tmp/dbgate.sock
+```
+
+> UDS 소켓에 접근할 수 있으면 `policy_explain`을 직접 호출하여 정책 구조를 파악할 수 있다.
+> 소켓 파일은 dbgate 프로세스 사용자 소유로 제한하고, 대시보드 프로세스 사용자에게만 읽기 권한을 부여한다.
+
+**대시보드 접근 통제**
+
+- Basic Auth(`--auth user:password` 플래그 또는 `DASHBOARD_AUTH` 환경변수) 미설정 시 서버 기동 실패
+- 운영 환경에서는 반드시 리버스 프록시(nginx, Caddy 등) 뒤에 배치하거나 VPN/내부망 전용으로 제한
+- `--listen` 기본값은 `:8081`(와일드카드) — Docker 없이 직접 실행 시 `127.0.0.1:8081`로 명시 권장
+
+```bash
+# 권장 기동 방식 (localhost 바인딩 + Basic Auth)
+dbgate-dashboard --socket /tmp/dbgate.sock --listen 127.0.0.1:8081 --auth admin:강한패스워드
+```
 
 ### 트러블슈팅
 
