@@ -7,6 +7,7 @@ package dashboard
 
 import (
 	"context"
+	"crypto/subtle"
 	"errors"
 	"io/fs"
 	"log/slog"
@@ -18,24 +19,44 @@ import (
 
 // Server is the HTTP server for the dbgate web dashboard.
 type Server struct {
-	listenAddr string
-	client     *client.Client
-	logger     *slog.Logger
-	mux        *http.ServeMux
-	chart      *chartBuffer
+	listenAddr   string
+	client       *client.Client
+	logger       *slog.Logger
+	mux          *http.ServeMux
+	chart        *chartBuffer
+	authUser     string
+	authPassword string
 }
 
 // NewServer creates a new dashboard Server.
-func NewServer(listenAddr string, c *client.Client, logger *slog.Logger) *Server {
+// authUser and authPassword enable HTTP Basic Auth when both are non-empty.
+func NewServer(listenAddr string, c *client.Client, logger *slog.Logger, authUser, authPassword string) *Server {
 	s := &Server{
-		listenAddr: listenAddr,
-		client:     c,
-		logger:     logger,
-		mux:        http.NewServeMux(),
-		chart:      newChartBuffer(60),
+		listenAddr:   listenAddr,
+		client:       c,
+		logger:       logger,
+		mux:          http.NewServeMux(),
+		chart:        newChartBuffer(60),
+		authUser:     authUser,
+		authPassword: authPassword,
 	}
 	s.registerRoutes()
 	return s
+}
+
+// basicAuthMiddleware wraps h with HTTP Basic Auth using constant-time comparison.
+func basicAuthMiddleware(user, password string, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		u, p, ok := r.BasicAuth()
+		uMatch := subtle.ConstantTimeCompare([]byte(u), []byte(user))
+		pMatch := subtle.ConstantTimeCompare([]byte(p), []byte(password))
+		if !ok || uMatch != 1 || pMatch != 1 {
+			w.Header().Set("WWW-Authenticate", `Basic realm="dbgate dashboard"`)
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // registerRoutes sets up all HTTP routes.
@@ -54,9 +75,13 @@ func (s *Server) registerRoutes() {
 // Run starts the HTTP server and blocks until ctx is cancelled.
 // It performs a graceful shutdown with a 5-second deadline.
 func (s *Server) Run(ctx context.Context) error {
+	var handler http.Handler = s.mux
+	if s.authUser != "" {
+		handler = basicAuthMiddleware(s.authUser, s.authPassword, handler)
+	}
 	srv := &http.Server{
 		Addr:              s.listenAddr,
-		Handler:           s.mux,
+		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 

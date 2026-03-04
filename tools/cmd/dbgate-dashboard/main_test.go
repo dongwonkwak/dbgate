@@ -3,9 +3,11 @@ package main
 import (
 	"encoding/binary"
 	"encoding/json"
+	"flag"
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -113,10 +115,27 @@ func TestMockUDSServer_RespondsCorrectly(t *testing.T) {
 	}
 }
 
-func TestRun_InvalidSocket(t *testing.T) {
-	// Verify that run() uses the flag defaults properly.
-	// We can't easily test the full run() without binding a port,
-	// so we verify the function exists and the package compiles.
-	// Full integration testing is done in internal/dashboard/handlers_test.go.
-	t.Log("main package compiles with run() function")
+func TestRun_MissingAuth_Fails(t *testing.T) {
+	// run() must fail-closed: refuse to start when auth credentials are absent.
+	origArgs := os.Args
+	origFlags := flag.CommandLine
+	t.Cleanup(func() {
+		os.Args = origArgs
+		flag.CommandLine = origFlags
+		os.Unsetenv("DASHBOARD_AUTH_USER")
+		os.Unsetenv("DASHBOARD_AUTH_PASSWORD")
+	})
+
+	os.Unsetenv("DASHBOARD_AUTH_USER")
+	os.Unsetenv("DASHBOARD_AUTH_PASSWORD")
+	flag.CommandLine = flag.NewFlagSet("test", flag.ContinueOnError)
+	os.Args = []string{"dbgate-dashboard"} // no --auth-user / --auth-password
+
+	err := run()
+	if err == nil {
+		t.Fatal("expected error when auth credentials missing, got nil")
+	}
+	if !strings.Contains(err.Error(), "auth is required") {
+		t.Errorf("unexpected error message: %v", err)
+	}
 }

@@ -83,7 +83,7 @@ func newTestServer(t *testing.T, sockPath string) *Server {
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	c := client.NewClient(sockPath, 3*time.Second)
-	return NewServer(":0", c, logger)
+	return NewServer(":0", c, logger, "", "")
 }
 
 func makeStatsResponse() []byte {
@@ -160,7 +160,7 @@ func TestHandleStats_Error(t *testing.T) {
 	// Point to a non-existent socket to trigger connection error.
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	c := client.NewClient("/nonexistent/path.sock", 500*time.Millisecond)
-	srv := NewServer(":0", c, logger)
+	srv := NewServer(":0", c, logger, "", "")
 
 	req := httptest.NewRequest(http.MethodGet, "/api/stats", http.NoBody)
 	rec := httptest.NewRecorder()
@@ -200,7 +200,7 @@ func TestHandleSessions_NotImplemented(t *testing.T) {
 func TestHandleSessions_ConnectionError(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	c := client.NewClient("/nonexistent/path.sock", 500*time.Millisecond)
-	srv := NewServer(":0", c, logger)
+	srv := NewServer(":0", c, logger, "", "")
 
 	req := httptest.NewRequest(http.MethodGet, "/api/sessions", http.NoBody)
 	rec := httptest.NewRecorder()

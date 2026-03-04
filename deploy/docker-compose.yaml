@@ -114,6 +114,9 @@ services:
       - "127.0.0.1:8081:8081"
     volumes:
       - uds-1:/run/dbgate:ro
+    env_file: .env
+    # UID 1000 matches the dbgate core user that owns the UDS socket.
+    user: "1000:1000"
     depends_on:
       dbgate-1:
         condition: service_healthy
