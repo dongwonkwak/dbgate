@@ -70,6 +70,14 @@ fix(logger): 수정                   ← Linear ID 누락
 - `docs/process/execution-brief-template.md` — Execution Brief 작성 규칙
 - `docs/process/state-transition-checklist.md` — 상태 전이 체크리스트
 
+## Docker/배포 보안 규칙
+- 시크릿(비밀번호, 토큰, 인증정보)은 YAML/코드에 **평문 하드코딩 금지** → `env_file` 또는 docker secret 사용하고 `.env.example`만 커밋
+- 내부 전용 서비스 포트(DB, 관리 UI, stats 등)는 **`127.0.0.1` 바인딩** 또는 포트 미노출 — `"3306:3306"` 같은 와일드카드 바인딩 금지
+- 관리/모니터링 엔드포인트(stats, admin 등)는 **반드시 인증 + 접근 제한** 적용
+- `.dockerignore`에 시크릿 패턴(`.env*`, `*.pem`, `*.key`) **필수 포함**
+- TCP 프록시 타임아웃은 대상 프로토콜 특성 고려 (MySQL `wait_timeout=28800s` 기준, 최소 300s 이상)
+- 배포 시 활성 세션 즉시 종료(`shutdown-sessions`) 지양 → 신규 유입 차단 후 자연 드레인 우선
+
 ## Doc Impact 규칙
 
 담당 경로를 수정하면 CI의 `scripts/check-doc-impact.sh`가 관련 문서 업데이트를 요구한다.

@@ -1,0 +1,30 @@
+# =============================================================================
+# dbgate Go CLI tools — multi-stage production build
+# =============================================================================
+# Build:  docker build -f deploy/Dockerfile.tools -t dbgate-tools:latest .
+# Run:    docker run --rm dbgate-tools:latest --help
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# Stage 1: Builder
+# ---------------------------------------------------------------------------
+FROM golang:1.26 AS builder
+
+WORKDIR /src/tools
+
+# Cache dependency download
+COPY tools/go.mod tools/go.sum ./
+RUN go mod download
+
+# Copy source and build
+COPY tools/ ./
+RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o /out/dbgate-cli ./cmd/dbgate-cli
+
+# ---------------------------------------------------------------------------
+# Stage 2: Minimal runtime
+# ---------------------------------------------------------------------------
+FROM gcr.io/distroless/static-debian12:nonroot
+
+COPY --from=builder /out/dbgate-cli /usr/local/bin/dbgate-cli
+
+ENTRYPOINT ["dbgate-cli"]
