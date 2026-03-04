@@ -2,22 +2,26 @@
 // uds_server.cpp
 //
 // UdsServer 구현 — Unix Domain Socket 서버.
-// Go CLI/대시보드에 StatsSnapshot 및 policy_explain 을 노출한다.
+// Go CLI/대시보드에 StatsSnapshot, policy_explain, policy_versions,
+// policy_rollback, policy_reload 를 노출한다.
 //
 // [프로토콜]
 //   요청/응답 모두 4byte LE 길이 프리픽스 + JSON 바디.
 //
 // [지원 커맨드]
-//   "stats"          — StatsSnapshot JSON 반환
-//   "policy_explain" — SQL 정책 평가 dry-run (DON-48)
-//   "sessions"       — 501 placeholder (Phase 3)
-//   "policy_reload"  — 501 placeholder (Phase 3)
-//   기타             — error 응답
+//   "stats"           — StatsSnapshot JSON 반환
+//   "policy_explain"  — SQL 정책 평가 dry-run (DON-48)
+//   "policy_versions" — 저장된 정책 버전 목록 조회 (DON-50)
+//   "policy_rollback" — 특정 버전으로 정책 롤백 (DON-50)
+//   "policy_reload"   — 정책 파일 리로드 + 스냅샷 저장 (DON-50)
+//   "sessions"        — 501 placeholder (Phase 3)
+//   기타              — error 응답
 //
 // [격리 원칙]
 //   UDS I/O 실패는 데이터패스로 전파하지 않는다.
 //   stats 접근은 read-only (StatsCollector::snapshot()) 만 수행한다.
-//   policy_explain 실패(파싱 오류 포함)는 데이터패스로 전파하지 않는다.
+//   policy_explain/policy_rollback/policy_reload 실패는 데이터패스로 전파하지 않는다.
+//   롤백/리로드 실패 시 현재 정책을 유지한다 (fail-close).
 // ---------------------------------------------------------------------------
 
 #include "stats/uds_server.hpp"
@@ -27,14 +31,21 @@
 #include <array>
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
+#include <boost/asio/dispatch.hpp>
 #include <boost/asio/read.hpp>
+#include <boost/asio/this_coro.hpp>
 #include <boost/asio/write.hpp>
 #include <chrono>
 #include <cstdint>
+#include <ctime>
+#include <iomanip>
 #include <optional>
+#include <sstream>
 #include <string>
 #include <string_view>
 #include <vector>
+
+#include "policy/policy_loader.hpp"
 
 namespace {
 
@@ -131,6 +142,58 @@ std::string make_error_response(std::string_view msg) {
 std::string make_not_implemented_response(std::string_view cmd) {
     return fmt::format(R"({{"ok":false,"error":"not implemented","code":501,"command":"{}"}})",
                        json_escape(cmd));
+}
+
+// ---------------------------------------------------------------------------
+// current_utc_iso8601
+//   현재 UTC 시각을 ISO 8601 형식으로 반환.
+//   형식: "2026-03-04T10:35:20Z"
+// ---------------------------------------------------------------------------
+std::string current_utc_iso8601() {
+    const auto now = std::chrono::system_clock::now();
+    const auto time_t_now = std::chrono::system_clock::to_time_t(now);
+
+    std::tm utc_tm{};
+#if defined(_WIN32)
+    gmtime_s(&utc_tm, &time_t_now);
+#else
+    gmtime_r(&time_t_now, &utc_tm);
+#endif
+
+    std::ostringstream oss;
+    oss << std::put_time(&utc_tm, "%Y-%m-%dT%H:%M:%SZ");
+    return oss.str();
+}
+
+// ---------------------------------------------------------------------------
+// parse_uint64_field
+//   JSON 문자열에서 특정 키의 uint64_t 값을 추출한다.
+//   "key": <number> 패턴만 지원. 파싱 실패 시 std::nullopt 반환.
+// ---------------------------------------------------------------------------
+std::optional<std::uint64_t> parse_uint64_field(std::string_view json, std::string_view key) {
+    const std::string search_key = fmt::format("\"{}\":", key);
+    const auto pos = json.find(search_key);
+    if (pos == std::string_view::npos) {
+        return std::nullopt;
+    }
+    auto start = pos + search_key.size();
+    // 공백 건너뜀
+    while (start < json.size() && (json[start] == ' ' || json[start] == '\t')) {
+        ++start;
+    }
+    if (start >= json.size()) {
+        return std::nullopt;
+    }
+    // 숫자 파싱
+    if (json[start] < '0' || json[start] > '9') {
+        return std::nullopt;
+    }
+    std::uint64_t value = 0;
+    while (start < json.size() && json[start] >= '0' && json[start] <= '9') {
+        value = value * 10 + static_cast<std::uint64_t>(json[start] - '0');
+        ++start;
+    }
+    return value;
 }
 
 // ---------------------------------------------------------------------------
@@ -438,6 +501,8 @@ UdsServer::UdsServer(const std::filesystem::path& socket_path,
       stats_{std::move(stats)},
       policy_engine_{nullptr},
       sql_parser_{nullptr},
+      version_store_{nullptr},
+      policy_config_path_{},
       ioc_{ioc},
       acceptor_{ioc} {}
 
@@ -451,6 +516,25 @@ UdsServer::UdsServer(const std::filesystem::path& socket_path,
       stats_{std::move(stats)},
       policy_engine_{std::move(policy_engine)},
       sql_parser_{std::move(sql_parser)},
+      version_store_{nullptr},
+      policy_config_path_{},
+      ioc_{ioc},
+      acceptor_{ioc} {}
+
+// NOLINTNEXTLINE(modernize-pass-by-value)
+UdsServer::UdsServer(const std::filesystem::path& socket_path,
+                     std::shared_ptr<StatsCollector> stats,
+                     std::shared_ptr<PolicyEngine> policy_engine,
+                     std::shared_ptr<SqlParser> sql_parser,
+                     std::shared_ptr<PolicyVersionStore> version_store,
+                     const std::filesystem::path& policy_config_path,
+                     asio::io_context& ioc)
+    : socket_path_{socket_path},
+      stats_{std::move(stats)},
+      policy_engine_{std::move(policy_engine)},
+      sql_parser_{std::move(sql_parser)},
+      version_store_{std::move(version_store)},
+      policy_config_path_{policy_config_path},
       ioc_{ioc},
       acceptor_{ioc} {}
 
@@ -576,6 +660,8 @@ asio::awaitable<void> UdsServer::run() {
 //   오류 발생 시 로그 후 co_return (데이터패스 비전파).
 // ---------------------------------------------------------------------------
 asio::awaitable<void> UdsServer::handle_client(asio::local::stream_protocol::socket socket) {
+    const auto io_executor = co_await asio::this_coro::executor;
+
     // ── 요청 헤더 읽기 ──────────────────────────────────────────────────
     std::array<uint8_t, 4> req_hdr{};
     auto [hdr_ec, hdr_n] = co_await asio::async_read(
@@ -625,12 +711,24 @@ asio::awaitable<void> UdsServer::handle_client(asio::local::stream_protocol::soc
     } else if (cmd == "policy_explain") {
         // policy_explain — SQL 정책 평가 dry-run (DON-48)
         response_body = handle_policy_explain(request_json);
+    } else if (cmd == "policy_versions") {
+        // policy_versions — 저장된 정책 버전 목록 조회 (DON-50)
+        response_body = handle_policy_versions(request_json);
+    } else if (cmd == "policy_rollback") {
+        // policy_rollback — 특정 버전으로 정책 롤백 (DON-50)
+        // 파일 I/O/파싱이 포함되므로 control_pool_에서 실행해 이벤트 루프 블로킹을 방지한다.
+        co_await asio::dispatch(control_pool_.get_executor(), asio::use_awaitable);
+        response_body = handle_policy_rollback(request_json);
+        co_await asio::dispatch(io_executor, asio::use_awaitable);
+    } else if (cmd == "policy_reload") {
+        // policy_reload — 정책 파일 리로드 + 스냅샷 저장 (DON-50)
+        // 파일 I/O/해시 계산이 포함되므로 control_pool_에서 실행해 이벤트 루프 블로킹을 방지한다.
+        co_await asio::dispatch(control_pool_.get_executor(), asio::use_awaitable);
+        response_body = handle_policy_reload(request_json);
+        co_await asio::dispatch(io_executor, asio::use_awaitable);
     } else if (cmd == "sessions") {
         // Phase 3 구현 예정
         response_body = make_not_implemented_response("sessions");
-    } else if (cmd == "policy_reload") {
-        // Phase 3 구현 예정
-        response_body = make_not_implemented_response("policy_reload");
     } else if (cmd.empty()) {
         spdlog::warn("[uds_server] handle_client: missing or malformed 'command' field");
         response_body = make_error_response("missing or malformed 'command' field");
@@ -737,4 +835,205 @@ std::string UdsServer::handle_policy_explain(std::string_view request_json) {
         spdlog::error("[uds_server] policy_explain: unknown exception");
         return make_error_response("internal error during policy evaluation");
     }
+}
+
+// ---------------------------------------------------------------------------
+// handle_policy_versions (DON-50)
+//   저장된 정책 버전 목록 및 현재 활성 버전을 반환한다.
+//
+//   [응답 형식]
+//   {"ok":true,"payload":{"current":5,"versions":[{"version":5,"timestamp":"...","rules_count":24,"hash":"abc123..."},...]}}
+//
+//   [fail-close]
+//   version_store_ 미주입 시 not-implemented 반환.
+//   예외 발생 시 ok:false 반환 (데이터패스 비전파).
+// ---------------------------------------------------------------------------
+std::string UdsServer::handle_policy_versions(std::string_view /*request_json*/) {
+    if (!version_store_ || !policy_engine_) {
+        spdlog::warn("[uds_server] policy_versions: version_store or policy_engine not configured");
+        return make_not_implemented_response("policy_versions");
+    }
+
+    try {
+        const auto versions = version_store_->list_versions();
+        const std::uint64_t current = policy_engine_->current_version();
+
+        // 수동 JSON 직렬화
+        std::string payload;
+        payload += '{';
+        payload += fmt::format(R"("current":{})", current);
+        payload += R"(,"versions":[)";
+
+        bool first = true;
+        for (const auto& meta : versions) {
+            if (!first) {
+                payload += ',';
+            }
+            payload += '{';
+            payload += fmt::format(R"("version":{})", meta.version);
+            payload += R"(,"timestamp":")" + json_escape(meta.timestamp) + '"';
+            payload += fmt::format(R"(,"rules_count":{})", meta.rules_count);
+            payload += R"(,"hash":")" + json_escape(meta.hash) + '"';
+            payload += '}';
+            first = false;
+        }
+
+        payload += "]}";
+
+        spdlog::debug(
+            "[uds_server] policy_versions: current={} count={}", current, versions.size());
+        return make_ok_response(payload);
+    } catch (const std::exception& e) {
+        spdlog::error("[uds_server] policy_versions: exception: {}", e.what());
+        return make_error_response("internal error during policy_versions");
+    } catch (...) {
+        spdlog::error("[uds_server] policy_versions: unknown exception");
+        return make_error_response("internal error during policy_versions");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// handle_policy_rollback (DON-50)
+//   payload 에서 target_version 을 파싱하여 해당 스냅샷으로 정책을 롤백한다.
+//
+//   [응답 형식 (성공)]
+//   {"ok":true,"payload":{"rolled_back_to":3,"previous_version":5,"rules_count":20}}
+//
+//   [응답 형식 (실패)]
+//   {"ok":false,"error":"version 3 not found"}
+//
+//   [fail-close]
+//   - version_store_ 또는 policy_engine_ 미주입 시 not-implemented 반환.
+//   - target_version 파싱 실패 시 ok:false 반환.
+//   - load_snapshot 실패 시 현재 정책 유지 + ok:false 반환.
+//   - reload 실패 시 현재 정책 유지 + ok:false 반환 (예외 처리).
+// ---------------------------------------------------------------------------
+std::string UdsServer::handle_policy_rollback(std::string_view request_json) {
+    if (!version_store_ || !policy_engine_) {
+        spdlog::warn("[uds_server] policy_rollback: version_store or policy_engine not configured");
+        return make_not_implemented_response("policy_rollback");
+    }
+
+    // ── payload 오브젝트 내 target_version 파싱 ──────────────────────────
+    // 프로토콜: {"command":"policy_rollback","version":1,"payload":{"target_version":3}}
+    // target_version 은 숫자이므로 parse_uint64_field 로 payload 내부에서 직접 탐색
+    //
+    // 방법: 전체 JSON 에서 "target_version": <숫자> 패턴을 찾는다.
+    // (payload 중첩을 고려하여 전체 JSON 에서 탐색하면 충분함)
+    const auto target_version_opt = parse_uint64_field(request_json, "target_version");
+    if (!target_version_opt) {
+        spdlog::warn("[uds_server] policy_rollback: missing target_version in payload");
+        return make_error_response("missing required field: target_version");
+    }
+
+    const std::uint64_t target_version = *target_version_opt;
+    const std::uint64_t previous_version = policy_engine_->current_version();
+
+    // ── 스냅샷 로드 ──────────────────────────────────────────────────────
+    auto load_result = version_store_->load_snapshot(target_version);
+    if (!load_result) {
+        spdlog::warn("[uds_server] policy_rollback: {}", load_result.error());
+        return make_error_response(load_result.error());
+    }
+
+    auto new_config = std::make_shared<PolicyConfig>(std::move(*load_result));
+    const auto rules_count = static_cast<std::uint32_t>(new_config->access_control.size());
+
+    // ── 정책 엔진 교체 (fail-close: 실패 시 현재 정책 유지) ──────────────
+    try {
+        policy_engine_->reload(new_config, target_version);
+    } catch (const std::exception& e) {
+        spdlog::error("[uds_server] policy_rollback: reload exception: {}", e.what());
+        return make_error_response(fmt::format("rollback failed during reload: {}", e.what()));
+    }
+
+    spdlog::info("[uds_server] policy_rollback: rolled back to v{} (prev=v{})",
+                 target_version,
+                 previous_version);
+
+    std::string payload;
+    payload += '{';
+    payload += fmt::format(R"("rolled_back_to":{})", target_version);
+    payload += fmt::format(R"(,"previous_version":{})", previous_version);
+    payload += fmt::format(R"(,"rules_count":{})", rules_count);
+    payload += '}';
+    return make_ok_response(payload);
+}
+
+// ---------------------------------------------------------------------------
+// handle_policy_reload (DON-50, 기존 501 placeholder 교체)
+//   정책 파일을 리로드하고 스냅샷을 저장한 뒤 정책 엔진을 교체한다.
+//
+//   [응답 형식 (성공)]
+//   {"ok":true,"payload":{"reloaded_at":"2026-03-04T10:35:20Z","rules_count":24,"version":6,"message":"Policy
+//   reloaded successfully"}}
+//
+//   [응답 형식 (실패)]
+//   {"ok":false,"error":"..."}
+//
+//   [fail-close]
+//   - version_store_ 또는 policy_engine_ 미주입 시 not-implemented 반환.
+//   - policy_config_path_ 비어있으면 ok:false 반환.
+//   - PolicyLoader::load 실패 시 현재 정책 유지 + ok:false 반환.
+//   - save_snapshot 실패는 경고 로그만 출력하고 reload 는 계속 진행
+//     (스냅샷 저장 실패가 정책 리로드를 막지 않도록 격리).
+//   - policy_engine_->reload 예외 시 ok:false 반환 (현재 정책 유지).
+// ---------------------------------------------------------------------------
+std::string UdsServer::handle_policy_reload(std::string_view /*request_json*/) {
+    if (!version_store_ || !policy_engine_) {
+        spdlog::warn("[uds_server] policy_reload: version_store or policy_engine not configured");
+        return make_not_implemented_response("policy_reload");
+    }
+
+    if (policy_config_path_.empty()) {
+        spdlog::warn("[uds_server] policy_reload: policy_config_path not configured");
+        return make_error_response("policy config path not configured");
+    }
+
+    // ── 정책 파일 로드 ────────────────────────────────────────────────────
+    auto load_result = PolicyLoader::load(policy_config_path_);
+    if (!load_result) {
+        spdlog::warn("[uds_server] policy_reload: load failed (keeping current policy): {}",
+                     load_result.error());
+        return make_error_response(load_result.error());
+    }
+
+    auto new_config = std::make_shared<PolicyConfig>(std::move(*load_result));
+    const auto rules_count = static_cast<std::uint32_t>(new_config->access_control.size());
+
+    // ── 스냅샷 저장 (격리: 실패해도 리로드 진행) ─────────────────────────
+    std::uint64_t new_version = 0;
+    auto save_result = version_store_->save_snapshot(*new_config, policy_config_path_);
+    if (!save_result) {
+        spdlog::warn("[uds_server] policy_reload: snapshot save failed (reload continues): {}",
+                     save_result.error());
+        // 저장 실패 시 현재 version_store의 next_version - 1 이 아닌 기존 버전 유지
+        new_version = version_store_->current_version();
+    } else {
+        new_version = save_result->version;
+    }
+
+    // ── 정책 엔진 교체 (fail-close: 실패 시 현재 정책 유지) ──────────────
+    try {
+        policy_engine_->reload(new_config, new_version);
+    } catch (const std::exception& e) {
+        spdlog::error("[uds_server] policy_reload: reload exception: {}", e.what());
+        return make_error_response(fmt::format("reload failed during engine update: {}", e.what()));
+    }
+
+    const std::string reloaded_at = current_utc_iso8601();
+
+    spdlog::info("[uds_server] policy_reload: reloaded v{} rules={} at {}",
+                 new_version,
+                 rules_count,
+                 reloaded_at);
+
+    std::string payload;
+    payload += '{';
+    payload += R"("reloaded_at":")" + json_escape(reloaded_at) + '"';
+    payload += fmt::format(R"(,"rules_count":{})", rules_count);
+    payload += fmt::format(R"(,"version":{})", new_version);
+    payload += R"(,"message":"Policy reloaded successfully")";
+    payload += '}';
+    return make_ok_response(payload);
 }

@@ -29,6 +29,7 @@
 // ---------------------------------------------------------------------------
 
 #include <atomic>
+#include <cstdint>
 #include <memory>
 #include <string>
 
@@ -163,7 +164,28 @@ public:
     //   Hot Reload: 새 정책 설정으로 원자적 교체.
     //   이미 진행 중인 evaluate() 는 이전 config 로 완료된다.
     //   new_config 가 nullptr 이면 이후 모든 evaluate() 가 kBlock 을 반환한다.
+    //
+    //   [하위 호환]
+    //   이 오버로드는 version=0 으로 버전 추적을 생략한다.
+    //   버전 추적이 필요하면 reload(new_config, version) 오버로드를 사용한다.
     void reload(std::shared_ptr<PolicyConfig> new_config);
+
+    // reload (버전 추적 오버로드)
+    //   new_config 교체 후 current_version_ 을 version 으로 갱신한다.
+    //   기존 reload(shared_ptr) 시그니처와 하위 호환 유지.
+    //
+    //   [스레드 안전성]
+    //   config_ 교체와 current_version_ 갱신은 각각 atomic 연산으로 수행된다.
+    //   두 연산 사이에 짧은 비원자적 구간이 존재하지만,
+    //   evaluate() 는 config_ 를 먼저 읽으므로 실질적 경쟁이 없다.
+    void reload(std::shared_ptr<PolicyConfig> new_config, std::uint64_t version);
+
+    // current_version
+    //   현재 활성 정책의 버전 번호를 반환한다.
+    //   reload(config, version) 으로 설정된 버전을 반환하며,
+    //   reload(config) (버전 없음) 호출 시 0 으로 리셋된다.
+    //   PolicyVersionStore 로 저장 없이 reload() 만 호출된 경우에도 0 을 반환한다.
+    [[nodiscard]] std::uint64_t current_version() const noexcept;
 
 private:
     // std::atomic<std::shared_ptr<PolicyConfig>> (C++20)
@@ -177,4 +199,9 @@ private:
     // - reload() 에서는 store() 로 원자적 교체한다.
     // - public API(함수 시그니처) 는 변경 없음. private 멤버만 변경.
     std::atomic<std::shared_ptr<PolicyConfig>> config_;
+
+    // current_version_: 현재 활성 정책 버전 번호.
+    // reload(config, version) 호출 시 갱신, reload(config) 호출 시 0 으로 리셋.
+    // atomic 으로 스레드 안전 읽기/쓰기를 보장한다.
+    std::atomic<std::uint64_t> current_version_{0};
 };

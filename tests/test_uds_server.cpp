@@ -45,6 +45,7 @@
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
+#include <fstream>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -53,6 +54,7 @@
 
 #include "parser/sql_parser.hpp"
 #include "policy/policy_engine.hpp"
+#include "policy/policy_version_store.hpp"
 #include "policy/rule.hpp"
 #include "stats/stats_collector.hpp"
 #include "stats/uds_server.hpp"
@@ -732,4 +734,533 @@ TEST_F(UdsServerTest, Stats_ContainsMonitoredBlocks) {
         << "stats response must contain \"ok\":true. Got: " << resp;
     EXPECT_NE(resp.find(R"("monitored_blocks")"), std::string::npos)
         << "stats payload must contain 'monitored_blocks' field (DON-49). Got: " << resp;
+}
+
+// ===========================================================================
+// UdsPolicyVersioningTest 픽스처 (DON-50)
+//   PolicyVersionStore + PolicyEngine + SqlParser 를 주입한 UdsServer 에서
+//   policy_versions, policy_rollback, policy_reload 커맨드를 테스트한다.
+//
+//   [정책 설정]
+//   - 인메모리 PolicyConfig (파일 없이 직접 생성)
+//   - PolicyVersionStore 는 임시 디렉토리 사용
+// ===========================================================================
+class UdsPolicyVersioningTest : public ::testing::Test {
+protected:
+    void SetUp() override {
+        socket_path_ = temp_socket_path("versioning");
+        stats_ = std::make_shared<StatsCollector>();
+        ioc_ = std::make_unique<asio::io_context>();
+
+        // 임시 디렉토리 생성 (PID + 단조 카운터로 충돌 방지)
+        static std::atomic<int> dir_counter{0};
+        version_dir_ = std::filesystem::temp_directory_path() /
+                       ("test_pvs_" + std::to_string(::getpid()) + "_" +
+                        std::to_string(dir_counter.fetch_add(1)));
+        std::filesystem::create_directories(version_dir_);
+
+        auto policy_config = make_explain_policy_config();
+        policy_engine_ = std::make_shared<PolicyEngine>(policy_config);
+        sql_parser_ = std::make_shared<SqlParser>();
+        version_store_ = std::make_shared<PolicyVersionStore>(version_dir_);
+
+        server_ =
+            std::make_unique<UdsServer>(socket_path_,
+                                        stats_,
+                                        policy_engine_,
+                                        sql_parser_,
+                                        version_store_,
+                                        std::filesystem::path{},  // 빈 경로 (policy_reload 비활성)
+                                        *ioc_);
+    }
+
+    void TearDown() override {
+        stop_server();
+        (void)std::filesystem::remove(
+            socket_path_);  // NOLINT(bugprone-unused-return-value,cert-err33-c)
+        std::filesystem::remove_all(
+            version_dir_);  // NOLINT(bugprone-unused-return-value,cert-err33-c)
+    }
+
+    void start_server() {
+        asio::co_spawn(*ioc_, server_->run(), asio::detached);
+        server_thread_ = std::thread([this]() { ioc_->run(); });
+    }
+
+    void stop_server() {
+        if (server_) {
+            server_->stop();
+        }
+        ioc_->stop();
+        if (server_thread_.joinable()) {
+            server_thread_.join();
+        }
+    }
+
+    bool wait_for_socket(std::chrono::milliseconds timeout = std::chrono::seconds{2}) {
+        const auto deadline = std::chrono::steady_clock::now() + timeout;
+        while (std::chrono::steady_clock::now() < deadline) {
+            if (std::filesystem::exists(socket_path_)) {
+                return true;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds{10});
+        }
+        return false;
+    }
+
+    std::filesystem::path
+        socket_path_;  // NOLINT(cppcoreguidelines-non-private-member-variables-in-classes,readability-identifier-naming)
+    std::filesystem::path
+        version_dir_;  // NOLINT(cppcoreguidelines-non-private-member-variables-in-classes,readability-identifier-naming)
+    std::shared_ptr<StatsCollector>
+        stats_;  // NOLINT(cppcoreguidelines-non-private-member-variables-in-classes,readability-identifier-naming)
+    std::shared_ptr<PolicyEngine>
+        policy_engine_;  // NOLINT(cppcoreguidelines-non-private-member-variables-in-classes,readability-identifier-naming)
+    std::shared_ptr<SqlParser>
+        sql_parser_;  // NOLINT(cppcoreguidelines-non-private-member-variables-in-classes,readability-identifier-naming)
+    std::shared_ptr<PolicyVersionStore>
+        version_store_;  // NOLINT(cppcoreguidelines-non-private-member-variables-in-classes,readability-identifier-naming)
+    std::unique_ptr<asio::io_context>
+        ioc_;  // NOLINT(cppcoreguidelines-non-private-member-variables-in-classes,readability-identifier-naming)
+    std::unique_ptr<UdsServer>
+        server_;  // NOLINT(cppcoreguidelines-non-private-member-variables-in-classes,readability-identifier-naming)
+    std::thread
+        server_thread_;  // NOLINT(cppcoreguidelines-non-private-member-variables-in-classes,readability-identifier-naming)
+};
+
+// ---------------------------------------------------------------------------
+// PolicyVersions_WithoutVersionStore_ReturnsNotImplemented (DON-50)
+//   version_store 없이 생성된 UdsServer 에서 policy_versions 커맨드는
+//   not-implemented 응답을 반환해야 한다.
+//
+//   [검증] stats 전용 생성자(version_store = nullptr)는 버전 커맨드 비활성.
+// ---------------------------------------------------------------------------
+TEST_F(UdsServerTest, PolicyVersions_WithoutVersionStore_ReturnsNotImplemented) {
+    // UdsServerTest 픽스처는 stats 전용 생성자 사용 (version_store = nullptr)
+    start_server();
+    ASSERT_TRUE(wait_for_socket()) << "UDS socket not created within 2s";
+
+    UdsSyncClient client;
+    ASSERT_NO_THROW(client.connect(socket_path_));
+
+    client.send(R"({"command":"policy_versions","version":1})");
+
+    const std::string resp = client.recv();
+    ASSERT_FALSE(resp.empty());
+    EXPECT_NE(resp.find(R"("ok":false)"), std::string::npos)
+        << "Without version_store, policy_versions must return ok:false. Got: " << resp;
+    EXPECT_NE(resp.find("501"), std::string::npos)
+        << "Response should contain 501 code. Got: " << resp;
+}
+
+// ---------------------------------------------------------------------------
+// PolicyRollback_WithoutVersionStore_ReturnsNotImplemented (DON-50)
+//   version_store 없이 생성된 UdsServer 에서 policy_rollback 커맨드는
+//   not-implemented 응답을 반환해야 한다.
+// ---------------------------------------------------------------------------
+TEST_F(UdsServerTest, PolicyRollback_WithoutVersionStore_ReturnsNotImplemented) {
+    start_server();
+    ASSERT_TRUE(wait_for_socket()) << "UDS socket not created within 2s";
+
+    UdsSyncClient client;
+    ASSERT_NO_THROW(client.connect(socket_path_));
+
+    client.send(R"({"command":"policy_rollback","version":1,"payload":{"target_version":1}})");
+
+    const std::string resp = client.recv();
+    ASSERT_FALSE(resp.empty());
+    EXPECT_NE(resp.find(R"("ok":false)"), std::string::npos)
+        << "Without version_store, policy_rollback must return ok:false. Got: " << resp;
+    EXPECT_NE(resp.find("501"), std::string::npos)
+        << "Response should contain 501 code. Got: " << resp;
+}
+
+// ---------------------------------------------------------------------------
+// PolicyVersions_EmptyStore_ReturnsOkWithEmptyList (DON-50)
+//   버전이 저장되지 않은 상태에서 policy_versions 를 조회하면
+//   ok:true + 빈 versions 배열이 반환되어야 한다.
+// ---------------------------------------------------------------------------
+TEST_F(UdsPolicyVersioningTest, PolicyVersions_EmptyStore_ReturnsOkWithEmptyList) {
+    start_server();
+    ASSERT_TRUE(wait_for_socket()) << "UDS socket not created within 2s";
+
+    UdsSyncClient client;
+    ASSERT_NO_THROW(client.connect(socket_path_));
+
+    client.send(R"({"command":"policy_versions","version":1})");
+
+    const std::string resp = client.recv();
+    ASSERT_FALSE(resp.empty()) << "policy_versions must return a non-empty response";
+
+    EXPECT_NE(resp.find(R"("ok":true)"), std::string::npos)
+        << "policy_versions must return ok:true. Got: " << resp;
+    EXPECT_NE(resp.find(R"("current")"), std::string::npos)
+        << "response payload must contain 'current' field. Got: " << resp;
+    EXPECT_NE(resp.find(R"("versions")"), std::string::npos)
+        << "response payload must contain 'versions' field. Got: " << resp;
+}
+
+// ---------------------------------------------------------------------------
+// PolicyVersions_AfterSaveSnapshot_ReturnsList (DON-50)
+//   스냅샷 저장 후 policy_versions 를 조회하면 버전 목록이 반환되어야 한다.
+// ---------------------------------------------------------------------------
+TEST_F(UdsPolicyVersioningTest, PolicyVersions_AfterSaveSnapshot_ReturnsList) {
+    // 스냅샷을 인메모리로 저장하기 위해 임시 파일 생성
+    const auto tmp_policy_path = version_dir_ / "policy.yaml";
+    {
+        // 최소한의 YAML 파일 (yaml-cpp 파싱용)
+        std::ofstream f(tmp_policy_path);
+        f << "version: 1\n";
+        f << "access_control:\n";
+        f << "  - user: test\n";
+        f << "    source_ip_cidr: 0.0.0.0/0\n";
+        f << "    allowed_operations: [SELECT]\n";
+        f << "    allowed_tables: [\"*\"]\n";
+        f << "sql_rules:\n";
+        f << "  block_patterns:\n";
+        f << "    - \"UNION\\\\s+SELECT\"\n";
+    }
+
+    // PolicyConfig 직접 생성하여 스냅샷 저장
+    auto cfg = make_explain_policy_config();
+    const auto save_result = version_store_->save_snapshot(*cfg, tmp_policy_path);
+    ASSERT_TRUE(static_cast<bool>(save_result)) << "save_snapshot must succeed";
+
+    // policy_engine_ 에 버전 적용
+    policy_engine_->reload(cfg, save_result->version);
+
+    start_server();
+    ASSERT_TRUE(wait_for_socket()) << "UDS socket not created within 2s";
+
+    UdsSyncClient client;
+    ASSERT_NO_THROW(client.connect(socket_path_));
+
+    client.send(R"({"command":"policy_versions","version":1})");
+
+    const std::string resp = client.recv();
+    ASSERT_FALSE(resp.empty()) << "policy_versions must return a non-empty response";
+
+    EXPECT_NE(resp.find(R"("ok":true)"), std::string::npos)
+        << "policy_versions must return ok:true. Got: " << resp;
+    EXPECT_NE(resp.find(R"("version":1)"), std::string::npos)
+        << "response must contain version 1. Got: " << resp;
+    EXPECT_NE(resp.find(R"("current":1)"), std::string::npos)
+        << "current version must be 1. Got: " << resp;
+}
+
+// ---------------------------------------------------------------------------
+// PolicyRollback_InvalidVersion_ReturnsError (DON-50)
+//   존재하지 않는 버전으로 롤백 시도 시 ok:false + 오류 메시지가 반환되어야 한다.
+//   실패 시 현재 정책이 유지된다 (fail-close).
+// ---------------------------------------------------------------------------
+TEST_F(UdsPolicyVersioningTest, PolicyRollback_InvalidVersion_ReturnsError) {
+    start_server();
+    ASSERT_TRUE(wait_for_socket()) << "UDS socket not created within 2s";
+
+    UdsSyncClient client;
+    ASSERT_NO_THROW(client.connect(socket_path_));
+
+    // 버전 999는 존재하지 않음
+    client.send(R"({"command":"policy_rollback","version":1,"payload":{"target_version":999}})");
+
+    const std::string resp = client.recv();
+    ASSERT_FALSE(resp.empty()) << "policy_rollback must return a non-empty response";
+
+    EXPECT_NE(resp.find(R"("ok":false)"), std::string::npos)
+        << "Invalid rollback target must return ok:false. Got: " << resp;
+    EXPECT_NE(resp.find(R"("error")"), std::string::npos)
+        << "Response must contain error field. Got: " << resp;
+}
+
+// ---------------------------------------------------------------------------
+// PolicyRollback_MissingTargetVersion_ReturnsError (DON-50)
+//   target_version 필드가 없으면 ok:false + 오류 메시지가 반환되어야 한다.
+// ---------------------------------------------------------------------------
+TEST_F(UdsPolicyVersioningTest, PolicyRollback_MissingTargetVersion_ReturnsError) {
+    start_server();
+    ASSERT_TRUE(wait_for_socket()) << "UDS socket not created within 2s";
+
+    UdsSyncClient client;
+    ASSERT_NO_THROW(client.connect(socket_path_));
+
+    // target_version 누락
+    client.send(R"({"command":"policy_rollback","version":1,"payload":{}})");
+
+    const std::string resp = client.recv();
+    ASSERT_FALSE(resp.empty()) << "policy_rollback must return a non-empty response";
+
+    EXPECT_NE(resp.find(R"("ok":false)"), std::string::npos)
+        << "Missing target_version must return ok:false. Got: " << resp;
+}
+
+// ---------------------------------------------------------------------------
+// PolicyReload_WithoutVersionStore_ReturnsNotImplemented (DON-50)
+//   version_store 없이 생성된 UdsServer 에서 policy_reload 커맨드는
+//   not-implemented 응답을 반환해야 한다.
+//   (기존 501 placeholder 동작 유지 확인)
+// ---------------------------------------------------------------------------
+TEST_F(UdsServerTest, PolicyReload_WithoutVersionStore_ReturnsNotImplemented) {
+    start_server();
+    ASSERT_TRUE(wait_for_socket()) << "UDS socket not created within 2s";
+
+    UdsSyncClient client;
+    ASSERT_NO_THROW(client.connect(socket_path_));
+
+    client.send(R"({"command":"policy_reload","version":1})");
+
+    const std::string resp = client.recv();
+    ASSERT_FALSE(resp.empty());
+    EXPECT_NE(resp.find(R"("ok":false)"), std::string::npos)
+        << "Without version_store, policy_reload must return ok:false. Got: " << resp;
+    EXPECT_NE(resp.find("501"), std::string::npos)
+        << "Response should contain 501 code. Got: " << resp;
+}
+
+// ---------------------------------------------------------------------------
+// PolicyReload_WithEmptyConfigPath_ReturnsError (DON-50)
+//   version_store 는 있지만 policy_config_path 가 비어있으면 ok:false 가 반환되어야 한다.
+// ---------------------------------------------------------------------------
+TEST_F(UdsPolicyVersioningTest, PolicyReload_WithEmptyConfigPath_ReturnsError) {
+    // SetUp 에서 policy_config_path 를 빈 경로로 설정했음
+    start_server();
+    ASSERT_TRUE(wait_for_socket()) << "UDS socket not created within 2s";
+
+    UdsSyncClient client;
+    ASSERT_NO_THROW(client.connect(socket_path_));
+
+    client.send(R"({"command":"policy_reload","version":1})");
+
+    const std::string resp = client.recv();
+    ASSERT_FALSE(resp.empty()) << "policy_reload must return a non-empty response";
+
+    EXPECT_NE(resp.find(R"("ok":false)"), std::string::npos)
+        << "Empty config path must return ok:false. Got: " << resp;
+}
+
+// ---------------------------------------------------------------------------
+// PolicyRollback_Success_PolicyAppliedAndVersionUpdated (DON-50)
+//   스냅샷이 저장된 상태에서 policy_rollback 커맨드로 정상 롤백 시,
+//   ok:true 가 반환되고 PolicyEngine 의 current_version() 이 target_version 으로
+//   갱신되어야 한다.
+//
+//   [검증 포인트]
+//   - ok:true 포함
+//   - policy_engine_->current_version() == target_version
+// ---------------------------------------------------------------------------
+TEST_F(UdsPolicyVersioningTest, PolicyRollback_Success_PolicyAppliedAndVersionUpdated) {
+    // 스냅샷 저장을 위해 임시 YAML 파일 생성
+    const auto tmp_policy_path = version_dir_ / "policy.yaml";
+    {
+        std::ofstream f(tmp_policy_path);
+        f << "version: 1\n";
+        f << "access_control:\n";
+        f << "  - user: rollback_user\n";
+        f << "    source_ip_cidr: 0.0.0.0/0\n";
+        f << "    allowed_operations: [SELECT]\n";
+        f << "    allowed_tables: [\"*\"]\n";
+        f << "sql_rules:\n";
+        f << "  block_patterns:\n";
+        f << "    - \"UNION\\\\s+SELECT\"\n";
+    }
+
+    auto cfg = make_explain_policy_config();
+    const auto save_result = version_store_->save_snapshot(*cfg, tmp_policy_path);
+    ASSERT_TRUE(static_cast<bool>(save_result)) << "save_snapshot must succeed";
+    const std::uint64_t target_ver = save_result->version;
+
+    // 현재 엔진 버전을 다른 값으로 설정
+    policy_engine_->reload(cfg, 99U);
+    ASSERT_EQ(policy_engine_->current_version(), 99U);
+
+    start_server();
+    ASSERT_TRUE(wait_for_socket()) << "UDS socket not created within 2s";
+
+    UdsSyncClient client;
+    ASSERT_NO_THROW(client.connect(socket_path_));
+
+    const std::string request =
+        R"({"command":"policy_rollback","version":1,"payload":{"target_version":)" +
+        std::to_string(target_ver) + R"(}})";
+    client.send(request);
+
+    const std::string resp = client.recv();
+    ASSERT_FALSE(resp.empty()) << "policy_rollback must return a non-empty response";
+
+    EXPECT_NE(resp.find(R"("ok":true)"), std::string::npos)
+        << "Successful rollback must return ok:true. Got: " << resp;
+
+    // PolicyEngine 의 버전이 target_version 으로 갱신됐는지 확인
+    EXPECT_EQ(policy_engine_->current_version(), target_ver)
+        << "policy_engine must be updated to target_version after successful rollback";
+}
+
+// ---------------------------------------------------------------------------
+// PolicyRollback_FailClose_CurrentPolicyMaintained (DON-50)
+//   존재하지 않는 버전으로 rollback 시도 시 실패하고,
+//   PolicyEngine 의 현재 정책(버전/동작)이 유지되어야 한다 (fail-close).
+//
+//   [검증 포인트]
+//   - ok:false 반환
+//   - policy_engine_->current_version() 변경 없음
+//   - 롤백 전 evaluate() 결과와 동일한 동작 유지
+// ---------------------------------------------------------------------------
+TEST_F(UdsPolicyVersioningTest, PolicyRollback_FailClose_CurrentPolicyMaintained) {
+    auto cfg = make_explain_policy_config();
+    const std::uint64_t before_version = 77U;
+    policy_engine_->reload(cfg, before_version);
+
+    start_server();
+    ASSERT_TRUE(wait_for_socket()) << "UDS socket not created within 2s";
+
+    UdsSyncClient client;
+    ASSERT_NO_THROW(client.connect(socket_path_));
+
+    // 버전 9999 는 존재하지 않음 → rollback 실패
+    client.send(R"({"command":"policy_rollback","version":1,"payload":{"target_version":9999}})");
+
+    const std::string resp = client.recv();
+    ASSERT_FALSE(resp.empty()) << "policy_rollback must return a non-empty response";
+
+    EXPECT_NE(resp.find(R"("ok":false)"), std::string::npos)
+        << "Rollback to non-existent version must return ok:false. Got: " << resp;
+
+    // fail-close: 현재 버전이 변경되지 않아야 함
+    EXPECT_EQ(policy_engine_->current_version(), before_version)
+        << "[FAIL-CLOSE] PolicyEngine version must not change after failed rollback. "
+        << "before=" << before_version << " after=" << policy_engine_->current_version();
+}
+
+// ---------------------------------------------------------------------------
+// PolicyReload_Success_WithValidConfigPath (DON-50)
+//   유효한 정책 파일 경로로 policy_reload 커맨드 시,
+//   ok:true 가 반환되고 PolicyEngine 버전이 갱신되어야 한다.
+//
+//   [검증 포인트]
+//   - ok:true 포함
+//   - policy_engine_->current_version() > 0 (새 스냅샷이 저장됨)
+// ---------------------------------------------------------------------------
+TEST_F(UdsPolicyVersioningTest, PolicyReload_Success_WithValidConfigPath) {
+    // 유효한 YAML 파일 생성
+    const auto tmp_policy_path = version_dir_ / "reload_policy.yaml";
+    {
+        std::ofstream f(tmp_policy_path);
+        f << "version: 1\n";
+        f << "access_control:\n";
+        f << "  - user: reload_user\n";
+        f << "    source_ip_cidr: 0.0.0.0/0\n";
+        f << "    allowed_operations: [SELECT]\n";
+        f << "    allowed_tables: [\"*\"]\n";
+        f << "sql_rules:\n";
+        f << "  block_statements:\n";
+        f << "    - DROP\n";
+        f << "  block_patterns:\n";
+        f << "    - \"UNION\\\\s+SELECT\"\n";
+        f << "procedure_control:\n";
+        f << "  mode: \"whitelist\"\n";
+        f << "  whitelist: []\n";
+        f << "  block_dynamic_sql: true\n";
+        f << "  block_create_alter: true\n";
+        f << "data_protection:\n";
+        f << "  max_result_rows: 1000\n";
+        f << "  block_schema_access: true\n";
+    }
+
+    // policy_config_path 를 유효한 경로로 설정한 UdsServer 생성
+    // UdsPolicyVersioningTest::SetUp 에서 빈 경로로 생성됐으므로 서버를 재생성한다.
+    stop_server();
+    server_.reset();
+
+    ioc_ = std::make_unique<asio::io_context>();
+    const auto new_socket_path = temp_socket_path("reload_ok");
+    server_ = std::make_unique<UdsServer>(new_socket_path,
+                                          stats_,
+                                          policy_engine_,
+                                          sql_parser_,
+                                          version_store_,
+                                          tmp_policy_path,
+                                          *ioc_);
+
+    asio::co_spawn(*ioc_, server_->run(), asio::detached);
+    server_thread_ = std::thread([this]() { ioc_->run(); });
+
+    // 소켓 생성 대기
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
+    while (std::chrono::steady_clock::now() < deadline) {
+        if (std::filesystem::exists(new_socket_path)) {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds{10});
+    }
+    ASSERT_TRUE(std::filesystem::exists(new_socket_path))
+        << "reload test socket not created within 2s";
+
+    UdsSyncClient client;
+    ASSERT_NO_THROW(client.connect(new_socket_path));
+
+    client.send(R"({"command":"policy_reload","version":1})");
+
+    const std::string resp = client.recv();
+    ASSERT_FALSE(resp.empty()) << "policy_reload must return a non-empty response";
+
+    EXPECT_NE(resp.find(R"("ok":true)"), std::string::npos)
+        << "Reload with valid config path must return ok:true. Got: " << resp;
+
+    // PolicyEngine 버전이 갱신됐는지 확인 (스냅샷 저장 → reload(cfg, ver) 호출)
+    EXPECT_GT(policy_engine_->current_version(), 0U)
+        << "policy_engine version must be updated after successful reload. Got: "
+        << policy_engine_->current_version();
+
+    // TearDown 에서 중복 stop/join 방지를 위해 소켓 정리
+    std::filesystem::remove(new_socket_path);
+}
+
+// ---------------------------------------------------------------------------
+// PolicyVersions_CurrentVersionField_MatchesEngineVersion (DON-50)
+//   policy_versions 응답의 "current" 필드가 PolicyEngine::current_version() 과
+//   일치하는지 확인한다.
+//
+//   [검증 포인트]
+//   - "current":N 포함 (N == policy_engine_->current_version())
+// ---------------------------------------------------------------------------
+TEST_F(UdsPolicyVersioningTest, PolicyVersions_CurrentVersionField_MatchesEngineVersion) {
+    // 스냅샷 저장 + 엔진 버전 설정
+    const auto tmp_policy_path = version_dir_ / "ver_match.yaml";
+    {
+        std::ofstream f(tmp_policy_path);
+        f << "version: 1\n";
+        f << "access_control:\n";
+        f << "  - user: ver_user\n";
+        f << "    source_ip_cidr: 0.0.0.0/0\n";
+        f << "    allowed_operations: [SELECT]\n";
+        f << "    allowed_tables: [\"*\"]\n";
+        f << "sql_rules:\n";
+        f << "  block_patterns:\n";
+        f << "    - \"UNION\\\\s+SELECT\"\n";
+    }
+
+    auto cfg = make_explain_policy_config();
+    const auto save_result = version_store_->save_snapshot(*cfg, tmp_policy_path);
+    ASSERT_TRUE(static_cast<bool>(save_result)) << "save_snapshot must succeed";
+
+    policy_engine_->reload(cfg, save_result->version);
+    const std::uint64_t expected_current = policy_engine_->current_version();
+
+    start_server();
+    ASSERT_TRUE(wait_for_socket()) << "UDS socket not created within 2s";
+
+    UdsSyncClient client;
+    ASSERT_NO_THROW(client.connect(socket_path_));
+
+    client.send(R"({"command":"policy_versions","version":1})");
+
+    const std::string resp = client.recv();
+    ASSERT_FALSE(resp.empty()) << "policy_versions must return a non-empty response";
+
+    EXPECT_NE(resp.find(R"("ok":true)"), std::string::npos)
+        << "policy_versions must return ok:true. Got: " << resp;
+
+    // "current":N 포함 확인
+    const std::string expected_current_str = R"("current":)" + std::to_string(expected_current);
+    EXPECT_NE(resp.find(expected_current_str), std::string::npos)
+        << "policy_versions must contain current=" << expected_current << ". Got: " << resp;
 }

@@ -1,0 +1,70 @@
+{{if .Error}}
+<article class="error-msg">
+    <p><strong>Policy Versions Error</strong></p>
+    <p>{{.Error}}</p>
+</article>
+{{else if .Result}}
+<p><small>Current version: <strong>{{.Result.Current}}</strong></small></p>
+{{if .Result.Versions}}
+<figure>
+    <table>
+        <thead>
+            <tr>
+                <th>Version</th>
+                <th>Timestamp</th>
+                <th>Rules</th>
+                <th>Hash</th>
+                <th>Action</th>
+            </tr>
+        </thead>
+        <tbody>
+            {{range .Result.Versions}}
+            <tr>
+                <td>
+                    {{.Version}}
+                    {{if eq .Version $.Result.Current}}
+                    <mark>current</mark>
+                    {{end}}
+                </td>
+                <td><small>{{.Timestamp}}</small></td>
+                <td>{{.RulesCount}}</td>
+                <td>
+                    {{if ge (len .Hash) 8}}
+                    <code>{{slice .Hash 0 8}}...</code>
+                    {{else if .Hash}}
+                    <code>{{.Hash}}</code>
+                    {{else}}
+                    <code>-</code>
+                    {{end}}
+                </td>
+                <td>
+                    {{if ne .Version $.Result.Current}}
+                    <button class="outline"
+                            style="padding: 0.25rem 0.75rem; font-size: 0.8rem;"
+                            hx-post="/api/policy-rollback"
+                            hx-vals='{"version":"{{.Version}}"}'
+                            hx-target="#policy-versions-container"
+                            hx-swap="innerHTML"
+                            hx-confirm="Roll back to version {{.Version}}?">
+                        Rollback
+                    </button>
+                    {{else}}
+                    —
+                    {{end}}
+                </td>
+            </tr>
+            {{end}}
+        </tbody>
+    </table>
+</figure>
+{{else}}
+<article class="coming-soon">
+    <p>No version history available.</p>
+</article>
+{{end}}
+{{else}}
+<article class="coming-soon">
+    <p>Policy version history — Coming Soon</p>
+    <p><small>The policy_versions endpoint is not yet implemented on the server side.</small></p>
+</article>
+{{end}}

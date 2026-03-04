@@ -9,16 +9,19 @@
 //
 // Commands:
 //
-//	stats                  Print QPS, block rate, active sessions, and query counters.
-//	sessions               List active sessions (server-side not yet implemented).
-//	policy reload          Trigger a policy reload (server-side not yet implemented).
-//	policy explain         Dry-run SQL evaluation against the policy engine.
+//	stats                        Print QPS, block rate, active sessions, and query counters.
+//	sessions                     List active sessions (server-side not yet implemented).
+//	policy reload                Trigger a policy reload and print the new version.
+//	policy explain               Dry-run SQL evaluation against the policy engine.
+//	policy versions              List all stored policy versions.
+//	policy rollback --version N  Roll back to a specific policy version.
 package main
 
 import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"text/tabwriter"
 	"time"
 
 	"github.com/dongwonkwak/dbgate/tools/internal/client"
@@ -82,7 +85,7 @@ provides commands to inspect statistics, list sessions, and reload policies.`,
 		Use:   "reload",
 		Short: "Reload the access control policy",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runGenericCommand(socketPath, timeout, "policy_reload")
+			return runPolicyReload(socketPath, timeout)
 		},
 	}
 
@@ -115,7 +118,30 @@ Useful for debugging policy rules and auditing access control decisions.`,
 		panic(err)
 	}
 
-	policyCmd.AddCommand(policyReloadCmd, policyExplainCmd)
+	// policy versions subcommand
+	policyVersionsCmd := &cobra.Command{
+		Use:   "versions",
+		Short: "List all stored policy versions",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runPolicyVersions(socketPath, timeout)
+		},
+	}
+
+	// policy rollback subcommand
+	var rollbackVersion uint64
+	policyRollbackCmd := &cobra.Command{
+		Use:   "rollback",
+		Short: "Roll back to a specific policy version",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runPolicyRollback(socketPath, timeout, rollbackVersion)
+		},
+	}
+	policyRollbackCmd.Flags().Uint64Var(&rollbackVersion, "version", 0, "Target policy version to roll back to (required)")
+	if err := policyRollbackCmd.MarkFlagRequired("version"); err != nil {
+		panic(err)
+	}
+
+	policyCmd.AddCommand(policyReloadCmd, policyExplainCmd, policyVersionsCmd, policyRollbackCmd)
 	root.AddCommand(statsCmd, sessionsCmd, policyCmd)
 
 	return root
@@ -202,5 +228,65 @@ func runGenericCommand(socketPath string, timeout time.Duration, cmd string) err
 	if resp.Payload != nil {
 		fmt.Printf("payload: %v\n", resp.Payload)
 	}
+	return nil
+}
+
+// runPolicyReload triggers a policy reload and prints version information.
+func runPolicyReload(socketPath string, timeout time.Duration) error {
+	c := client.NewClient(socketPath, timeout)
+	result, err := c.PolicyReload()
+	if err != nil {
+		return fmt.Errorf("policy reload: %w", err)
+	}
+
+	fmt.Printf("Policy reloaded successfully (version %d)\n", result.Version)
+	fmt.Printf("Rules count: %d\n", result.RulesCount)
+	if result.Message != "" {
+		fmt.Printf("Message: %s\n", result.Message)
+	}
+	return nil
+}
+
+// runPolicyVersions lists all stored policy versions.
+func runPolicyVersions(socketPath string, timeout time.Duration) error {
+	c := client.NewClient(socketPath, timeout)
+	result, err := c.PolicyVersions()
+	if err != nil {
+		return fmt.Errorf("policy versions: %w", err)
+	}
+
+	fmt.Printf("Current version: %d\n", result.Current)
+	if len(result.Versions) == 0 {
+		fmt.Println("No version history available.")
+		return nil
+	}
+
+	fmt.Println("=== Policy Versions ===")
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "Version\tTimestamp\tRules\tHash")
+	for _, v := range result.Versions {
+		hash := v.Hash
+		if len(hash) > 8 {
+			hash = hash[:8] + "..."
+		}
+		fmt.Fprintf(w, "%d\t%s\t%d\t%s\n", v.Version, v.Timestamp, v.RulesCount, hash)
+	}
+	if err := w.Flush(); err != nil {
+		return fmt.Errorf("flush output: %w", err)
+	}
+	return nil
+}
+
+// runPolicyRollback rolls back the policy to a specific version.
+func runPolicyRollback(socketPath string, timeout time.Duration, targetVersion uint64) error {
+	c := client.NewClient(socketPath, timeout)
+	result, err := c.PolicyRollback(targetVersion)
+	if err != nil {
+		return fmt.Errorf("policy rollback: %w", err)
+	}
+
+	fmt.Printf("Rolled back to version %d (from version %d)\n",
+		result.RolledBackTo, result.PreviousVersion)
+	fmt.Printf("Rules count: %d\n", result.RulesCount)
 	return nil
 }

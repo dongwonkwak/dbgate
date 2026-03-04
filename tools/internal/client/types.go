@@ -5,7 +5,8 @@
 // Request:  CommandRequest  -> JSON -> [4byte LE len][JSON]
 // Response: Response        <- JSON <- [4byte LE len][JSON]
 //
-// Supported commands: "stats" | "policy_explain" | "sessions" | "policy_reload"
+// Supported commands: "stats" | "policy_explain" | "sessions" | "policy_reload" |
+// "policy_versions" | "policy_rollback"
 package client
 
 import (
@@ -62,4 +63,38 @@ type Response struct {
 	OK      bool        `json:"ok"`
 	Error   string      `json:"error,omitempty"`
 	Payload interface{} `json:"payload,omitempty"`
+}
+
+// PolicyVersionMeta represents metadata for a stored policy version.
+type PolicyVersionMeta struct {
+	Version    uint64 `json:"version"`
+	Timestamp  string `json:"timestamp"`
+	RulesCount uint32 `json:"rules_count"`
+	Hash       string `json:"hash"`
+}
+
+// PolicyVersionsResult is the response payload for "policy_versions".
+type PolicyVersionsResult struct {
+	Current  uint64              `json:"current"`
+	Versions []PolicyVersionMeta `json:"versions"`
+}
+
+// PolicyRollbackResult is the response payload for "policy_rollback".
+type PolicyRollbackResult struct {
+	RolledBackTo    uint64 `json:"rolled_back_to"`
+	PreviousVersion uint64 `json:"previous_version"`
+	RulesCount      uint32 `json:"rules_count"`
+}
+
+// PolicyRollbackRequest is the request payload for "policy_rollback".
+type PolicyRollbackRequest struct {
+	TargetVersion uint64 `json:"target_version"`
+}
+
+// PolicyReloadResult is the response payload for "policy_reload".
+type PolicyReloadResult struct {
+	ReloadedAt string `json:"reloaded_at"`
+	RulesCount uint32 `json:"rules_count"`
+	Version    uint64 `json:"version"`
+	Message    string `json:"message"`
 }

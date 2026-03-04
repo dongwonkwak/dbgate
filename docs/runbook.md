@@ -56,13 +56,32 @@
 - 목적: 정책 파일 변경 후 동작 반영 여부를 검증한다.
 - 사전 조건: 현재 정책 백업 확보
 - 입력: 새 정책 파일
-- 수행 명령: TODO (`dbgate-cli policy reload` 또는 신호 기반 절차)
-- 기대 결과: 정책 리로드 성공 로그/응답, 테스트 쿼리 동작 변경 확인
+- 수행 명령:
+  ```bash
+  # 정책 리로드 (버전 번호 및 적용된 룰 수 출력)
+  dbgate-cli policy reload
+  # → Policy reloaded successfully (version 6)
+  # → Rules count: 24
+
+  # 현재 버전 및 이력 확인
+  dbgate-cli policy versions
+  # → Current version: 6
+  # → === Policy Versions ===
+  # → Version  Timestamp                  Rules  Hash
+  # → 6        2026-03-04T10:45:00Z       24     abc12345...
+  # → 5        2026-03-04T10:30:00Z       22     def67890...
+
+  # 특정 버전으로 롤백
+  dbgate-cli policy rollback --version 5
+  # → Rolled back to version 5 (from version 6)
+  # → Rules count: 22
+  ```
+- 기대 결과: 정책 리로드 성공 메시지(버전 번호 포함), 테스트 쿼리 동작 변경 확인
 - 실패 시 확인 포인트:
   - YAML 파싱 오류
   - 리로드 실패 응답/로그
   - fail-close 동작 여부
-- 롤백 절차: 이전 정책 복원 후 재로드
+- 롤백 절차: `dbgate-cli policy rollback --version <이전버전>` 실행
 
 ## 절차 3: 장애 대응 (초안 템플릿)
 - 증상 예시:
@@ -354,6 +373,8 @@ curl -s http://localhost:8081/api/stats
 | `GET /api/stats` | 통계 HTML 프래그먼트 (htmx partial) |
 | `GET /api/sessions` | 세션 HTML 프래그먼트 |
 | `GET /api/chart-data` | QPS 차트 데이터 (JSON via script tag) |
+| `GET /api/policy-versions` | 정책 버전 히스토리 HTML 프래그먼트 (htmx partial) |
+| `POST /api/policy-rollback` | 특정 버전으로 정책 롤백 (htmx partial 반환) |
 | `GET /static/*` | 정적 에셋 (htmx.min.js, pico.min.css, dashboard.js) |
 | `GET /policy-tester` | Policy Tester 페이지 (SQL dry-run) |
 | `POST /api/policy-explain` | 정책 explain 결과 (htmx partial) |
@@ -393,7 +414,9 @@ dbgate-dashboard --socket /tmp/dbgate.sock --listen 127.0.0.1:8081 --auth admin:
 | 증상 | 원인 | 조치 |
 |------|------|------|
 | "Failed to fetch statistics" 표시 | UDS 소켓 연결 실패 | dbgate 인스턴스 상태 확인, `--socket` 경로 확인 |
-| "Coming Soon" (세션 섹션) | C++ 측 sessions 명령 미구현 | 정상 동작 — C++ 구현 후 자동 표시 |
+| "Coming Soon" (세션 섹션) | C++ 측 sessions 명령 미구현 | 정상 동작 — C++ 구현 (Phase 3 예정) 후 자동 표시 |
+| 정책 버전 목록 미표시 또는 오류 | C++ 측 policy_versions 미주입 | dbgate가 version_store 없이 기동된 경우. 설정 파일에서 정책 경로 확인 후 재시작 (DON-50 완료) |
+| 롤백 버튼 클릭 후 오류 표시 | 대상 버전 없음 또는 policy_rollback 미구현 | 오류 메시지 확인, `dbgate-cli policy versions`로 유효 버전 목록 조회. DON-50 완료 후 정상 동작 |
 | 페이지 접속 불가 | 대시보드 미기동 또는 포트 충돌 | `docker compose ps`, 포트 확인 |
 | 차트 데이터 없음 | 대시보드 기동 직후 | 통계 수집 후 자동 표시 (최대 2분 히스토리) |
 

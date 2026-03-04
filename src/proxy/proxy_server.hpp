@@ -15,6 +15,7 @@
 #include "logger/structured_logger.hpp"
 #include "policy/policy_engine.hpp"
 #include "policy/policy_loader.hpp"
+#include "policy/policy_version_store.hpp"
 #include "proxy/session.hpp"
 #include "stats/stats_collector.hpp"
 #include "stats/uds_server.hpp"
@@ -129,6 +130,7 @@ private:
     std::shared_ptr<PolicyEngine> policy_engine_{};
     std::shared_ptr<StructuredLogger> logger_{};
     std::shared_ptr<StatsCollector> stats_{};
+    std::shared_ptr<PolicyVersionStore> version_store_{};  // DON-50: 정책 버전 스토어
     std::unique_ptr<UdsServer> uds_server_{};
     std::unique_ptr<HealthCheck> health_check_{};
 

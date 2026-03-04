@@ -16,10 +16,12 @@
 //     실패: {"ok": false, "error": "<메시지>"}
 //
 // [지원 커맨드]
-//   "stats"          — StatsSnapshot 반환
-//   "policy_explain" — SQL 정책 평가 dry-run (DON-48)
-//   "sessions"       — 활성 세션 목록 (Phase 3 확장)
-//   "policy_reload"  — 정책 리로드 트리거 (Phase 3 확장)
+//   "stats"           — StatsSnapshot 반환
+//   "policy_explain"  — SQL 정책 평가 dry-run (DON-48)
+//   "policy_versions" — 저장된 정책 버전 목록 조회 (DON-50)
+//   "policy_rollback" — 특정 버전으로 정책 롤백 (DON-50)
+//   "policy_reload"   — 정책 파일 리로드 + 스냅샷 저장 (DON-50)
+//   "sessions"        — 활성 세션 목록 (Phase 3 확장)
 //
 // [버전 관리]
 //   CommandRequest.version 필드로 프로토콜 버전 구분.
@@ -33,13 +35,15 @@
 // [격리 원칙]
 //   UDS I/O 실패가 데이터패스 실패로 전파되지 않도록
 //   stats 접근은 read-only (StatsCollector::snapshot()) 만 수행한다.
-//   policy_explain 실패는 데이터패스로 전파하지 않는다.
+//   policy_explain/policy_rollback/policy_reload 실패는 데이터패스로 전파하지 않는다.
+//   롤백/리로드 실패 시 현재 정책을 유지한다 (fail-close).
 // ---------------------------------------------------------------------------
 
 #include <atomic>
 #include <boost/asio.hpp>
 #include <boost/asio/awaitable.hpp>
 #include <boost/asio/local/stream_protocol.hpp>
+#include <boost/asio/thread_pool.hpp>
 #include <filesystem>
 #include <memory>
 #include <string>
@@ -47,6 +51,7 @@
 
 #include "parser/sql_parser.hpp"
 #include "policy/policy_engine.hpp"
+#include "policy/policy_version_store.hpp"
 #include "stats_collector.hpp"
 
 namespace asio = boost::asio;
@@ -72,6 +77,17 @@ public:
               std::shared_ptr<StatsCollector> stats,
               std::shared_ptr<PolicyEngine> policy_engine,
               std::shared_ptr<SqlParser> sql_parser,
+              asio::io_context& ioc);
+
+    // 생성자 (policy_versions/policy_rollback/policy_reload 활성, DON-50)
+    //   version_store      : 정책 버전 스토어 (nullptr 이면 버전 관리 커맨드 비활성)
+    //   policy_config_path : 정책 파일 경로 (policy_reload 시 사용)
+    UdsServer(const std::filesystem::path& socket_path,
+              std::shared_ptr<StatsCollector> stats,
+              std::shared_ptr<PolicyEngine> policy_engine,
+              std::shared_ptr<SqlParser> sql_parser,
+              std::shared_ptr<PolicyVersionStore> version_store,
+              const std::filesystem::path& policy_config_path,
               asio::io_context& ioc);
 
     ~UdsServer();
@@ -108,11 +124,39 @@ private:
     //   policy_engine_ 또는 sql_parser_ 가 nullptr 이면 not-implemented 응답 반환.
     [[nodiscard]] std::string handle_policy_explain(std::string_view request_json);
 
+    // handle_policy_versions (DON-50)
+    //   "policy_versions" 커맨드 처리.
+    //   version_store_->list_versions() 와 policy_engine_->current_version() 을
+    //   결합하여 버전 목록 JSON 을 반환한다.
+    //   version_store_ 가 nullptr 이면 not-implemented 응답 반환.
+    [[nodiscard]] std::string handle_policy_versions(std::string_view request_json);
+
+    // handle_policy_rollback (DON-50)
+    //   "policy_rollback" 커맨드 처리.
+    //   payload 에서 target_version 을 파싱하고 version_store_->load_snapshot() 후
+    //   policy_engine_->reload() 를 호출한다.
+    //   실패 시 현재 정책 유지 (fail-close). version_store_ 가 nullptr 이면
+    //   not-implemented 응답 반환.
+    [[nodiscard]] std::string handle_policy_rollback(std::string_view request_json);
+
+    // handle_policy_reload (DON-50, 기존 501 placeholder 교체)
+    //   "policy_reload" 커맨드 처리.
+    //   PolicyLoader::load(policy_config_path_) → save_snapshot() → reload() 순서로 수행.
+    //   실패 시 현재 정책 유지 (fail-close). version_store_ 가 nullptr 이면
+    //   not-implemented 응답 반환.
+    [[nodiscard]] std::string handle_policy_reload(std::string_view request_json);
+
     std::filesystem::path socket_path_;
     std::shared_ptr<StatsCollector> stats_;
-    std::shared_ptr<PolicyEngine> policy_engine_;  // nullable
-    std::shared_ptr<SqlParser> sql_parser_;        // nullable
+    std::shared_ptr<PolicyEngine> policy_engine_;        // nullable
+    std::shared_ptr<SqlParser> sql_parser_;              // nullable
+    std::shared_ptr<PolicyVersionStore> version_store_;  // nullable (DON-50)
+    std::filesystem::path policy_config_path_;           // reload 시 사용할 정책 파일 경로 (DON-50)
     asio::io_context& ioc_;
     asio::local::stream_protocol::acceptor acceptor_;
     std::atomic<bool> stop_requested_{false};
+    // control_pool_:
+    //   policy_reload/policy_rollback 의 동기 파일 I/O를 io_context 이벤트 루프에서 분리한다.
+    //   단일 워커로 직렬 실행하여 관리 경로 경쟁을 최소화한다.
+    asio::thread_pool control_pool_{1};
 };

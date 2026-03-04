@@ -148,6 +148,103 @@ func (c *Client) PolicyExplain(sql, user, sourceIP string) (*PolicyExplainResult
 	return &result, nil
 }
 
+// PolicyVersions sends a "policy_versions" command and returns the decoded
+// PolicyVersionsResult containing the current version and version history.
+func (c *Client) PolicyVersions() (*PolicyVersionsResult, error) {
+	resp, err := c.SendCommand("policy_versions")
+	if err != nil {
+		return nil, err
+	}
+	if !resp.OK {
+		errMsg := resp.Error
+		if errMsg == "" {
+			errMsg = "unknown server error"
+		}
+		return nil, fmt.Errorf("policy_versions: server error: %s", errMsg)
+	}
+	if resp.Payload == nil {
+		return nil, fmt.Errorf("policy_versions: response has no payload")
+	}
+
+	payloadBytes, err := json.Marshal(resp.Payload)
+	if err != nil {
+		return nil, fmt.Errorf("policy_versions: re-marshal payload: %w", err)
+	}
+
+	var result PolicyVersionsResult
+	if err := json.Unmarshal(payloadBytes, &result); err != nil {
+		return nil, fmt.Errorf("policy_versions: parse payload: %w", err)
+	}
+
+	return &result, nil
+}
+
+// PolicyRollback sends a "policy_rollback" command with the given targetVersion
+// and returns the decoded PolicyRollbackResult.
+func (c *Client) PolicyRollback(targetVersion uint64) (*PolicyRollbackResult, error) {
+	req := CommandRequest{
+		Command: "policy_rollback",
+		Payload: PolicyRollbackRequest{TargetVersion: targetVersion},
+	}
+	resp, err := c.sendRequest(req)
+	if err != nil {
+		return nil, err
+	}
+	if !resp.OK {
+		errMsg := resp.Error
+		if errMsg == "" {
+			errMsg = "unknown server error"
+		}
+		return nil, fmt.Errorf("policy_rollback: server error: %s", errMsg)
+	}
+	if resp.Payload == nil {
+		return nil, fmt.Errorf("policy_rollback: response has no payload")
+	}
+
+	payloadBytes, err := json.Marshal(resp.Payload)
+	if err != nil {
+		return nil, fmt.Errorf("policy_rollback: re-marshal payload: %w", err)
+	}
+
+	var result PolicyRollbackResult
+	if err := json.Unmarshal(payloadBytes, &result); err != nil {
+		return nil, fmt.Errorf("policy_rollback: parse payload: %w", err)
+	}
+
+	return &result, nil
+}
+
+// PolicyReload sends a "policy_reload" command and returns the decoded
+// PolicyReloadResult with the new version and rules count.
+func (c *Client) PolicyReload() (*PolicyReloadResult, error) {
+	resp, err := c.SendCommand("policy_reload")
+	if err != nil {
+		return nil, err
+	}
+	if !resp.OK {
+		errMsg := resp.Error
+		if errMsg == "" {
+			errMsg = "unknown server error"
+		}
+		return nil, fmt.Errorf("policy_reload: server error: %s", errMsg)
+	}
+	if resp.Payload == nil {
+		return nil, fmt.Errorf("policy_reload: response has no payload")
+	}
+
+	payloadBytes, err := json.Marshal(resp.Payload)
+	if err != nil {
+		return nil, fmt.Errorf("policy_reload: re-marshal payload: %w", err)
+	}
+
+	var result PolicyReloadResult
+	if err := json.Unmarshal(payloadBytes, &result); err != nil {
+		return nil, fmt.Errorf("policy_reload: parse payload: %w", err)
+	}
+
+	return &result, nil
+}
+
 // writeFull writes all bytes in buf to w, looping until all bytes are written
 // or an error occurs. This handles the rare case where Write returns n < len(buf)
 // without an error, which technically violates the io.Writer contract but can

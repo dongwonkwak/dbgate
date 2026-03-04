@@ -35,4 +35,15 @@
         <p><small>Loading sessions...</small></p>
     </div>
 </section>
+
+<section>
+    <h2>Policy Versions</h2>
+    <div id="policy-versions-container"
+         hx-get="/api/policy-versions"
+         hx-trigger="load"
+         hx-swap="innerHTML"
+         hx-indicator="#loading">
+        <p><small>Loading policy versions...</small></p>
+    </div>
+</section>
 {{end}}
