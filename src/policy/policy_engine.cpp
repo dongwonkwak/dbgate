@@ -336,6 +336,12 @@ PolicyResult PolicyEngine::evaluate(const ParsedQuery& query, const SessionConte
         return r;
     };
 
+    // [보안 수정] monitor 모드에서 block_statements/block_patterns 매칭 시
+    // 즉시 반환하지 않고 access_control 평가를 계속 진행한다.
+    // 이유: monitor 모드에서도 no-access-rule(미등록 사용자) 등 fail-close 경로가
+    // 반드시 먼저 확정되어야 하며, access_control 통과 후에만 kLog를 반환해야 한다.
+    std::optional<PolicyResult> sql_rules_monitor_hit;
+
     // Step 1: config_ nullptr 체크
     const auto config = config_.load(std::memory_order_acquire);
     if (!config) {
@@ -367,36 +373,55 @@ PolicyResult PolicyEngine::evaluate(const ParsedQuery& query, const SessionConte
                          stmt,
                          session.session_id,
                          session.db_user);
-            return apply_monitor(
-                PolicyResult{.action = PolicyAction::kBlock,
-                             .matched_rule = "block-statement",
-                             .reason = fmt::format("SQL statement blocked: {}", stmt)},
-                config->sql_rules.mode);
+            PolicyResult r{.action = PolicyAction::kBlock,
+                           .matched_rule = "block-statement",
+                           .reason = fmt::format("SQL statement blocked: {}", stmt)};
+            if (config->sql_rules.mode == RuleMode::kMonitor) {
+                // monitor 모드: 즉시 반환하지 않고 access_control 평가 계속
+                // (no-access-rule 등 fail-close 경로가 반드시 먼저 확정되어야 함)
+                r.action = PolicyAction::kLog;
+                r.monitor_mode = true;
+                r.reason = "[monitor] " + r.reason;
+                sql_rules_monitor_hit = r;
+            } else {
+                return r;
+            }
+            break;
         }
     }
 
     // Step 4: SQL 패턴 차단 (block_patterns)
     // [오탐 주의] ORM 생성 쿼리에서 false positive 발생 가능.
     // [미탐 주의] 주석 분할(UN/**/ION)은 탐지 불가 (알려진 한계).
-    for (const auto& pattern : config->sql_rules.block_patterns) {
-        try {
-            const std::regex re(pattern,
-                                std::regex_constants::icase | std::regex_constants::ECMAScript);
-            if (std::regex_search(query.raw_sql, re)) {
-                spdlog::info("policy_engine: block_pattern matched '{}', session={}, user='{}'",
-                             pattern,
-                             session.session_id,
-                             session.db_user);
-                return apply_monitor(
-                    PolicyResult{.action = PolicyAction::kBlock,
-                                 .matched_rule = "block-pattern",
-                                 .reason = fmt::format("SQL pattern blocked: {}", pattern)},
-                    config->sql_rules.mode);
+    if (!sql_rules_monitor_hit.has_value()) {
+        for (const auto& pattern : config->sql_rules.block_patterns) {
+            try {
+                const std::regex re(pattern,
+                                    std::regex_constants::icase | std::regex_constants::ECMAScript);
+                if (std::regex_search(query.raw_sql, re)) {
+                    spdlog::info("policy_engine: block_pattern matched '{}', session={}, user='{}'",
+                                 pattern,
+                                 session.session_id,
+                                 session.db_user);
+                    PolicyResult r{.action = PolicyAction::kBlock,
+                                   .matched_rule = "block-pattern",
+                                   .reason = fmt::format("SQL pattern blocked: {}", pattern)};
+                    if (config->sql_rules.mode == RuleMode::kMonitor) {
+                        // monitor 모드: 즉시 반환하지 않고 access_control 평가 계속
+                        r.action = PolicyAction::kLog;
+                        r.monitor_mode = true;
+                        r.reason = "[monitor] " + r.reason;
+                        sql_rules_monitor_hit = r;
+                    } else {
+                        return r;
+                    }
+                    break;
+                }
+            } catch (const std::regex_error& e) {
+                // 잘못된 regex: 건너뜀 (false negative 증가, 로더에서 이미 경고)
+                spdlog::warn(
+                    "policy_engine: invalid block_pattern '{}', skipping: {}", pattern, e.what());
             }
-        } catch (const std::regex_error& e) {
-            // 잘못된 regex: 건너뜀 (false negative 증가, 로더에서 이미 경고)
-            spdlog::warn(
-                "policy_engine: invalid block_pattern '{}', skipping: {}", pattern, e.what());
         }
     }
 
@@ -668,6 +693,10 @@ PolicyResult PolicyEngine::evaluate(const ParsedQuery& query, const SessionConte
                   session.db_user,
                   cmd_str,
                   session.session_id);
+    // sql_rules monitor 매치가 있었다면: access_control 통과 후 kLog로 반환
+    if (sql_rules_monitor_hit.has_value()) {
+        return sql_rules_monitor_hit.value();
+    }
     return PolicyResult{.action = PolicyAction::kAllow,
                         .matched_rule = fmt::format("access-rule:{}", matched_rule->user),
                         .reason = "Access allowed"};
@@ -704,6 +733,11 @@ ExplainResult PolicyEngine::explain(const ParsedQuery& query, const SessionConte
         }
         return r;
     };
+
+    // [보안 수정] monitor 모드에서 block_statements/block_patterns 매칭 시
+    // 즉시 반환하지 않고 access_control 평가를 계속 진행한다.
+    // evaluate() 와 동일한 fix 적용.
+    std::optional<ExplainResult> sql_rules_monitor_hit;
 
     // evaluation_path 를 단계별로 누적
     std::string path{};
@@ -748,13 +782,22 @@ ExplainResult PolicyEngine::explain(const ParsedQuery& query, const SessionConte
                 stmt,
                 session.session_id,
                 session.db_user);
-            return apply_monitor_explain(
-                ExplainResult{.action = PolicyAction::kBlock,
-                              .matched_rule = "block-statement",
-                              .reason = fmt::format("SQL statement blocked: {}", stmt),
-                              .matched_access_rule = "",
-                              .evaluation_path = path},
-                config->sql_rules.mode);
+            ExplainResult r{.action = PolicyAction::kBlock,
+                            .matched_rule = "block-statement",
+                            .reason = fmt::format("SQL statement blocked: {}", stmt),
+                            .matched_access_rule = "",
+                            .evaluation_path = path};
+            if (config->sql_rules.mode == RuleMode::kMonitor) {
+                // monitor 모드: 즉시 반환하지 않고 access_control 평가 계속
+                // (no-access-rule 등 fail-close 경로가 반드시 먼저 확정되어야 함)
+                r.action = PolicyAction::kLog;
+                r.monitor_mode = true;
+                r.reason = "[monitor] " + r.reason;
+                sql_rules_monitor_hit = r;
+            } else {
+                return r;
+            }
+            break;
         }
     }
     path += " > block_statements_passed";
@@ -762,30 +805,40 @@ ExplainResult PolicyEngine::explain(const ParsedQuery& query, const SessionConte
     // Step 4: SQL 패턴 차단 (block_patterns)
     // [오탐 주의] ORM 생성 쿼리에서 false positive 발생 가능.
     // [미탐 주의] 주석 분할(UN/**/ION)은 탐지 불가 (알려진 한계).
-    for (const auto& pattern : config->sql_rules.block_patterns) {
-        try {
-            const std::regex re(pattern,
-                                std::regex_constants::icase | std::regex_constants::ECMAScript);
-            if (std::regex_search(query.raw_sql, re)) {
-                path += fmt::format(" > block_pattern({})", pattern);
-                spdlog::debug(
-                    "policy_engine: explain: block_pattern matched '{}', session={}, user='{}'",
-                    pattern,
-                    session.session_id,
-                    session.db_user);
-                return apply_monitor_explain(
-                    ExplainResult{.action = PolicyAction::kBlock,
-                                  .matched_rule = "block-pattern",
-                                  .reason = fmt::format("SQL pattern blocked: {}", pattern),
-                                  .matched_access_rule = "",
-                                  .evaluation_path = path},
-                    config->sql_rules.mode);
+    if (!sql_rules_monitor_hit.has_value()) {
+        for (const auto& pattern : config->sql_rules.block_patterns) {
+            try {
+                const std::regex re(pattern,
+                                    std::regex_constants::icase | std::regex_constants::ECMAScript);
+                if (std::regex_search(query.raw_sql, re)) {
+                    path += fmt::format(" > block_pattern({})", pattern);
+                    spdlog::debug(
+                        "policy_engine: explain: block_pattern matched '{}', session={}, user='{}'",
+                        pattern,
+                        session.session_id,
+                        session.db_user);
+                    ExplainResult r{.action = PolicyAction::kBlock,
+                                    .matched_rule = "block-pattern",
+                                    .reason = fmt::format("SQL pattern blocked: {}", pattern),
+                                    .matched_access_rule = "",
+                                    .evaluation_path = path};
+                    if (config->sql_rules.mode == RuleMode::kMonitor) {
+                        // monitor 모드: 즉시 반환하지 않고 access_control 평가 계속
+                        r.action = PolicyAction::kLog;
+                        r.monitor_mode = true;
+                        r.reason = "[monitor] " + r.reason;
+                        sql_rules_monitor_hit = r;
+                    } else {
+                        return r;
+                    }
+                    break;
+                }
+            } catch (const std::regex_error& e) {
+                // 잘못된 regex: 건너뜀 (false negative 증가, 로더에서 이미 경고)
+                spdlog::warn("policy_engine: explain: invalid block_pattern '{}', skipping: {}",
+                             pattern,
+                             e.what());
             }
-        } catch (const std::regex_error& e) {
-            // 잘못된 regex: 건너뜀 (false negative 증가, 로더에서 이미 경고)
-            spdlog::warn("policy_engine: explain: invalid block_pattern '{}', skipping: {}",
-                         pattern,
-                         e.what());
         }
     }
     path += " > block_patterns_passed";
@@ -1081,6 +1134,11 @@ ExplainResult PolicyEngine::explain(const ParsedQuery& query, const SessionConte
                   session.db_user,
                   cmd_str,
                   session.session_id);
+    // sql_rules monitor 매치가 있었다면: access_control 통과 후 kLog로 반환
+    if (sql_rules_monitor_hit.has_value()) {
+        sql_rules_monitor_hit->evaluation_path = path;
+        return sql_rules_monitor_hit.value();
+    }
     return ExplainResult{.action = PolicyAction::kAllow,
                          .matched_rule = fmt::format("access-rule:{}", matched_rule->user),
                          .reason = "Access allowed",

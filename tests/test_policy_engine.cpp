@@ -2000,6 +2000,11 @@ TEST(PolicyEngine, ExplainError_MatchesEvaluateError) {
 TEST(PolicyEngine, MonitorMode_SqlRule_BlockStatement) {
     auto cfg = make_basic_config();
     cfg->sql_rules.mode = RuleMode::kMonitor;
+    // [수정] DROP 이 block_statements 에 걸려 sql_rules_monitor_hit 에 저장되고,
+    // access_control 평가를 계속 진행한다. Step 9(allowed_operations) 에서 DROP 이
+    // 허용되어야 Step 12 에서 sql_rules_monitor_hit 이 kLog 로 반환된다.
+    // 따라서 allowed_operations 에 DROP 을 추가하여 Step 9 를 통과시킨다.
+    cfg->access_control[0].allowed_operations = {"SELECT", "INSERT", "UPDATE", "DROP"};
     const PolicyEngine engine(cfg);
 
     // DROP 은 block_statements 에 있으므로 kMonitor 에서 kLog 로 다운그레이드
@@ -2123,6 +2128,10 @@ TEST(PolicyEngine, MonitorMode_NoAccessRule_StillBlocks) {
 TEST(PolicyEngine, Explain_MonitorMode) {
     auto cfg = make_basic_config();
     cfg->sql_rules.mode = RuleMode::kMonitor;
+    // [수정] DROP 이 block_statements 에 걸려 sql_rules_monitor_hit 에 저장되고,
+    // access_control 평가를 계속 진행한다. Step 9(allowed_operations) 에서 DROP 이
+    // 허용되어야 Step 12 에서 sql_rules_monitor_hit 이 kLog 로 반환된다.
+    cfg->access_control[0].allowed_operations = {"SELECT", "INSERT", "UPDATE", "DROP"};
     const PolicyEngine engine(cfg);
 
     const auto query = make_query(SqlCommand::kDrop, {"users"}, "DROP TABLE users");
@@ -2134,4 +2143,121 @@ TEST(PolicyEngine, Explain_MonitorMode) {
     EXPECT_TRUE(result.monitor_mode) << "explain() must set monitor_mode=true in kMonitor mode";
     EXPECT_NE(result.evaluation_path.find("block_statement"), std::string::npos)
         << "evaluation_path must contain 'block_statement'. Got: " << result.evaluation_path;
+}
+
+// ---------------------------------------------------------------------------
+// MonitorMode_NoAccessRule_WithBlockStatement_StillBlocks (DON-49 보안 수정)
+//   sql_rules.mode = kMonitor 이고 block_statements 에 걸린 쿼리라도,
+//   미등록 사용자(no-access-rule) 는 반드시 kBlock 을 유지해야 한다.
+//
+//   [보안 원칙]
+//   fail-close: access_control 에 매칭 룰이 없으면 monitor 모드 여부와 무관하게 차단.
+//   수정 전에는 block_statement 매칭 시 즉시 kLog 반환하여 이 경로를 우회할 수 있었다.
+//
+//   [검증 포인트]
+//   - action == kBlock (kLog 가 아님)
+//   - matched_rule == "no-access-rule"
+//   - monitor_mode == false
+// ---------------------------------------------------------------------------
+TEST(PolicyEngine, MonitorMode_NoAccessRule_WithBlockStatement_StillBlocks) {
+    auto cfg = make_basic_config();
+    cfg->sql_rules.mode = RuleMode::kMonitor;
+    const PolicyEngine engine(cfg);
+
+    // unknown_user 는 access_control 에 없음 → no-access-rule
+    const auto session = make_session("unknown_user", "10.0.0.1");
+    // DROP 은 block_statements 에 매칭되지만, access_control 평가를 계속 진행하여
+    // no-access-rule 에서 fail-close (kBlock) 가 되어야 한다.
+    const auto query = make_query(SqlCommand::kDrop, {"users"}, "DROP TABLE users");
+    const auto result = engine.evaluate(query, session);
+
+    EXPECT_EQ(result.action, PolicyAction::kBlock)
+        << "[SECURITY] monitor mode must NOT bypass no-access-rule for block_statement hits. "
+        << "Got action=" << static_cast<int>(result.action)
+        << " matched_rule=" << result.matched_rule;
+    EXPECT_EQ(result.matched_rule, "no-access-rule")
+        << "must be blocked by no-access-rule, not by block-statement monitor hit";
+    EXPECT_FALSE(result.monitor_mode)
+        << "no-access-rule is fail-close and must not set monitor_mode=true";
+}
+
+// ---------------------------------------------------------------------------
+// MonitorMode_NoAccessRule_WithBlockPattern_StillBlocks (DON-49 보안 수정)
+//   sql_rules.mode = kMonitor 이고 block_patterns 에 걸린 쿼리라도,
+//   미등록 사용자(no-access-rule) 는 반드시 kBlock 을 유지해야 한다.
+//
+//   [보안 원칙]
+//   UNION SELECT 같은 SQLi 패턴이 monitor 모드로 설정된 경우에도
+//   미등록 사용자는 access_control 에서 차단되어야 한다.
+// ---------------------------------------------------------------------------
+TEST(PolicyEngine, MonitorMode_NoAccessRule_WithBlockPattern_StillBlocks) {
+    auto cfg = make_basic_config();
+    cfg->sql_rules.mode = RuleMode::kMonitor;
+    const PolicyEngine engine(cfg);
+
+    const auto session = make_session("unknown_user", "10.0.0.1");
+    // UNION SELECT 는 block_patterns 에 매칭되지만, no-access-rule 에서 차단되어야 한다.
+    const auto query =
+        make_query(SqlCommand::kSelect, {"users"}, "SELECT * FROM users UNION SELECT 1,2,3");
+    const auto result = engine.evaluate(query, session);
+
+    EXPECT_EQ(result.action, PolicyAction::kBlock)
+        << "[SECURITY] monitor mode must NOT bypass no-access-rule for block_pattern hits. "
+        << "Got action=" << static_cast<int>(result.action)
+        << " matched_rule=" << result.matched_rule;
+    EXPECT_EQ(result.matched_rule, "no-access-rule")
+        << "must be blocked by no-access-rule, not by block-pattern monitor hit";
+}
+
+// ---------------------------------------------------------------------------
+// MonitorMode_RegisteredUser_BlockStatement_KLog (DON-49 보안 수정)
+//   sql_rules.mode = kMonitor 이고 block_statements 에 걸린 쿼리에서,
+//   등록된 사용자(access_control 매칭)가 access_rule 의 모든 단계를 통과하면
+//   sql_rules monitor 히트로 kLog 를 반환한다.
+//
+//   [검증 포인트]
+//   - access_control 통과 후 sql_rules_monitor_hit 을 반환
+//   - matched_rule == "block-statement"
+//   - action == kLog, monitor_mode == true
+// ---------------------------------------------------------------------------
+TEST(PolicyEngine, MonitorMode_RegisteredUser_BlockStatement_KLog) {
+    auto cfg = make_basic_config();
+    cfg->sql_rules.mode = RuleMode::kMonitor;
+    // DROP 이 allowed_operations 에 있어야 Step 9 를 통과하고
+    // Step 12 에서 sql_rules_monitor_hit 이 반환된다.
+    cfg->access_control[0].allowed_operations = {"SELECT", "INSERT", "UPDATE", "DROP"};
+    const PolicyEngine engine(cfg);
+
+    const auto query = make_query(SqlCommand::kDrop, {"users"}, "DROP TABLE users");
+    const auto result = engine.evaluate(query, make_session());
+
+    EXPECT_EQ(result.action, PolicyAction::kLog)
+        << "Registered user passing access_control must get kLog from sql_rules monitor hit. "
+        << "Got matched_rule=" << result.matched_rule;
+    EXPECT_EQ(result.matched_rule, "block-statement")
+        << "matched_rule must be block-statement, not access-rule";
+    EXPECT_TRUE(result.monitor_mode);
+    EXPECT_NE(result.reason.find("[monitor]"), std::string::npos);
+}
+
+// ---------------------------------------------------------------------------
+// Explain_MonitorMode_NoAccessRule_WithBlockStatement_StillBlocks (DON-49 보안 수정)
+//   explain() 도 evaluate() 와 동일하게, monitor 모드 + no-access-rule 조합에서
+//   kBlock 을 유지해야 한다.
+// ---------------------------------------------------------------------------
+TEST(PolicyEngine, Explain_MonitorMode_NoAccessRule_WithBlockStatement_StillBlocks) {
+    auto cfg = make_basic_config();
+    cfg->sql_rules.mode = RuleMode::kMonitor;
+    const PolicyEngine engine(cfg);
+
+    const auto session = make_session("unknown_user", "10.0.0.1");
+    const auto query = make_query(SqlCommand::kDrop, {"users"}, "DROP TABLE users");
+    const auto result = engine.explain(query, session);
+
+    EXPECT_EQ(result.action, PolicyAction::kBlock)
+        << "[SECURITY] explain() monitor mode must NOT bypass no-access-rule. "
+        << "Got action=" << static_cast<int>(result.action);
+    EXPECT_EQ(result.matched_rule, "no-access-rule");
+    EXPECT_NE(result.evaluation_path.find("no_access_rule"), std::string::npos)
+        << "evaluation_path must show no_access_rule. Got: " << result.evaluation_path;
 }
