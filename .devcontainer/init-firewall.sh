@@ -78,6 +78,7 @@ for domain in \
     "proxy.golang.org" \
     "sum.golang.org" \
     "update.code.visualstudio.com" \
+    "github.com" \
     "codeload.github.com" \
     "objects.githubusercontent.com" \
     "github-releases.githubusercontent.com"; do
