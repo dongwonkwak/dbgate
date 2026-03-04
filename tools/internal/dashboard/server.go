@@ -65,6 +65,8 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("GET /api/stats", s.handleStats)
 	s.mux.HandleFunc("GET /api/sessions", s.handleSessions)
 	s.mux.HandleFunc("GET /api/chart-data", s.handleChartData)
+	s.mux.HandleFunc("GET /policy-tester", s.handlePolicyTester)
+	s.mux.HandleFunc("POST /api/policy-explain", s.handlePolicyExplain)
 	staticSub, err := fs.Sub(staticFS, "static")
 	if err != nil {
 		panic("embedded static FS: " + err.Error())

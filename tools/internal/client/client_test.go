@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -212,6 +213,119 @@ func TestGetStats_ServerError(t *testing.T) {
 	_, err := c.GetStats()
 	if err == nil {
 		t.Fatal("expected error, got nil")
+	}
+}
+
+// TestPolicyExplain_Block verifies that a block decision is correctly decoded.
+func TestPolicyExplain_Block(t *testing.T) {
+	payload := map[string]interface{}{
+		"action":              "block",
+		"matched_rule":        "block-statement",
+		"reason":              "SQL statement blocked: DROP",
+		"matched_access_rule": "app_service@172.16.0.0/12",
+		"evaluation_path":     "config_loaded > access_rule_matched > block_statement_matched(DROP)",
+		"parsed_command":      "DROP",
+		"parsed_tables":       []string{"users"},
+	}
+	wrapper := map[string]interface{}{
+		"ok":      true,
+		"payload": payload,
+	}
+	respJSON, err := json.Marshal(wrapper)
+	if err != nil {
+		t.Fatalf("marshal mock response: %v", err)
+	}
+
+	sockPath := startMockServer(t, frameResponse(respJSON))
+
+	c := NewClient(sockPath, 3*time.Second)
+	result, err := c.PolicyExplain("DROP TABLE users", "app_service", "172.16.0.1")
+	if err != nil {
+		t.Fatalf("PolicyExplain: %v", err)
+	}
+
+	if result.Action != "block" {
+		t.Errorf("Action: got %q, want %q", result.Action, "block")
+	}
+	if result.MatchedRule != "block-statement" {
+		t.Errorf("MatchedRule: got %q, want %q", result.MatchedRule, "block-statement")
+	}
+	if result.ParsedCommand != "DROP" {
+		t.Errorf("ParsedCommand: got %q, want %q", result.ParsedCommand, "DROP")
+	}
+	if len(result.ParsedTables) != 1 || result.ParsedTables[0] != "users" {
+		t.Errorf("ParsedTables: got %v, want [users]", result.ParsedTables)
+	}
+	if result.MatchedAccessRule != "app_service@172.16.0.0/12" {
+		t.Errorf("MatchedAccessRule: got %q, want %q", result.MatchedAccessRule, "app_service@172.16.0.0/12")
+	}
+}
+
+// TestPolicyExplain_Allow verifies that an allow decision is correctly decoded.
+func TestPolicyExplain_Allow(t *testing.T) {
+	payload := map[string]interface{}{
+		"action":              "allow",
+		"matched_rule":        "default-allow",
+		"reason":              "no blocking rule matched",
+		"matched_access_rule": "readonly@10.0.0.0/8",
+		"evaluation_path":     "config_loaded > access_rule_matched > no_block_rule",
+		"parsed_command":      "SELECT",
+		"parsed_tables":       []string{"orders"},
+	}
+	wrapper := map[string]interface{}{
+		"ok":      true,
+		"payload": payload,
+	}
+	respJSON, err := json.Marshal(wrapper)
+	if err != nil {
+		t.Fatalf("marshal mock response: %v", err)
+	}
+
+	sockPath := startMockServer(t, frameResponse(respJSON))
+
+	c := NewClient(sockPath, 3*time.Second)
+	result, err := c.PolicyExplain("SELECT * FROM orders", "readonly", "10.0.0.1")
+	if err != nil {
+		t.Fatalf("PolicyExplain: %v", err)
+	}
+
+	if result.Action != "allow" {
+		t.Errorf("Action: got %q, want %q", result.Action, "allow")
+	}
+	if result.ParsedCommand != "SELECT" {
+		t.Errorf("ParsedCommand: got %q, want %q", result.ParsedCommand, "SELECT")
+	}
+}
+
+// TestPolicyExplain_ServerError verifies that a non-OK server response is
+// surfaced as a descriptive error.
+func TestPolicyExplain_ServerError(t *testing.T) {
+	respJSON := []byte(`{"ok":false,"error":"missing required field: sql"}`)
+	sockPath := startMockServer(t, frameResponse(respJSON))
+
+	c := NewClient(sockPath, 3*time.Second)
+	_, err := c.PolicyExplain("", "user", "127.0.0.1")
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "server error") {
+		t.Errorf("error should contain 'server error', got: %v", err)
+	}
+}
+
+// TestPolicyExplain_NotImplemented verifies that a 501-style response is
+// surfaced with a meaningful message.
+func TestPolicyExplain_NotImplemented(t *testing.T) {
+	respJSON := []byte(`{"ok":false,"error":"not implemented","code":501,"command":"policy_explain"}`)
+	sockPath := startMockServer(t, frameResponse(respJSON))
+
+	c := NewClient(sockPath, 3*time.Second)
+	_, err := c.PolicyExplain("SELECT 1", "user", "127.0.0.1")
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "not implemented") {
+		t.Errorf("error should contain 'not implemented', got: %v", err)
 	}
 }
 

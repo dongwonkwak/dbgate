@@ -10,6 +10,19 @@ import (
 	"github.com/dongwonkwak/dbgate/tools/internal/client"
 )
 
+// policyTesterData is passed to the policy-tester page template.
+type policyTesterData struct {
+	// Result holds the evaluation result after form submission.
+	// nil means no evaluation has been performed yet.
+	Result *client.PolicyExplainResult
+	// Error holds an error message if the evaluation failed.
+	Error string
+	// Input echoes back the submitted form values so the user can refine them.
+	SQL      string
+	User     string
+	SourceIP string
+}
+
 // indexData is the top-level data passed to the index template.
 type indexData struct {
 	Stats *client.StatsSnapshot
@@ -153,6 +166,63 @@ func (s *Server) handleSessions(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := tmpl.ExecuteTemplate(w, "templates/partials/sessions.html", data); err != nil {
 		s.logger.Error("execute sessions template", slog.String("error", err.Error()))
+	}
+}
+
+// handlePolicyTester renders the Policy Tester standalone page.
+// The page uses its own layout (not the shared layout.html) to avoid
+// the Go template "content" block name collision with index.html.
+func (s *Server) handlePolicyTester(w http.ResponseWriter, r *http.Request) {
+	tmpl, err := parseTemplates()
+	if err != nil {
+		s.logger.Error("parse templates", slog.String("error", err.Error()))
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	// policy-tester.html is a self-contained page — execute it by file path name.
+	if err := tmpl.ExecuteTemplate(w, "templates/policy-tester.html", nil); err != nil {
+		s.logger.Error("execute policy-tester template", slog.String("error", err.Error()))
+	}
+}
+
+// handlePolicyExplain handles POST /api/policy-explain from the Policy Tester
+// panel. It calls the C++ policy_explain command and returns an HTML partial
+// with the result (for htmx swap).
+func (s *Server) handlePolicyExplain(w http.ResponseWriter, r *http.Request) {
+	tmpl, err := parseTemplates()
+	if err != nil {
+		s.logger.Error("parse templates", slog.String("error", err.Error()))
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	sql := r.FormValue("sql")
+	user := r.FormValue("user")
+	sourceIP := r.FormValue("source_ip")
+
+	data := policyTesterData{
+		SQL:      sql,
+		User:     user,
+		SourceIP: sourceIP,
+	}
+
+	if sql == "" || user == "" || sourceIP == "" {
+		data.Error = "all fields (SQL, user, source IP) are required"
+	} else {
+		result, err := s.client.PolicyExplain(sql, user, sourceIP)
+		if err != nil {
+			data.Error = err.Error()
+			s.logger.Warn("policy explain", slog.String("error", err.Error()))
+		} else {
+			data.Result = result
+		}
+	}
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := tmpl.ExecuteTemplate(w, "templates/partials/policy-result.html", data); err != nil {
+		s.logger.Error("execute policy-result template", slog.String("error", err.Error()))
 	}
 }
 

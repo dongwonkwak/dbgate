@@ -304,3 +304,106 @@ func TestChartBuffer_Snapshot_IsCopy(t *testing.T) {
 		t.Errorf("snapshot should be a copy, but original was modified: %v", original[0].QPS)
 	}
 }
+
+func makePolicyExplainResponse(action string) []byte {
+	resp := map[string]interface{}{
+		"ok": true,
+		"payload": map[string]interface{}{
+			"action":              action,
+			"matched_rule":        "block-statement",
+			"reason":              "SQL statement blocked: DROP",
+			"matched_access_rule": "app_service@172.16.0.0/12",
+			"evaluation_path":     "config_loaded > access_rule_matched > block_statement_matched(DROP)",
+			"parsed_command":      "DROP",
+			"parsed_tables":       []string{"users"},
+		},
+	}
+	b, _ := json.Marshal(resp)
+	return b
+}
+
+func TestHandlePolicyTester_GET(t *testing.T) {
+	sockPath := startMockUDS(t, makeStatsResponse())
+	srv := newTestServer(t, sockPath)
+
+	req := httptest.NewRequest(http.MethodGet, "/policy-tester", http.NoBody)
+	rec := httptest.NewRecorder()
+	srv.mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "Policy Tester") {
+		t.Error("page should contain 'Policy Tester' heading")
+	}
+	if !strings.Contains(body, "/api/policy-explain") {
+		t.Error("page should contain form action /api/policy-explain")
+	}
+}
+
+func TestHandlePolicyExplain_Block(t *testing.T) {
+	sockPath := startMockUDS(t, makePolicyExplainResponse("block"))
+	srv := newTestServer(t, sockPath)
+
+	form := strings.NewReader("sql=DROP+TABLE+users&user=app_service&source_ip=172.16.0.1")
+	req := httptest.NewRequest(http.MethodPost, "/api/policy-explain", form)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	srv.mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "block") {
+		t.Error("result partial should contain action 'block'")
+	}
+	if !strings.Contains(body, "block-statement") {
+		t.Error("result partial should contain matched rule")
+	}
+}
+
+func TestHandlePolicyExplain_MissingFields(t *testing.T) {
+	sockPath := startMockUDS(t, makePolicyExplainResponse("block"))
+	srv := newTestServer(t, sockPath)
+
+	// Only sql provided — user and source_ip missing.
+	form := strings.NewReader("sql=SELECT+1")
+	req := httptest.NewRequest(http.MethodPost, "/api/policy-explain", form)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	srv.mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "required") {
+		t.Error("result partial should contain 'required' validation message")
+	}
+}
+
+func TestHandlePolicyExplain_ServerError(t *testing.T) {
+	errResp, _ := json.Marshal(map[string]interface{}{
+		"ok":    false,
+		"error": "not implemented",
+	})
+	sockPath := startMockUDS(t, errResp)
+	srv := newTestServer(t, sockPath)
+
+	form := strings.NewReader("sql=DROP+TABLE+users&user=app_service&source_ip=172.16.0.1")
+	req := httptest.NewRequest(http.MethodPost, "/api/policy-explain", form)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	srv.mux.ServeHTTP(rec, req)
+
+	// Should still return 200 with error message (htmx expects 200).
+	if rec.Code != http.StatusOK {
+		t.Errorf("expected 200 even on error, got %d", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "Error") {
+		t.Error("result partial should contain 'Error' on server failure")
+	}
+}
