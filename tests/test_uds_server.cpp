@@ -122,7 +122,36 @@ struct UdsSyncClient {
 
     // connect: 소켓 경로에 동기 연결 (실패 시 예외)
     void connect(const std::filesystem::path& path) {
-        sock.connect(stream_protocol::endpoint{path.string()});
+        const auto endpoint = stream_protocol::endpoint{path.string()};
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
+        boost::system::error_code last_ec;
+
+        for (;;) {
+            if (sock.is_open()) {
+                boost::system::error_code close_ec;
+                sock.close(close_ec);  // NOLINT(bugprone-unused-return-value,cert-err33-c)
+            }
+            sock = stream_protocol::socket{ioc};
+            sock.connect(endpoint, last_ec);
+            if (!last_ec) {
+                return;
+            }
+
+            // bind 이후 listen 직전, 또는 파일 가시화 직후에 발생하는
+            // 일시적 connect 실패를 흡수한다.
+            if (last_ec != asio::error::connection_refused &&
+                last_ec != boost::system::errc::make_error_code(
+                               boost::system::errc::no_such_file_or_directory)) {
+                throw boost::system::system_error(last_ec);
+            }
+
+            if (std::chrono::steady_clock::now() >= deadline) {
+                break;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds{10});
+        }
+
+        throw boost::system::system_error(last_ec);
     }
 
     // send: [4LE 헤더][JSON 바디] 형식으로 전송

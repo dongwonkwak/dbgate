@@ -83,9 +83,14 @@ public:
     // on_connection_close
     //   클라이언트 연결 종료 시 호출 (데이터패스).
     void on_connection_close() noexcept {
-        const std::uint64_t current = active_sessions_.load(std::memory_order_relaxed);
-        if (current > 0) {
-            active_sessions_.fetch_sub(1, std::memory_order_relaxed);
+        // load+fetch_sub 조합은 동시 close에서 언더플로우 경쟁이 생길 수 있으므로
+        // CAS 루프로 0 미만 감소를 방지한다.
+        auto current = active_sessions_.load(std::memory_order_relaxed);
+        while (current > 0) {
+            if (active_sessions_.compare_exchange_weak(
+                    current, current - 1, std::memory_order_relaxed, std::memory_order_relaxed)) {
+                return;
+            }
         }
     }
 
@@ -116,12 +121,17 @@ public:
     [[nodiscard]] StatsSnapshot snapshot() const noexcept {
         const auto now = std::chrono::system_clock::now();
         const auto total_conn = total_connections_.load(std::memory_order_relaxed);
-        const auto active_sess = active_sessions_.load(std::memory_order_relaxed);
+        const auto active_sess_raw = active_sessions_.load(std::memory_order_relaxed);
         const auto total_q = total_queries_.load(std::memory_order_relaxed);
         const auto blocked_q = blocked_queries_.load(std::memory_order_relaxed);
         const auto monitored_b = monitored_blocks_.load(std::memory_order_relaxed);
         const auto window_q = window_queries_.load(std::memory_order_relaxed);
         const auto window_start = window_start_.load();
+
+        // lock-free 스냅샷 특성상 서로 다른 시점의 값을 읽을 수 있어
+        // active가 total보다 크게 보이는 일시적 관측치를 보정한다.
+        const auto active_sess =
+            active_sess_raw <= total_conn ? active_sess_raw : total_conn;
 
         const double elapsed_sec = std::chrono::duration<double>(now - window_start).count();
 
