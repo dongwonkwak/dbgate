@@ -168,7 +168,10 @@ private:
     std::atomic<std::uint32_t> max_connections_{8};      // 최대 동시 제어 연결 수
     std::atomic<uid_t> allowed_uid_{0};                  // 허용 UID (기본: 프로세스 자신)
     std::atomic<bool> allowed_uid_set_{false};           // set_allowed_uid() 호출 여부
-    std::atomic<std::uint32_t> active_connections_{0};  // 현재 활성 연결 수
+    // handle_client 코루틴이 서버 객체 파괴 이후 정리될 수 있으므로
+    // 연결 카운터 수명은 코루틴 프레임과 분리해 관리한다.
+    std::shared_ptr<std::atomic<std::uint32_t>> active_connections_{
+        std::make_shared<std::atomic<std::uint32_t>>(0)};
 
     // control_pool_:
     //   policy_reload/policy_rollback 의 동기 파일 I/O를 io_context 이벤트 루프에서 분리한다.

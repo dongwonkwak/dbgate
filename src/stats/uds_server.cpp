@@ -965,7 +965,7 @@ asio::awaitable<void> UdsServer::run() {
         }
 
         // DON-53: 동시 연결 수 제한
-        const auto current = active_connections_.load(std::memory_order_relaxed);
+        const auto current = active_connections_->load(std::memory_order_relaxed);
         const auto max_connections = max_connections_.load(std::memory_order_relaxed);
         if (current >= max_connections) {
             spdlog::warn("[uds_server] max control connections ({}) reached, rejecting",
@@ -976,7 +976,7 @@ asio::awaitable<void> UdsServer::run() {
         }
 
         // 클라이언트 처리 코루틴을 독립적으로 spawn (실패가 서버에 영향 없음)
-        active_connections_.fetch_add(1, std::memory_order_relaxed);
+        active_connections_->fetch_add(1, std::memory_order_relaxed);
         asio::co_spawn(ioc_, handle_client(std::move(client_socket)), asio::detached);
     }
 }
@@ -995,9 +995,10 @@ asio::awaitable<void> UdsServer::handle_client(asio::local::stream_protocol::soc
     // DON-53: RAII guard for active connection count
     class ConnectionGuard final {
     public:
-        explicit ConnectionGuard(std::atomic<std::uint32_t>* counter) noexcept : counter_{counter} {}
+        explicit ConnectionGuard(std::shared_ptr<std::atomic<std::uint32_t>> counter) noexcept
+            : counter_{std::move(counter)} {}
         ~ConnectionGuard() {
-            if (counter_ != nullptr) {
+            if (counter_) {
                 counter_->fetch_sub(1, std::memory_order_relaxed);
             }
         }
@@ -1008,9 +1009,9 @@ asio::awaitable<void> UdsServer::handle_client(asio::local::stream_protocol::soc
         ConnectionGuard& operator=(ConnectionGuard&&) = delete;
 
     private:
-        std::atomic<std::uint32_t>* counter_{nullptr};
+        std::shared_ptr<std::atomic<std::uint32_t>> counter_{};
     };
-    const ConnectionGuard conn_guard{&active_connections_};
+    const ConnectionGuard conn_guard{active_connections_};
     auto socket_sp = std::make_shared<asio::local::stream_protocol::socket>(std::move(socket));
     auto& client_socket = *socket_sp;
 
