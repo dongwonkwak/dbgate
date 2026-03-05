@@ -41,6 +41,7 @@
 #include <chrono>
 #include <cstdint>
 #include <ctime>
+#include <cstring>
 #include <iomanip>
 #include <limits>
 #include <optional>
@@ -170,6 +171,28 @@ std::string current_utc_iso8601() {
     std::ostringstream oss;
     oss << std::put_time(&utc_tm, "%Y-%m-%dT%H:%M:%SZ");
     return oss.str();
+}
+
+// ---------------------------------------------------------------------------
+// safe_strerror
+//   thread-safe strerror 래퍼.
+// ---------------------------------------------------------------------------
+std::string safe_strerror(int errnum) {
+    std::array<char, 256> buf{};
+#if defined(_WIN32)
+    if (strerror_s(buf.data(), buf.size(), errnum) == 0) {
+        return std::string{buf.data()};
+    }
+    return "unknown error";
+#elif defined(__GLIBC__)
+    const char* msg = strerror_r(errnum, buf.data(), buf.size());
+    return std::string{msg != nullptr ? msg : "unknown error"};
+#else
+    if (strerror_r(errnum, buf.data(), buf.size()) == 0) {
+        return std::string{buf.data()};
+    }
+    return "unknown error";
+#endif
 }
 
 bool is_json_whitespace(char c) {
@@ -809,16 +832,16 @@ UdsServer::~UdsServer() {
 // DON-53: 보안 설정 setter
 // ---------------------------------------------------------------------------
 void UdsServer::set_client_timeout(std::uint32_t timeout_sec) {
-    client_timeout_sec_ = timeout_sec;
+    client_timeout_sec_.store(timeout_sec, std::memory_order_relaxed);
 }
 
 void UdsServer::set_max_connections(std::uint32_t max_conn) {
-    max_connections_ = max_conn;
+    max_connections_.store(max_conn, std::memory_order_relaxed);
 }
 
 void UdsServer::set_allowed_uid(uid_t uid) {
-    allowed_uid_ = uid;
-    allowed_uid_set_ = true;
+    allowed_uid_.store(uid, std::memory_order_relaxed);
+    allowed_uid_set_.store(true, std::memory_order_release);
 }
 
 // ---------------------------------------------------------------------------
@@ -891,9 +914,10 @@ asio::awaitable<void> UdsServer::run() {
 
     // DON-53: 소켓 파일 권한 0600 고정 (fail-close)
     if (::chmod(socket_path_.c_str(), 0600) != 0) {
+        const int chmod_errno = errno;
         spdlog::error("[uds_server] chmod(0600) failed on {}: {}",
                       socket_path_.string(),
-                      std::strerror(errno));
+                      safe_strerror(chmod_errno));
         co_return;
     }
 
@@ -942,9 +966,10 @@ asio::awaitable<void> UdsServer::run() {
 
         // DON-53: 동시 연결 수 제한
         const auto current = active_connections_.load(std::memory_order_relaxed);
-        if (current >= max_connections_) {
+        const auto max_connections = max_connections_.load(std::memory_order_relaxed);
+        if (current >= max_connections) {
             spdlog::warn("[uds_server] max control connections ({}) reached, rejecting",
-                         max_connections_);
+                         max_connections);
             boost::system::error_code close_ec;
             client_socket.close(close_ec);  // NOLINT(bugprone-unused-return-value,cert-err33-c)
             continue;
@@ -968,22 +993,38 @@ asio::awaitable<void> UdsServer::run() {
 // ---------------------------------------------------------------------------
 asio::awaitable<void> UdsServer::handle_client(asio::local::stream_protocol::socket socket) {
     // DON-53: RAII guard for active connection count
-    struct ConnectionGuard {
-        std::atomic<std::uint32_t>& counter;
-        ~ConnectionGuard() { counter.fetch_sub(1, std::memory_order_relaxed); }
+    class ConnectionGuard final {
+    public:
+        explicit ConnectionGuard(std::atomic<std::uint32_t>* counter) noexcept : counter_{counter} {}
+        ~ConnectionGuard() {
+            if (counter_ != nullptr) {
+                counter_->fetch_sub(1, std::memory_order_relaxed);
+            }
+        }
+
+        ConnectionGuard(const ConnectionGuard&) = delete;
+        ConnectionGuard& operator=(const ConnectionGuard&) = delete;
+        ConnectionGuard(ConnectionGuard&&) = delete;
+        ConnectionGuard& operator=(ConnectionGuard&&) = delete;
+
+    private:
+        std::atomic<std::uint32_t>* counter_{nullptr};
     };
-    ConnectionGuard conn_guard{active_connections_};
+    const ConnectionGuard conn_guard{&active_connections_};
     auto socket_sp = std::make_shared<asio::local::stream_protocol::socket>(std::move(socket));
     auto& client_socket = *socket_sp;
 
     // DON-53: SO_PEERCRED 검증 — 허용 UID 외 차단
     {
-        const uid_t expected_uid = allowed_uid_set_ ? allowed_uid_ : ::getuid();
+        const bool uid_is_set = allowed_uid_set_.load(std::memory_order_acquire);
+        const uid_t expected_uid =
+            uid_is_set ? allowed_uid_.load(std::memory_order_relaxed) : ::getuid();
         struct ucred peer_cred {};
         socklen_t cred_len = sizeof(peer_cred);
         if (::getsockopt(
                 client_socket.native_handle(), SOL_SOCKET, SO_PEERCRED, &peer_cred, &cred_len) != 0) {
-            spdlog::warn("[uds_server] SO_PEERCRED failed: {}", std::strerror(errno));
+            const int getsockopt_errno = errno;
+            spdlog::warn("[uds_server] SO_PEERCRED failed: {}", safe_strerror(getsockopt_errno));
             co_return;
         }
         if (peer_cred.uid != expected_uid) {
@@ -998,7 +1039,8 @@ asio::awaitable<void> UdsServer::handle_client(asio::local::stream_protocol::soc
 
     // DON-53: 읽기 타임아웃용 타이머
     asio::steady_timer deadline{io_executor};
-    deadline.expires_after(std::chrono::seconds(client_timeout_sec_));
+    deadline.expires_after(
+        std::chrono::seconds(client_timeout_sec_.load(std::memory_order_relaxed)));
     deadline.async_wait([socket_sp](boost::system::error_code ec) {
         if (!ec) {
             // 타임아웃 발생 — 소켓을 닫아 진행 중인 async_read 를 취소한다

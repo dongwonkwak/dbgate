@@ -2,6 +2,7 @@
 
 #include <cstdlib>
 #include <exception>
+#include <limits>
 #include <string>
 
 #include "proxy/proxy_server.hpp"
@@ -111,7 +112,20 @@ int main(int /*argc*/, char* /*argv*/[]) {
         {
             const auto uid_val = env_str("UDS_ALLOWED_UID", "");
             if (!uid_val.empty()) {
-                config.uds_allowed_uid = static_cast<std::int32_t>(std::stol(uid_val));
+                try {
+                    const long parsed = std::stol(uid_val);
+                    if (parsed < -1 || parsed > std::numeric_limits<std::int32_t>::max()) {
+                        spdlog::warn("env UDS_ALLOWED_UID: value {} out of range, using default {}",
+                                     parsed,
+                                     config.uds_allowed_uid);
+                    } else {
+                        config.uds_allowed_uid = static_cast<std::int32_t>(parsed);
+                    }
+                } catch (...) {
+                    spdlog::warn("env UDS_ALLOWED_UID: invalid value '{}', using default {}",
+                                 uid_val,
+                                 config.uds_allowed_uid);
+                }
             }
         }
 

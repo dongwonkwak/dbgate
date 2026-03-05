@@ -164,10 +164,10 @@ private:
     std::atomic<bool> stop_requested_{false};
 
     // --- DON-53: UDS 보안 멤버 ---
-    std::uint32_t client_timeout_sec_{30};          // 읽기 타임아웃 (초)
-    std::uint32_t max_connections_{8};              // 최대 동시 제어 연결 수
-    uid_t allowed_uid_{0};                          // 허용 UID (기본: 프로세스 자신)
-    bool allowed_uid_set_{false};                   // set_allowed_uid() 호출 여부
+    std::atomic<std::uint32_t> client_timeout_sec_{30};  // 읽기 타임아웃 (초)
+    std::atomic<std::uint32_t> max_connections_{8};      // 최대 동시 제어 연결 수
+    std::atomic<uid_t> allowed_uid_{0};                  // 허용 UID (기본: 프로세스 자신)
+    std::atomic<bool> allowed_uid_set_{false};           // set_allowed_uid() 호출 여부
     std::atomic<std::uint32_t> active_connections_{0};  // 현재 활성 연결 수
 
     // control_pool_:

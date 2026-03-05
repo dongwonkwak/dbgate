@@ -46,38 +46,34 @@
 // ---------------------------------------------------------------------------
 struct ProxyConfig {
     std::string listen_address{};
-    std::uint16_t listen_port{0};
-
     std::string upstream_address{};
-    std::uint16_t upstream_port{0};
-
-    std::uint32_t max_connections{0};
-    std::uint32_t connection_timeout_sec{0};
-
     std::string policy_path{};
     std::string uds_socket_path{};
     std::string log_path{};
     std::string log_level{};
-
-    std::uint16_t health_check_port{0};
-
-    // --- SSL/TLS 설정 (DON-31) ---
-
-    // 클라이언트 -> 프록시 (frontend) TLS
-    bool frontend_ssl_enabled{false};
     std::string frontend_ssl_cert_path{};  // PEM 인증서
     std::string frontend_ssl_key_path{};   // PEM 개인키
-
-    // 프록시 -> MySQL (backend) TLS
-    bool backend_ssl_enabled{false};
     std::string backend_ssl_ca_path{};  // MySQL 서버 CA 인증서 (검증용)
-    bool backend_ssl_verify{true};      // 서버 인증서 검증 여부
     std::string upstream_ssl_sni{};     // SNI 호스트명 (빈 문자열 = 미사용)
+
+    std::uint32_t max_connections{0};
+    std::uint32_t connection_timeout_sec{0};
 
     // --- UDS 제어 소켓 보안 설정 (DON-53) ---
     std::uint32_t uds_client_timeout_sec{30};  // 클라이언트 읽기 타임아웃 (초)
     std::uint32_t uds_max_connections{8};      // 최대 동시 제어 연결 수
     std::int32_t uds_allowed_uid{-1};          // 허용 UID (-1 = 프로세스 자신)
+
+    std::uint16_t listen_port{0};
+    std::uint16_t upstream_port{0};
+    std::uint16_t health_check_port{0};
+
+    // --- SSL/TLS 설정 (DON-31) ---
+    // 클라이언트 -> 프록시 (frontend) TLS
+    bool frontend_ssl_enabled{false};
+    // 프록시 -> MySQL (backend) TLS
+    bool backend_ssl_enabled{false};
+    bool backend_ssl_verify{true};  // 서버 인증서 검증 여부
 };
 
 // ---------------------------------------------------------------------------
