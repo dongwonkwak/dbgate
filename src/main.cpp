@@ -105,6 +105,16 @@ int main(int /*argc*/, char* /*argv*/[]) {
         config.backend_ssl_verify = env_bool("BACKEND_SSL_VERIFY", true);
         config.upstream_ssl_sni = env_str("UPSTREAM_SSL_SNI", "");
 
+        // ── UDS 제어 소켓 보안 설정 (DON-53) ─────────────────────────────────
+        config.uds_client_timeout_sec = env_u32("UDS_CLIENT_TIMEOUT_SEC", 30);
+        config.uds_max_connections = env_u32("UDS_MAX_CONNECTIONS", 8);
+        {
+            const auto uid_val = env_str("UDS_ALLOWED_UID", "");
+            if (!uid_val.empty()) {
+                config.uds_allowed_uid = static_cast<std::int32_t>(std::stol(uid_val));
+            }
+        }
+
         // ── 로깅 초기화 ─────────────────────────────────────────────────────
         spdlog::info("Starting dbgate proxy server");
         spdlog::info("Listen: {}:{}", config.listen_address, config.listen_port);

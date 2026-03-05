@@ -73,6 +73,11 @@ struct ProxyConfig {
     std::string backend_ssl_ca_path{};  // MySQL 서버 CA 인증서 (검증용)
     bool backend_ssl_verify{true};      // 서버 인증서 검증 여부
     std::string upstream_ssl_sni{};     // SNI 호스트명 (빈 문자열 = 미사용)
+
+    // --- UDS 제어 소켓 보안 설정 (DON-53) ---
+    std::uint32_t uds_client_timeout_sec{30};  // 클라이언트 읽기 타임아웃 (초)
+    std::uint32_t uds_max_connections{8};      // 최대 동시 제어 연결 수
+    std::int32_t uds_allowed_uid{-1};          // 허용 UID (-1 = 프로세스 자신)
 };
 
 // ---------------------------------------------------------------------------

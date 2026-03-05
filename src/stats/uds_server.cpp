@@ -27,12 +27,16 @@
 #include "stats/uds_server.hpp"
 
 #include <spdlog/spdlog.h>
+#include <sys/socket.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 #include <array>
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
 #include <boost/asio/dispatch.hpp>
 #include <boost/asio/read.hpp>
+#include <boost/asio/steady_timer.hpp>
 #include <boost/asio/write.hpp>
 #include <chrono>
 #include <cstdint>
@@ -802,6 +806,22 @@ UdsServer::~UdsServer() {
 }
 
 // ---------------------------------------------------------------------------
+// DON-53: 보안 설정 setter
+// ---------------------------------------------------------------------------
+void UdsServer::set_client_timeout(std::uint32_t timeout_sec) {
+    client_timeout_sec_ = timeout_sec;
+}
+
+void UdsServer::set_max_connections(std::uint32_t max_conn) {
+    max_connections_ = max_conn;
+}
+
+void UdsServer::set_allowed_uid(uid_t uid) {
+    allowed_uid_ = uid;
+    allowed_uid_set_ = true;
+}
+
+// ---------------------------------------------------------------------------
 // stop
 //   acceptor를 닫아 run()의 accept 루프를 종료한다.
 // ---------------------------------------------------------------------------
@@ -869,6 +889,27 @@ asio::awaitable<void> UdsServer::run() {
         co_return;
     }
 
+    // DON-53: 소켓 파일 권한 0600 고정 (fail-close)
+    if (::chmod(socket_path_.c_str(), 0600) != 0) {
+        spdlog::error("[uds_server] chmod(0600) failed on {}: {}",
+                      socket_path_.string(),
+                      std::strerror(errno));
+        co_return;
+    }
+
+    // 권한 설정 검증
+    struct stat st {};  // NOLINT(cppcoreguidelines-pro-type-member-init,hicpp-member-init)
+    if (::stat(socket_path_.c_str(), &st) == 0) {
+        const auto actual_perms = st.st_mode & 0777;
+        if (actual_perms != 0600) {
+            spdlog::warn("[uds_server] socket permissions may not be writable due to mount options: "
+                         "requested 0600 but got 0{:o} on {}",
+                         actual_perms, socket_path_.string());
+        } else {
+            spdlog::info("[uds_server] socket permissions verified as 0600: {}", socket_path_.string());
+        }
+    }
+
     // NOLINTNEXTLINE(bugprone-unused-return-value,cert-err33-c)
     acceptor_.listen(asio::socket_base::max_listen_connections, ec);
     if (ec) {
@@ -899,7 +940,18 @@ asio::awaitable<void> UdsServer::run() {
             co_return;
         }
 
+        // DON-53: 동시 연결 수 제한
+        const auto current = active_connections_.load(std::memory_order_relaxed);
+        if (current >= max_connections_) {
+            spdlog::warn("[uds_server] max control connections ({}) reached, rejecting",
+                         max_connections_);
+            boost::system::error_code close_ec;
+            client_socket.close(close_ec);  // NOLINT(bugprone-unused-return-value,cert-err33-c)
+            continue;
+        }
+
         // 클라이언트 처리 코루틴을 독립적으로 spawn (실패가 서버에 영향 없음)
+        active_connections_.fetch_add(1, std::memory_order_relaxed);
         asio::co_spawn(ioc_, handle_client(std::move(client_socket)), asio::detached);
     }
 }
@@ -915,12 +967,50 @@ asio::awaitable<void> UdsServer::run() {
 //   오류 발생 시 로그 후 co_return (데이터패스 비전파).
 // ---------------------------------------------------------------------------
 asio::awaitable<void> UdsServer::handle_client(asio::local::stream_protocol::socket socket) {
-    const auto io_executor = socket.get_executor();
+    // DON-53: RAII guard for active connection count
+    struct ConnectionGuard {
+        std::atomic<std::uint32_t>& counter;
+        ~ConnectionGuard() { counter.fetch_sub(1, std::memory_order_relaxed); }
+    };
+    ConnectionGuard conn_guard{active_connections_};
+    auto socket_sp = std::make_shared<asio::local::stream_protocol::socket>(std::move(socket));
+    auto& client_socket = *socket_sp;
+
+    // DON-53: SO_PEERCRED 검증 — 허용 UID 외 차단
+    {
+        const uid_t expected_uid = allowed_uid_set_ ? allowed_uid_ : ::getuid();
+        struct ucred peer_cred {};
+        socklen_t cred_len = sizeof(peer_cred);
+        if (::getsockopt(
+                client_socket.native_handle(), SOL_SOCKET, SO_PEERCRED, &peer_cred, &cred_len) != 0) {
+            spdlog::warn("[uds_server] SO_PEERCRED failed: {}", std::strerror(errno));
+            co_return;
+        }
+        if (peer_cred.uid != expected_uid) {
+            spdlog::warn("[uds_server] peer UID {} rejected (expected {})",
+                         peer_cred.uid,
+                         expected_uid);
+            co_return;
+        }
+    }
+
+    const auto io_executor = client_socket.get_executor();
+
+    // DON-53: 읽기 타임아웃용 타이머
+    asio::steady_timer deadline{io_executor};
+    deadline.expires_after(std::chrono::seconds(client_timeout_sec_));
+    deadline.async_wait([socket_sp](boost::system::error_code ec) {
+        if (!ec) {
+            // 타임아웃 발생 — 소켓을 닫아 진행 중인 async_read 를 취소한다
+            boost::system::error_code close_ec;
+            socket_sp->close(close_ec);  // NOLINT(bugprone-unused-return-value,cert-err33-c)
+        }
+    });
 
     // ── 요청 헤더 읽기 ──────────────────────────────────────────────────
     std::array<uint8_t, 4> req_hdr{};
     auto [hdr_ec, hdr_n] = co_await asio::async_read(
-        socket, asio::buffer(req_hdr), asio::as_tuple(asio::use_awaitable));
+        client_socket, asio::buffer(req_hdr), asio::as_tuple(asio::use_awaitable));
 
     if (hdr_ec) {
         if (hdr_ec != asio::error::eof) {
@@ -942,7 +1032,7 @@ asio::awaitable<void> UdsServer::handle_client(asio::local::stream_protocol::soc
     // ── 요청 바디 읽기 ──────────────────────────────────────────────────
     std::vector<char> body_buf(body_len);
     auto [body_ec, body_n] = co_await asio::async_read(
-        socket, asio::buffer(body_buf), asio::as_tuple(asio::use_awaitable));
+        client_socket, asio::buffer(body_buf), asio::as_tuple(asio::use_awaitable));
 
     if (body_ec) {
         spdlog::warn("[uds_server] handle_client: read body error: {}", body_ec.message());
@@ -1002,12 +1092,15 @@ asio::awaitable<void> UdsServer::handle_client(asio::local::stream_protocol::soc
         asio::buffer(response_body),
     };
     auto [write_ec, write_n] =
-        co_await asio::async_write(socket, bufs, asio::as_tuple(asio::use_awaitable));
+        co_await asio::async_write(client_socket, bufs, asio::as_tuple(asio::use_awaitable));
 
     if (write_ec) {
         spdlog::warn("[uds_server] handle_client: write error: {}", write_ec.message());
         co_return;
     }
+
+    // DON-53: 정상 완료 — 타이머 취소
+    deadline.cancel();
 
     spdlog::debug("[uds_server] handled command='{}' response_bytes={}", cmd, write_n);
 }
