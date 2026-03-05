@@ -39,6 +39,8 @@
 //   롤백/리로드 실패 시 현재 정책을 유지한다 (fail-close).
 // ---------------------------------------------------------------------------
 
+#include <sys/types.h>
+
 #include <atomic>
 #include <boost/asio.hpp>
 #include <boost/asio/awaitable.hpp>
@@ -110,6 +112,11 @@ public:
     //   io_context 스레드에서 안전하게 호출 가능.
     void stop();
 
+    // --- DON-53: UDS 보안 설정 setter ---
+    void set_client_timeout(std::uint32_t timeout_sec);
+    void set_max_connections(std::uint32_t max_conn);
+    void set_allowed_uid(uid_t uid);
+
 private:
     // handle_client
     //   단일 클라이언트 연결을 처리하는 코루틴.
@@ -155,6 +162,17 @@ private:
     asio::io_context& ioc_;
     asio::local::stream_protocol::acceptor acceptor_;
     std::atomic<bool> stop_requested_{false};
+
+    // --- DON-53: UDS 보안 멤버 ---
+    std::atomic<std::uint32_t> client_timeout_sec_{30};  // 읽기 타임아웃 (초)
+    std::atomic<std::uint32_t> max_connections_{8};      // 최대 동시 제어 연결 수
+    std::atomic<uid_t> allowed_uid_{0};                  // 허용 UID (기본: 프로세스 자신)
+    std::atomic<bool> allowed_uid_set_{false};           // set_allowed_uid() 호출 여부
+    // handle_client 코루틴이 서버 객체 파괴 이후 정리될 수 있으므로
+    // 연결 카운터 수명은 코루틴 프레임과 분리해 관리한다.
+    std::shared_ptr<std::atomic<std::uint32_t>> active_connections_{
+        std::make_shared<std::atomic<std::uint32_t>>(0)};
+
     // control_pool_:
     //   policy_reload/policy_rollback 의 동기 파일 I/O를 io_context 이벤트 루프에서 분리한다.
     //   단일 워커로 직렬 실행하여 관리 경로 경쟁을 최소화한다.

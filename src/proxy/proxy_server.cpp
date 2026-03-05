@@ -266,6 +266,13 @@ void ProxyServer::run(boost::asio::io_context& io_ctx) {
                                               std::filesystem::path{config_.policy_path},
                                               io_ctx);
 
+    // DON-53: UDS 보안 설정 주입
+    uds_server_->set_client_timeout(config_.uds_client_timeout_sec);
+    uds_server_->set_max_connections(config_.uds_max_connections);
+    if (config_.uds_allowed_uid >= 0) {
+        uds_server_->set_allowed_uid(static_cast<uid_t>(config_.uds_allowed_uid));
+    }
+
     boost::asio::co_spawn(
         io_ctx,
         uds_server_->run(),

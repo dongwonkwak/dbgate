@@ -2,6 +2,7 @@
 
 #include <cstdlib>
 #include <exception>
+#include <limits>
 #include <string>
 
 #include "proxy/proxy_server.hpp"
@@ -104,6 +105,29 @@ int main(int /*argc*/, char* /*argv*/[]) {
         config.backend_ssl_ca_path = env_str("BACKEND_SSL_CA", "");
         config.backend_ssl_verify = env_bool("BACKEND_SSL_VERIFY", true);
         config.upstream_ssl_sni = env_str("UPSTREAM_SSL_SNI", "");
+
+        // ── UDS 제어 소켓 보안 설정 (DON-53) ─────────────────────────────────
+        config.uds_client_timeout_sec = env_u32("UDS_CLIENT_TIMEOUT_SEC", 30);
+        config.uds_max_connections = env_u32("UDS_MAX_CONNECTIONS", 8);
+        {
+            const auto uid_val = env_str("UDS_ALLOWED_UID", "");
+            if (!uid_val.empty()) {
+                try {
+                    const long parsed = std::stol(uid_val);
+                    if (parsed < -1 || parsed > std::numeric_limits<std::int32_t>::max()) {
+                        spdlog::warn("env UDS_ALLOWED_UID: value {} out of range, using default {}",
+                                     parsed,
+                                     config.uds_allowed_uid);
+                    } else {
+                        config.uds_allowed_uid = static_cast<std::int32_t>(parsed);
+                    }
+                } catch (...) {
+                    spdlog::warn("env UDS_ALLOWED_UID: invalid value '{}', using default {}",
+                                 uid_val,
+                                 config.uds_allowed_uid);
+                }
+            }
+        }
 
         // ── 로깅 초기화 ─────────────────────────────────────────────────────
         spdlog::info("Starting dbgate proxy server");
