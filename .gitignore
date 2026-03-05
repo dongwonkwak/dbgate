@@ -60,3 +60,4 @@ benchmarks/results/*.json
 
 .claude/settings.local.json
 .claude/agent-memory/
+.claude/worktrees/
