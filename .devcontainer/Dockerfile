@@ -55,9 +55,9 @@ RUN set -eux; \
     libssl-dev \
     # C++ libraries
     libboost-all-dev \
-    spdlog-dev \
+    libspdlog-dev \
     libyaml-cpp-dev \
-    googletest \
+    libgtest-dev \
     # clang tools (19: first version with Standard: c++23 support)
     clang-tools-19 \
     clang-format-19 \
