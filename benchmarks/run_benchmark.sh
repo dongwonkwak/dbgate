@@ -112,7 +112,7 @@ wait_for_mysql() {
     for i in $(seq 1 60); do
         if mysql -h "$MYSQL_HOST" -P "$MYSQL_PORT" \
                  -u "$MYSQL_USER" -p"$MYSQL_PASSWORD" \
-                 --connect-timeout=3 -e "SELECT 1" &>/dev/null; then
+                 --skip-ssl --connect-timeout=3 -e "SELECT 1" &>/dev/null; then
             echo "  MySQL 준비 완료"
             return 0
         fi
@@ -153,6 +153,8 @@ run_sysbench() {
         --tables="$TABLES" --table-size="$TABLE_SIZE" \
         --threads="$THREADS" --time="$TIME" \
         --report-interval=0 \
+        --db-ps-mode=disable \
+        --mysql-ssl=off \
         run 2>&1)
 
     parse_sysbench_output "$output"
@@ -214,7 +216,7 @@ main() {
     # 데이터베이스 생성 (존재하지 않을 경우)
     mysql -h "$MYSQL_HOST" -P "$MYSQL_PORT" \
           -u root -prootpass \
-          --connect-timeout=5 \
+          --skip-ssl --connect-timeout=5 \
           -e "CREATE DATABASE IF NOT EXISTS $MYSQL_DATABASE" 2>/dev/null || true
 
     # 4. sysbench prepare

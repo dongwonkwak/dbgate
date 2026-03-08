@@ -552,6 +552,17 @@ auto Session::run() -> boost::asio::awaitable<void> {
         co_return;
     }
 
+    // TCP_NODELAY: Nagle 알고리즘 비활성화 (업스트림 서버 소켓)
+    {
+        boost::system::error_code nodelay_ec;
+        raw_server_sock.set_option(boost::asio::ip::tcp::no_delay(true), nodelay_ec);
+        if (nodelay_ec) {
+            spdlog::warn("[session {}] failed to set TCP_NODELAY on server socket: {}",
+                         session_id_,
+                         nodelay_ec.message());
+        }
+    }
+
     // -----------------------------------------------------------------------
     // 5. Backend SSL 핸드셰이크 (backend_ssl_ctx_가 유효한 경우)
     //    TCP connect 성공 후 ssl::stream으로 업그레이드하고 server_stream_ 교체

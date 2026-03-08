@@ -228,6 +228,25 @@ void ProxyServer::run(boost::asio::io_context& io_ctx) {
     // -----------------------------------------------------------------------
     const auto log_level = parse_log_level(config_.log_level);
     logger_ = std::make_shared<StructuredLogger>(log_level, config_.log_path);
+
+    // 글로벌 spdlog 레벨을 config.log_level에 맞춰 설정한다.
+    // 이를 설정하지 않으면 spdlog::info() 등의 글로벌 호출이
+    // LOG_LEVEL 환경변수와 무관하게 항상 출력된다.
+    switch (log_level) {
+        case LogLevel::kDebug:
+            spdlog::set_level(spdlog::level::debug);
+            break;
+        case LogLevel::kWarn:
+            spdlog::set_level(spdlog::level::warn);
+            break;
+        case LogLevel::kError:
+            spdlog::set_level(spdlog::level::err);
+            break;
+        default:
+            spdlog::set_level(spdlog::level::info);
+            break;
+    }
+
     stats_ = std::make_shared<StatsCollector>();
     policy_engine_ = std::make_shared<PolicyEngine>(policy_config);
 
@@ -383,6 +402,16 @@ boost::asio::awaitable<void> ProxyServer::accept_loop(boost::asio::ip::tcp::endp
             boost::system::error_code close_ec;
             client_sock.close(close_ec);  // NOLINT(bugprone-unused-return-value,cert-err33-c)
             continue;
+        }
+
+        // TCP_NODELAY: Nagle 알고리즘 비활성화 (클라이언트 소켓)
+        {
+            boost::system::error_code nodelay_ec;
+            client_sock.set_option(boost::asio::ip::tcp::no_delay(true), nodelay_ec);
+            if (nodelay_ec) {
+                spdlog::warn("[proxy] failed to set TCP_NODELAY on client socket: {}",
+                             nodelay_ec.message());
+            }
         }
 
         // max_connections 초과 시 unhealthy 전환 + 연결 거부

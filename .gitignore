@@ -60,6 +60,9 @@ corpus/
 benchmarks/results/*.json
 !benchmarks/results/.gitkeep
 
+# ─── Policy Version Snapshots (자동 생성) ────────────────────────────────────
+.policy_versions/
+
 .claude/settings.local.json
 .claude/agent-memory/
 .claude/worktrees/
