@@ -1,0 +1,21 @@
+catalog_version: 1
+description: "MySQL 프로토콜 패킷 퍼즈 테스트용 시드 코퍼스"
+files:
+  com_query_select1.bin:
+    intent: "COM_QUERY 패킷 파싱 검증 (SELECT 1)"
+    format: "MySQL wire protocol: 3B LE length + 1B seq + 0x03(COM_QUERY) + SQL text"
+  com_ping.bin:
+    intent: "COM_PING(0x0E) 패킷 처리 검증"
+    format: "MySQL wire protocol: 3B LE length + 1B seq + 0x0E(COM_PING)"
+  com_init_db.bin:
+    intent: "COM_INIT_DB(0x02) 패킷 처리 검증"
+    format: "MySQL wire protocol: 3B LE length + 1B seq + 0x02(COM_INIT_DB) + DB name"
+  com_quit.bin:
+    intent: "COM_QUIT(0x01) 패킷 처리 검증"
+    format: "MySQL wire protocol: 3B LE length + 1B seq + 0x01(COM_QUIT)"
+  empty_payload.bin:
+    intent: "빈 페이로드 경계값 처리 검증"
+    format: "4바이트 제로 (length=0, seq=0, 페이로드 없음)"
+  err_packet.bin:
+    intent: "에러 응답 패킷(0xFF) 처리 검증"
+    format: "MySQL wire protocol: 0xFF marker + 2B error code + '#' + 5B SQLSTATE + message"

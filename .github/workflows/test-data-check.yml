@@ -1,0 +1,28 @@
+name: Test Data Check
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - 'tests/fuzz/corpus/**'
+
+jobs:
+  test-data:
+    name: Check test data naming and catalog
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Fetch PR base branch
+        run: git fetch origin "$BASE_REF" --depth=1
+        env:
+          BASE_REF: ${{ github.base_ref }}
+
+      - name: Run test data check
+        run: ./scripts/check-test-data.sh --base "origin/$BASE_REF" --head HEAD
+        env:
+          BASE_REF: ${{ github.base_ref }}

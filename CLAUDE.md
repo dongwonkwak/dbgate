@@ -78,6 +78,11 @@ fix(logger): 수정                   ← Linear ID 누락
 - TCP 프록시 타임아웃은 대상 프로토콜 특성 고려 (MySQL `wait_timeout=28800s` 기준, 최소 300s 이상)
 - 배포 시 활성 세션 즉시 종료(`shutdown-sessions`) 지양 → 신규 유입 차단 후 자연 드레인 우선
 
+## 테스트 데이터 규칙
+- 테스트 데이터 파일 생성 시 `docs/test-data-guidelines.md` 규칙을 따른다
+- 코퍼스 파일 추가/수정/삭제 시 해당 디렉토리의 `DATA_CATALOG.yaml`을 반드시 업데이트한다
+- pre-commit 훅이 네이밍 + 카탈로그 동기화를 검증한다
+
 ## Doc Impact 규칙
 
 담당 경로를 수정하면 CI의 `scripts/check-doc-impact.sh`가 관련 문서 업데이트를 요구한다.

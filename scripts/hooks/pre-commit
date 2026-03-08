@@ -104,6 +104,20 @@ if [[ $RUN_GO_LINT -eq 1 ]]; then
   fi
 fi
 
+# ④ 테스트 데이터 네이밍 + 카탈로그 검증
+TEST_DATA_SCRIPT="scripts/check-test-data.sh"
+CORPUS_FILES=()
+while IFS= read -r f; do
+  [[ -z "$f" ]] && continue
+  [[ "$f" =~ ^tests/fuzz/corpus/ ]] && CORPUS_FILES+=("$f")
+done <<< "$STAGED"
+
+if [[ ${#CORPUS_FILES[@]} -gt 0 && -f "$TEST_DATA_SCRIPT" ]]; then
+  if ! bash "$TEST_DATA_SCRIPT"; then
+    HAS_ERROR=1
+  fi
+fi
+
 if [[ $HAS_ERROR -ne 0 ]]; then
   exit 1
 fi

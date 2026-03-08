@@ -27,3 +27,9 @@
 ### 테스트
 - 빠진 엣지 케이스
 - 테스트가 실제 동작을 검증하는지
+
+## Test Data Rules
+- Follow `docs/test-data-guidelines.md` when creating test data files
+- Update `DATA_CATALOG.yaml` in the corpus directory when adding/modifying/deleting files
+- Naming: `[category]_[description].[ext]` (lowercase + underscore only)
+- Forbidden: hash names, `temp_*`, `tmp_*`, `untitled*`, uppercase, spaces
