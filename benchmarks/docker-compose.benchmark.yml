@@ -12,6 +12,7 @@ services:
       MYSQL_DATABASE: dbgate_bench
       MYSQL_USER: dbgate
       MYSQL_PASSWORD: dbgate_pass
+    command: ["--skip-ssl"]
     ports:
       - "127.0.0.1:3306:3306"
     tmpfs:

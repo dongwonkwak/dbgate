@@ -321,11 +321,16 @@ auto Session::relay_server_response(CommandType request_type,
         co_return std::unexpected(wr.error());
     }
 
-    if (first_payload.empty()) {
+    bool has_first_byte = false;
+    std::uint8_t first_byte = 0;
+    for (const auto byte : first_payload) {
+        first_byte = byte;
+        has_first_byte = true;
+        break;
+    }
+    if (!has_first_byte) {
         co_return std::expected<void, ParseError>{};
     }
-
-    const std::uint8_t first_byte = first_payload[0];
 
     // ERR 패킷 (0xFF) → 즉시 완료
     if (first_byte == 0xFF) {
@@ -550,6 +555,18 @@ auto Session::run() -> boost::asio::awaitable<void> {
         // NOLINTNEXTLINE(bugprone-unused-return-value,cert-err33-c)
         client_stream_.lowest_layer().close(close_ec);
         co_return;
+    }
+
+    // TCP_NODELAY: Nagle 알고리즘 비활성화 (업스트림 서버 소켓)
+    {
+        boost::system::error_code nodelay_ec;
+        // NOLINTNEXTLINE(bugprone-unused-return-value,cert-err33-c)
+        raw_server_sock.set_option(boost::asio::ip::tcp::no_delay(true), nodelay_ec);
+        if (nodelay_ec) {
+            spdlog::warn("[session {}] failed to set TCP_NODELAY on server socket: {}",
+                         session_id_,
+                         nodelay_ec.message());
+        }
     }
 
     // -----------------------------------------------------------------------

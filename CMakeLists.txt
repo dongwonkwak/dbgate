@@ -29,7 +29,7 @@ add_compile_options(
 option(DBGATE_ENABLE_FUZZING "Build libFuzzer fuzz targets only (requires clang)" OFF)
 
 # ─── Dependencies ───────────────────────────────────────────────────────────
-find_package(Boost REQUIRED COMPONENTS system)
+find_package(Boost REQUIRED)
 find_package(spdlog REQUIRED)
 if(NOT DBGATE_ENABLE_FUZZING)
     find_package(yaml-cpp REQUIRED)
@@ -71,7 +71,6 @@ target_include_directories(dbgate PRIVATE
 )
 
 target_link_libraries(dbgate PRIVATE
-    Boost::system
     spdlog::spdlog
     yaml-cpp::yaml-cpp
     OpenSSL::SSL
@@ -119,7 +118,6 @@ target_include_directories(dbgate_tests PRIVATE
 
 target_link_libraries(dbgate_tests PRIVATE
     GTest::gtest_main
-    Boost::system
     spdlog::spdlog
     yaml-cpp::yaml-cpp
     OpenSSL::SSL

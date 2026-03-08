@@ -30,7 +30,7 @@ std::string format_iso8601(const std::chrono::system_clock::time_point& tp) {
 
     const std::time_t time_t_val = std::chrono::system_clock::to_time_t(tp);
     std::tm tm_val{};
-#if defined(_WIN32)
+#ifdef _WIN32
     if (gmtime_s(&tm_val, &time_t_val) != 0) {
         return "1970-01-01T00:00:00.000Z";
     }
@@ -147,8 +147,8 @@ StructuredLogger::StructuredLogger(
         // 기본 패턴: 타임스탬프만 (구조화 로그는 각 메서드에서 JSON으로 생성)
         logger_->set_pattern("[%Y-%m-%d %H:%M:%S.%e] %v");
 
-        // 매 로그마다 파일을 플러시하도록 설정
-        logger_->flush_on(spdlog::level::trace);
+        // warn 이상 로그만 즉시 flush (info 수준은 버퍼에 축적)
+        logger_->flush_on(spdlog::level::warn);
 
         spdlog::register_logger(logger_);
 
@@ -161,6 +161,7 @@ StructuredLogger::StructuredLogger(
 StructuredLogger::~StructuredLogger() {
     try {
         if (logger_) {
+            logger_->flush();
             spdlog::drop("dbgate");
         }
     } catch (...) {  // NOLINT(bugprone-empty-catch)

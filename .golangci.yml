@@ -1,46 +1,57 @@
+version: "2"
 run:
-  timeout: 5m
   modules-download-mode: readonly
-
 linters:
   enable:
-    - errcheck
-    - staticcheck
-    - gosec
-    - gocritic
-    - govet
-    - ineffassign
-    - unused
-    - misspell
-    - gofmt
-    - goimports
-    - revive
     - bodyclose
+    - gocritic
+    - gosec
+    - misspell
     - noctx
     - prealloc
-
-linters-settings:
-  errcheck:
-    check-type-assertions: true
-    check-blank: true
-  gocritic:
-    enabled-tags:
-      - diagnostic
-      - performance
-      - style
-  gosec:
-    severity: medium
-    confidence: medium
-  revive:
+    - revive
+  settings:
+    errcheck:
+      check-type-assertions: true
+      check-blank: true
+    gocritic:
+      enabled-tags:
+        - diagnostic
+        - performance
+        - style
+    gosec:
+      severity: medium
+      confidence: medium
+    revive:
+      rules:
+        - name: exported
+          severity: warning
+        - name: unexported-return
+          severity: warning
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
     rules:
-      - name: exported
-        severity: warning
-      - name: unexported-return
-        severity: warning
-
-issues:
-  exclude-rules:
-    - path: _test\.go
-      linters:
-        - gosec
-        - errcheck
+      - linters:
+          - errcheck
+          - gosec
+          - noctx
+        path: _test\.go
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$

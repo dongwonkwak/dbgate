@@ -228,6 +228,25 @@ void ProxyServer::run(boost::asio::io_context& io_ctx) {
     // -----------------------------------------------------------------------
     const auto log_level = parse_log_level(config_.log_level);
     logger_ = std::make_shared<StructuredLogger>(log_level, config_.log_path);
+
+    // 글로벌 spdlog 레벨을 config.log_level에 맞춰 설정한다.
+    // 이를 설정하지 않으면 spdlog::info() 등의 글로벌 호출이
+    // LOG_LEVEL 환경변수와 무관하게 항상 출력된다.
+    switch (log_level) {
+        case LogLevel::kDebug:
+            spdlog::set_level(spdlog::level::debug);
+            break;
+        case LogLevel::kWarn:
+            spdlog::set_level(spdlog::level::warn);
+            break;
+        case LogLevel::kError:
+            spdlog::set_level(spdlog::level::err);
+            break;
+        default:
+            spdlog::set_level(spdlog::level::info);
+            break;
+    }
+
     stats_ = std::make_shared<StatsCollector>();
     policy_engine_ = std::make_shared<PolicyEngine>(policy_config);
 
@@ -385,6 +404,17 @@ boost::asio::awaitable<void> ProxyServer::accept_loop(boost::asio::ip::tcp::endp
             continue;
         }
 
+        // TCP_NODELAY: Nagle 알고리즘 비활성화 (클라이언트 소켓)
+        {
+            boost::system::error_code nodelay_ec;
+            // NOLINTNEXTLINE(bugprone-unused-return-value,cert-err33-c)
+            client_sock.set_option(boost::asio::ip::tcp::no_delay(true), nodelay_ec);
+            if (nodelay_ec) {
+                spdlog::warn("[proxy] failed to set TCP_NODELAY on client socket: {}",
+                             nodelay_ec.message());
+            }
+        }
+
         // max_connections 초과 시 unhealthy 전환 + 연결 거부
         if (config_.max_connections > 0) {
             const auto snap = stats_->snapshot();
@@ -441,6 +471,7 @@ boost::asio::awaitable<void> ProxyServer::accept_loop(boost::asio::ip::tcp::endp
         }
 
         // Backend SSL context 포인터 (nullptr이면 평문)
+        // NOLINTNEXTLINE(misc-const-correctness)
         boost::asio::ssl::context* backend_ssl_ctx_ptr =
             backend_ssl_ctx_.has_value() ? &(*backend_ssl_ctx_) : nullptr;
 
