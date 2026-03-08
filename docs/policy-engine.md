@@ -46,6 +46,10 @@
 
 `query.command == SqlCommand::kUnknown`이면 즉시 `kBlock` 반환.
 
+`START` 계열 명령은 예외적으로 **`START TRANSACTION`만** `SqlCommand::kBegin`으로 분류된다.
+`START REPLICA`, `START SLAVE` 등 다른 `START ...` 관리 명령은 `kUnknown`으로 유지되어
+이 단계에서 fail-close 차단된다.
+
 ### 3단계: SQL 구문 차단 (`block_statements`)
 
 `config.sql_rules.block_statements` 목록과 `query.command`를 대소문자 무관 비교한다.
