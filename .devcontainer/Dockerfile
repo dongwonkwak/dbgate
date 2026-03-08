@@ -32,8 +32,6 @@ RUN set -eux; \
   apt-get install -y --no-install-recommends \
     # Build tools
     build-essential \
-    gcc-14 \
-    g++-14 \
     cmake \
     ninja-build \
     pkg-config \
@@ -82,13 +80,9 @@ RUN set -eux; \
   rm -rf /var/lib/apt/lists/*
 
 # -----------------------------
-# Set GCC 14 as default
+# Set clang tools as default
 # -----------------------------
 RUN set -eux; \
-  update-alternatives --install /usr/bin/gcc         gcc         /usr/bin/gcc-14         100; \
-  update-alternatives --install /usr/bin/g++         g++         /usr/bin/g++-14         100; \
-  update-alternatives --install /usr/bin/cc          cc          /usr/bin/gcc-14         100; \
-  update-alternatives --install /usr/bin/c++         c++         /usr/bin/g++-14         100; \
   update-alternatives --install /usr/bin/clang-format clang-format /usr/bin/clang-format-19 100; \
   update-alternatives --install /usr/bin/clang-tidy   clang-tidy   /usr/bin/clang-tidy-19   100
 
@@ -196,7 +190,6 @@ RUN set -eux; \
 # -----------------------------
 ENV VCPKG_ROOT=/opt/vcpkg \
     VCPKG_DEFAULT_TRIPLET=x64-linux
-ENV CMAKE_TOOLCHAIN_FILE=${VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake
 RUN set -eux; \
   git clone https://github.com/microsoft/vcpkg.git "${VCPKG_ROOT}"; \
   "${VCPKG_ROOT}/bootstrap-vcpkg.sh" -disableMetrics; \
