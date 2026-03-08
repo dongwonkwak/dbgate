@@ -161,6 +161,7 @@ StructuredLogger::StructuredLogger(
 StructuredLogger::~StructuredLogger() {
     try {
         if (logger_) {
+            logger_->flush();
             spdlog::drop("dbgate");
         }
     } catch (...) {  // NOLINT(bugprone-empty-catch)
