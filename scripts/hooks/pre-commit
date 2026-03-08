@@ -101,6 +101,8 @@ if [[ $RUN_GO_LINT -eq 1 ]]; then
     if [[ $LINT_RC -ne 0 ]]; then
       if echo "$LINT_OUTPUT" | grep -q "Go language version.*lower"; then
         echo "[pre-commit] ⚠️  golangci-lint Go 버전 불일치 — Go 린트 skip (CI가 최종 검증)"
+      elif echo "$LINT_OUTPUT" | grep -q "configuration file for golangci-lint v2 with golangci-lint v1"; then
+        echo "[pre-commit] ⚠️  golangci-lint 메이저 버전 불일치(v1 binary vs v2 config) — Go 린트 skip (CI가 최종 검증)"
       else
         echo "$LINT_OUTPUT"
         echo "[pre-commit] ❌ golangci-lint 실패"
