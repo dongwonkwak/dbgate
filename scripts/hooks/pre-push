@@ -73,7 +73,7 @@ if paths_changed '^src/' '^tests/' '^CMakeLists\.txt$' '^CMakePresets\.json$' '^
     CPP_CONFIGURE_LOG="$(mktemp)"
     if ! cmake --preset default -DCMAKE_CXX_COMPILER="$CPP_COMPILER_OVERRIDE" >"$CPP_CONFIGURE_LOG" 2>&1; then
       cat "$CPP_CONFIGURE_LOG"
-      if grep -qE "take_exclusive_file_lock|Failed to take the filesystem lock|CMAKE_CXX_COMPILER:.*not found|CMAKE_CXX_COMPILER:.+was not found" "$CPP_CONFIGURE_LOG"; then
+      if grep -qE "take_exclusive_file_lock|Failed to take the filesystem lock|CMAKE_CXX_COMPILER:.*not found|CMAKE_CXX_COMPILER:.+was not found|Could not find toolchain file|unable to find a build program" "$CPP_CONFIGURE_LOG"; then
         echo "[pre-push] ⚠️  로컬 C++ 빌드 환경 미충족 — C++ 로컬 체크 skip (CI가 최종 검증)"
       else
         echo "[pre-push] ❌ cmake configure 실패"
