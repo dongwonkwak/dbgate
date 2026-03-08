@@ -70,7 +70,7 @@
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build/${presetName}",
       "cacheVariables": {
-        "CMAKE_CXX_COMPILER": "clang++-19",
+        "CMAKE_CXX_COMPILER": "clang++",
         "CMAKE_BUILD_TYPE": "Debug",
         "CMAKE_CXX_FLAGS": "-fsanitize=fuzzer-no-link,address -fno-omit-frame-pointer -g",
         "CMAKE_EXE_LINKER_FLAGS": "-fsanitize=address",

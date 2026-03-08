@@ -20,6 +20,13 @@ MYSQL_DATABASE="${MYSQL_DATABASE:-testdb}"
 PROXY_PORT="${PROXY_PORT:-13306}"
 DBGATE_BIN="${DBGATE_BIN:-build/default/dbgate}"
 TEST_POLICY="/tmp/dbgate-smoke-policy.yaml"
+MYSQL_BIN="${MYSQL_BIN:-mysql}"
+
+# mysql/mariadb 클라이언트 버전 차이를 흡수해 SSL 비활성 옵션을 결정한다.
+MYSQL_SSL_ARGS=(--skip-ssl)
+if "$MYSQL_BIN" --help 2>/dev/null | grep -q -- "--ssl-mode"; then
+    MYSQL_SSL_ARGS=(--ssl-mode=DISABLED)
+fi
 
 PASS=0
 FAIL=0
@@ -28,13 +35,15 @@ DBGATE_PID=""
 # ─── helpers ──────────────────────────────────────────────────────────────────
 
 mysql_direct() {
-    mysql -h "$MYSQL_HOST" -P "$MYSQL_PORT" \
+    "$MYSQL_BIN" "${MYSQL_SSL_ARGS[@]}" \
+          -h "$MYSQL_HOST" -P "$MYSQL_PORT" \
           -u "$MYSQL_USER" -p"$MYSQL_PASSWORD" "$MYSQL_DATABASE" \
           --connect-timeout=5 -e "$1" 2>/dev/null
 }
 
 mysql_proxy() {
-    mysql -h 127.0.0.1 -P "$PROXY_PORT" \
+    "$MYSQL_BIN" "${MYSQL_SSL_ARGS[@]}" \
+          -h 127.0.0.1 -P "$PROXY_PORT" \
           -u "$MYSQL_USER" -p"$MYSQL_PASSWORD" "$MYSQL_DATABASE" \
           --connect-timeout=5 -e "$1" 2>/dev/null
 }
@@ -109,8 +118,8 @@ access_control:
 sql_rules:
   block_statements: []
   block_patterns:
-    - "UNION\\s+SELECT"
-    - "SLEEP\\s*\\("
+    - 'UNION\s+SELECT'
+    - 'SLEEP\s*\('
 procedure_control:
   mode: "whitelist"
   whitelist: []
@@ -199,7 +208,7 @@ sql_rules:
   # policy_loader fail-close 제약: block_patterns 는 최소 1개 필요
   # Phase 4 검증 대상은 DROP/TRUNCATE 이므로 기존 기본 패턴 1개만 유지
   block_patterns:
-    - "UNION\\s+SELECT"
+    - 'UNION\s+SELECT'
 procedure_control:
   mode: "whitelist"
   whitelist: []
@@ -295,7 +304,7 @@ sql_rules:
   # policy_loader fail-close 제약: block_patterns 는 최소 1개 필요
   # Phase 5 검증 대상은 time_restriction 이므로 기본 패턴 1개만 유지
   block_patterns:
-    - "UNION\\s+SELECT"
+    - 'UNION\s+SELECT'
 procedure_control:
   mode: "whitelist"
   whitelist: []

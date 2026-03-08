@@ -62,7 +62,7 @@ namespace {
     const auto time_t_now = std::chrono::system_clock::to_time_t(now);
 
     std::tm utc_tm{};
-#if defined(_WIN32)
+#ifdef _WIN32
     gmtime_s(&utc_tm, &time_t_now);
 #else
     if (gmtime_r(&time_t_now, &utc_tm) == nullptr) {
@@ -197,7 +197,7 @@ PolicyVersionStore::PolicyVersionStore(const std::filesystem::path& config_dir,
 // ---------------------------------------------------------------------------
 std::expected<PolicyVersionMeta, std::string> PolicyVersionStore::save_snapshot(
     const PolicyConfig& config, const std::filesystem::path& source_path) {
-    const std::lock_guard<std::mutex> lock(mutex_);
+    const std::scoped_lock lock(mutex_);
 
     // source_path 존재 확인
     std::error_code ec;
@@ -268,7 +268,7 @@ std::expected<PolicyVersionMeta, std::string> PolicyVersionStore::save_snapshot(
 // ---------------------------------------------------------------------------
 std::expected<PolicyConfig, std::string> PolicyVersionStore::load_snapshot(
     std::uint64_t version) const {
-    const std::lock_guard<std::mutex> lock(mutex_);
+    const std::scoped_lock lock(mutex_);
 
     // 버전 검색
     const auto it = std::ranges::find_if(versions_, [version](const PolicyVersionMeta& m) {
@@ -312,7 +312,7 @@ std::expected<PolicyConfig, std::string> PolicyVersionStore::load_snapshot(
 // versions_ 복사본을 최신 버전 먼저 정렬하여 반환.
 // ---------------------------------------------------------------------------
 std::vector<PolicyVersionMeta> PolicyVersionStore::list_versions() const {
-    const std::lock_guard<std::mutex> lock(mutex_);
+    const std::scoped_lock lock(mutex_);
 
     // 내부 versions_ 는 오래된 것 먼저 — 복사 후 역순 정렬
     std::vector<PolicyVersionMeta> result = versions_;
@@ -329,7 +329,7 @@ std::vector<PolicyVersionMeta> PolicyVersionStore::list_versions() const {
 // versions_ 가 비어있으면 0 반환.
 // ---------------------------------------------------------------------------
 std::uint64_t PolicyVersionStore::current_version() const {
-    const std::lock_guard<std::mutex> lock(mutex_);
+    const std::scoped_lock lock(mutex_);
     if (versions_.empty()) {
         return 0;
     }

@@ -407,6 +407,7 @@ boost::asio::awaitable<void> ProxyServer::accept_loop(boost::asio::ip::tcp::endp
         // TCP_NODELAY: Nagle 알고리즘 비활성화 (클라이언트 소켓)
         {
             boost::system::error_code nodelay_ec;
+            // NOLINTNEXTLINE(bugprone-unused-return-value,cert-err33-c)
             client_sock.set_option(boost::asio::ip::tcp::no_delay(true), nodelay_ec);
             if (nodelay_ec) {
                 spdlog::warn("[proxy] failed to set TCP_NODELAY on client socket: {}",
@@ -470,6 +471,7 @@ boost::asio::awaitable<void> ProxyServer::accept_loop(boost::asio::ip::tcp::endp
         }
 
         // Backend SSL context 포인터 (nullptr이면 평문)
+        // NOLINTNEXTLINE(misc-const-correctness)
         boost::asio::ssl::context* backend_ssl_ctx_ptr =
             backend_ssl_ctx_.has_value() ? &(*backend_ssl_ctx_) : nullptr;
 
