@@ -21,13 +21,9 @@ on:
       - '.clang-tidy'
   workflow_dispatch:
 
-env:
-  VCPKG_ROOT: /opt/vcpkg
-  VCPKG_BINCACHE: /tmp/vcpkg-bincache
-
 jobs:
   build-test:
-    name: Build & Test (GCC 14)
+    name: Build & Test (System GCC)
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -35,28 +31,8 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y g++-14 cmake ninja-build
-
-      - name: Cache vcpkg binary packages
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        with:
-          path: ${{ env.VCPKG_BINCACHE }}
-          key: vcpkg-linux-x64-${{ hashFiles('vcpkg.json') }}
-          restore-keys: vcpkg-linux-x64-
-
-      - name: Install vcpkg
-        run: |
-          git clone --depth=1 --branch 2026.01.16 https://github.com/microsoft/vcpkg.git $VCPKG_ROOT
-          # 공급망 공격 방지: 예상 커밋 SHA 검증
-          actual_sha=$(git -C $VCPKG_ROOT rev-parse HEAD)
-          expected_sha="66c0373dc7fca549e5803087b9487edfe3aca0a1"
-          if [ "$actual_sha" != "$expected_sha" ]; then
-            echo "❌ vcpkg SHA 불일치: expected $expected_sha, got $actual_sha"
-            exit 1
-          fi
-          $VCPKG_ROOT/bootstrap-vcpkg.sh -disableMetrics
-          mkdir -p $VCPKG_BINCACHE
-          echo "VCPKG_BINARY_SOURCES=clear;files,$VCPKG_BINCACHE,readwrite" >> "$GITHUB_ENV"
+          sudo apt-get install -y build-essential cmake ninja-build \
+            libboost-all-dev libspdlog-dev libyaml-cpp-dev libssl-dev libgtest-dev
 
       - name: Configure (Release)
         run: cmake --preset default
@@ -76,7 +52,8 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y g++-14 cmake ninja-build cppcheck jq \
+          sudo apt-get install -y build-essential cmake ninja-build cppcheck jq \
+            libboost-all-dev libspdlog-dev libyaml-cpp-dev libssl-dev libgtest-dev \
             gnupg curl
           # LLVM 19 apt repository (clang-tidy 19: Standard c++23 지원)
           sudo mkdir -p /etc/apt/keyrings
@@ -92,27 +69,6 @@ jobs:
             exit 1
           fi
           echo "CLANG_TIDY_BIN=$(command -v clang-tidy-19)" >> "$GITHUB_ENV"
-
-      - name: Cache vcpkg binary packages
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        with:
-          path: ${{ env.VCPKG_BINCACHE }}
-          key: vcpkg-linux-x64-${{ hashFiles('vcpkg.json') }}
-          restore-keys: vcpkg-linux-x64-
-
-      - name: Install vcpkg
-        run: |
-          git clone --depth=1 --branch 2026.01.16 https://github.com/microsoft/vcpkg.git $VCPKG_ROOT
-          # 공급망 공격 방지: 예상 커밋 SHA 검증
-          actual_sha=$(git -C $VCPKG_ROOT rev-parse HEAD)
-          expected_sha="66c0373dc7fca549e5803087b9487edfe3aca0a1"
-          if [ "$actual_sha" != "$expected_sha" ]; then
-            echo "❌ vcpkg SHA 불일치: expected $expected_sha, got $actual_sha"
-            exit 1
-          fi
-          $VCPKG_ROOT/bootstrap-vcpkg.sh -disableMetrics
-          mkdir -p $VCPKG_BINCACHE
-          echo "VCPKG_BINARY_SOURCES=clear;files,$VCPKG_BINCACHE,readwrite" >> "$GITHUB_ENV"
 
       - name: Configure (Debug + compile_commands.json)
         run: cmake --preset debug -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
@@ -134,7 +90,7 @@ jobs:
             echo "❌ clang-tidy 19가 아닌 버전이 선택되었습니다."
             exit 1
           fi
-          g++-14 --version | head -n 1
+          g++ --version | head -n 1
 
           if [ ! -s "${db_path}" ]; then
             echo "❌ compile_commands.json not found: ${db_path}"
@@ -228,8 +184,8 @@ jobs:
           # 단일 대형 프로세스에서 발생하는 리소스 스파이크를 줄인다.
           CLANG_TIDY_RESULT=0
           : > /tmp/clang-tidy-report.txt
-          gcc_major="$(g++-14 -dumpfullversion -dumpversion | cut -d. -f1)"
-          gcc_triple="$(g++-14 -dumpmachine)"
+          gcc_major="$(g++ -dumpfullversion -dumpversion | cut -d. -f1)"
+          gcc_triple="$(g++ -dumpmachine)"
           clang_tidy_args=(
             -p /tmp/clang-tidy-db
             --extra-arg=-std=c++23
@@ -315,28 +271,8 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y g++-14 cmake ninja-build
-
-      - name: Cache vcpkg binary packages
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        with:
-          path: ${{ env.VCPKG_BINCACHE }}
-          key: vcpkg-linux-x64-${{ hashFiles('vcpkg.json') }}
-          restore-keys: vcpkg-linux-x64-
-
-      - name: Install vcpkg
-        run: |
-          git clone --depth=1 --branch 2026.01.16 https://github.com/microsoft/vcpkg.git $VCPKG_ROOT
-          # 공급망 공격 방지: 예상 커밋 SHA 검증
-          actual_sha=$(git -C $VCPKG_ROOT rev-parse HEAD)
-          expected_sha="66c0373dc7fca549e5803087b9487edfe3aca0a1"
-          if [ "$actual_sha" != "$expected_sha" ]; then
-            echo "❌ vcpkg SHA 불일치: expected $expected_sha, got $actual_sha"
-            exit 1
-          fi
-          $VCPKG_ROOT/bootstrap-vcpkg.sh -disableMetrics
-          mkdir -p $VCPKG_BINCACHE
-          echo "VCPKG_BINARY_SOURCES=clear;files,$VCPKG_BINCACHE,readwrite" >> "$GITHUB_ENV"
+          sudo apt-get install -y build-essential cmake ninja-build \
+            libboost-all-dev libspdlog-dev libyaml-cpp-dev libssl-dev libgtest-dev
 
       - name: Configure (ASan)
         run: cmake --preset asan
@@ -359,28 +295,8 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y g++-14 cmake ninja-build
-
-      - name: Cache vcpkg binary packages
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        with:
-          path: ${{ env.VCPKG_BINCACHE }}
-          key: vcpkg-linux-x64-${{ hashFiles('vcpkg.json') }}
-          restore-keys: vcpkg-linux-x64-
-
-      - name: Install vcpkg
-        run: |
-          git clone --depth=1 --branch 2026.01.16 https://github.com/microsoft/vcpkg.git $VCPKG_ROOT
-          # 공급망 공격 방지: 예상 커밋 SHA 검증
-          actual_sha=$(git -C $VCPKG_ROOT rev-parse HEAD)
-          expected_sha="66c0373dc7fca549e5803087b9487edfe3aca0a1"
-          if [ "$actual_sha" != "$expected_sha" ]; then
-            echo "❌ vcpkg SHA 불일치: expected $expected_sha, got $actual_sha"
-            exit 1
-          fi
-          $VCPKG_ROOT/bootstrap-vcpkg.sh -disableMetrics
-          mkdir -p $VCPKG_BINCACHE
-          echo "VCPKG_BINARY_SOURCES=clear;files,$VCPKG_BINCACHE,readwrite" >> "$GITHUB_ENV"
+          sudo apt-get install -y build-essential cmake ninja-build \
+            libboost-all-dev libspdlog-dev libyaml-cpp-dev libssl-dev libgtest-dev
 
       - name: Configure (TSan)
         run: cmake --preset tsan
@@ -402,7 +318,8 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y cmake ninja-build gnupg curl
+          sudo apt-get install -y cmake ninja-build gnupg curl \
+            libboost-all-dev libspdlog-dev
           # LLVM 19 apt repository (clang++-19 for libFuzzer)
           sudo mkdir -p /etc/apt/keyrings
           curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key \
@@ -415,28 +332,6 @@ jobs:
             echo "clang++-19 설치 확인 실패"
             exit 1
           fi
-
-      - name: Cache vcpkg binary packages
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        with:
-          path: ${{ env.VCPKG_BINCACHE }}
-          key: vcpkg-linux-x64-fuzz-${{ hashFiles('vcpkg.json') }}
-          restore-keys: |
-            vcpkg-linux-x64-fuzz-
-            vcpkg-linux-x64-
-
-      - name: Install vcpkg
-        run: |
-          git clone --depth=1 --branch 2026.01.16 https://github.com/microsoft/vcpkg.git $VCPKG_ROOT
-          actual_sha=$(git -C $VCPKG_ROOT rev-parse HEAD)
-          expected_sha="66c0373dc7fca549e5803087b9487edfe3aca0a1"
-          if [ "$actual_sha" != "$expected_sha" ]; then
-            echo "vcpkg SHA mismatch: expected $expected_sha, got $actual_sha"
-            exit 1
-          fi
-          $VCPKG_ROOT/bootstrap-vcpkg.sh -disableMetrics
-          mkdir -p $VCPKG_BINCACHE
-          echo "VCPKG_BINARY_SOURCES=clear;files,$VCPKG_BINCACHE,readwrite" >> "$GITHUB_ENV"
 
       - name: Configure (fuzz)
         run: cmake --preset fuzz
