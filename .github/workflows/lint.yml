@@ -13,13 +13,16 @@ jobs:
         env:
           PR_TITLE: ${{ github.event.pull_request.title }}
         run: |
-          # 허용 형식: type(scope): 설명 [DON-XX]
-          PATTERN='^(feat|fix|docs|chore|test|refactor|perf|style|ci|revert)\([a-z][a-z0-9-]*\)!?: .+ \[DON-[0-9]+\]$'
+          # 허용 형식:
+          # 1) type(scope): 설명
+          # 2) type(scope): 설명 [DON-XX]
+          PATTERN='^(feat|fix|docs|chore|test|refactor|perf|style|ci|revert)\([a-z][a-z0-9-]*\)!?: .+( \[DON-[0-9]+\])?$'
           if ! echo "$PR_TITLE" | grep -qP "$PATTERN"; then
             echo "❌ PR 제목 형식 오류"
             echo "   현재: $PR_TITLE"
             echo ""
-            echo "   올바른 형식: type(scope): 설명 [DON-XX]"
+            echo "   올바른 형식: type(scope): 설명"
+            echo "   또는: type(scope): 설명 [DON-XX]"
             echo "   예시: feat(proxy): Boost.Asio 프록시 서버 구현 [DON-28]"
             echo ""
             echo "   허용 type: feat, fix, docs, chore, test, refactor, perf, style, ci, revert"
@@ -41,7 +44,7 @@ jobs:
 
       - name: Check commit message formats
         run: |
-          PATTERN='^(feat|fix|docs|chore|test|refactor|perf|style|ci|revert)\([a-z][a-z0-9-]*\)!?: .+ \[DON-[0-9]+\]$'
+          PATTERN='^(feat|fix|docs|chore|test|refactor|perf|style|ci|revert)\([a-z][a-z0-9-]*\)!?: .+( \[DON-[0-9]+\])?$'
           MERGE_PATTERN='^Merge '
 
           FAILED=0
@@ -58,7 +61,8 @@ jobs:
 
           if [ $FAILED -eq 1 ]; then
             echo ""
-            echo "올바른 형식: type(scope): 설명 [DON-XX]"
+            echo "올바른 형식: type(scope): 설명"
+            echo "또는: type(scope): 설명 [DON-XX]"
             echo "예시: fix(parser): trailing 세미콜론 단일 구문 허용 [DON-39]"
             exit 1
           fi

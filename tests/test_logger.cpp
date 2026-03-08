@@ -153,8 +153,6 @@ protected:
 // Test: ConnectionLog JSON 직렬화
 // ---------------------------------------------------------------------------
 TEST_F(StructuredLoggerTest, ConnectionLogJsonFormat) {
-    StructuredLogger logger(LogLevel::kInfo, log_file_);
-
     const auto now = std::chrono::system_clock::now();
     ConnectionLog entry;
     entry.session_id = 12345;
@@ -164,10 +162,10 @@ TEST_F(StructuredLoggerTest, ConnectionLogJsonFormat) {
     entry.db_user = "testuser";
     entry.timestamp = now;
 
-    logger.log_connection(entry);
-
-    // 로그 파일 플러시 대기
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    {
+        StructuredLogger logger(LogLevel::kInfo, log_file_);
+        logger.log_connection(entry);
+    }
 
     const auto lines = read_log_lines();
     ASSERT_GT(lines.size(), 0) << "No log lines found";
@@ -191,8 +189,6 @@ TEST_F(StructuredLoggerTest, ConnectionLogJsonFormat) {
 // Test: QueryLog JSON 필드 확인
 // ---------------------------------------------------------------------------
 TEST_F(StructuredLoggerTest, QueryLogJsonFields) {
-    StructuredLogger logger(LogLevel::kInfo, log_file_);
-
     const auto now = std::chrono::system_clock::now();
     QueryLog entry;
     entry.session_id = 67890;
@@ -205,9 +201,10 @@ TEST_F(StructuredLoggerTest, QueryLogJsonFields) {
     entry.duration = std::chrono::microseconds(1500);
     entry.tables.emplace_back("users");
 
-    logger.log_query(entry);
-
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    {
+        StructuredLogger logger(LogLevel::kInfo, log_file_);
+        logger.log_query(entry);
+    }
 
     const auto lines = read_log_lines();
     ASSERT_GT(lines.size(), 0);
@@ -289,34 +286,33 @@ TEST_F(StructuredLoggerTest, LogLevelFiltering) {
 // Test: 멀티스레드 동시 로깅 (크래시 없음)
 // ---------------------------------------------------------------------------
 TEST_F(StructuredLoggerTest, MultithreadedLoggingNoCrash) {
-    StructuredLogger logger(LogLevel::kInfo, log_file_);
-
     const int num_threads = 4;
     const int logs_per_thread = 10;
     std::vector<std::thread> threads;
     threads.reserve(static_cast<std::size_t>(num_threads));
 
-    for (int t = 0; t < num_threads; ++t) {
-        threads.emplace_back([&logger, t]() {
-            const auto now = std::chrono::system_clock::now();
-            for (int i = 0; i < logs_per_thread; ++i) {
-                QueryLog entry;
-                entry.session_id =
-                    static_cast<std::uint64_t>(t) * 1000U + static_cast<std::uint64_t>(i);
-                entry.db_user = "user_" + std::to_string(t);
-                entry.client_ip = "192.168.1." + std::to_string(i);
-                entry.raw_sql = "SELECT * FROM table_" + std::to_string(i);
-                entry.timestamp = now;
-                logger.log_query(entry);
-            }
-        });
-    }
+    {
+        StructuredLogger logger(LogLevel::kInfo, log_file_);
+        for (int t = 0; t < num_threads; ++t) {
+            threads.emplace_back([&logger, t]() {
+                const auto now = std::chrono::system_clock::now();
+                for (int i = 0; i < logs_per_thread; ++i) {
+                    QueryLog entry;
+                    entry.session_id =
+                        static_cast<std::uint64_t>(t) * 1000U + static_cast<std::uint64_t>(i);
+                    entry.db_user = "user_" + std::to_string(t);
+                    entry.client_ip = "192.168.1." + std::to_string(i);
+                    entry.raw_sql = "SELECT * FROM table_" + std::to_string(i);
+                    entry.timestamp = now;
+                    logger.log_query(entry);
+                }
+            });
+        }
 
-    for (auto& th : threads) {
-        th.join();
+        for (auto& th : threads) {
+            th.join();
+        }
     }
-
-    std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
     const auto lines = read_log_lines();
     // 일부 로그가 기록되었는지 확인 (정확한 개수는 보장 안 함, 기록되었는지만 확인)
@@ -327,8 +323,6 @@ TEST_F(StructuredLoggerTest, MultithreadedLoggingNoCrash) {
 // Test: JSON 이스케이프 처리
 // ---------------------------------------------------------------------------
 TEST_F(StructuredLoggerTest, JsonEscaping) {
-    StructuredLogger logger(LogLevel::kInfo, log_file_);
-
     const auto now = std::chrono::system_clock::now();
     QueryLog entry;
     entry.session_id = 44444;
@@ -336,9 +330,10 @@ TEST_F(StructuredLoggerTest, JsonEscaping) {
     entry.raw_sql = "SELECT * FROM users\nWHERE id=1";
     entry.timestamp = now;
 
-    logger.log_query(entry);
-
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    {
+        StructuredLogger logger(LogLevel::kInfo, log_file_);
+        logger.log_query(entry);
+    }
 
     const auto lines = read_log_lines();
     ASSERT_GT(lines.size(), 0);
