@@ -36,18 +36,26 @@
 //   kUnknown 은 분류 실패를 나타내며, 정책 엔진에서 fail-close 처리한다.
 // ---------------------------------------------------------------------------
 enum class SqlCommand : std::uint8_t {
-    kSelect   = 0,
-    kInsert   = 1,
-    kUpdate   = 2,
-    kDelete   = 3,
-    kDrop     = 4,
+    kSelect = 0,
+    kInsert = 1,
+    kUpdate = 2,
+    kDelete = 3,
+    kDrop = 4,
     kTruncate = 5,
-    kAlter    = 6,
-    kCreate   = 7,
-    kCall     = 8,
-    kPrepare  = 9,
-    kExecute  = 10,
-    kUnknown  = 11,  // 분류 불가 — 정책 엔진에서 kBlock 으로 처리됨
+    kAlter = 6,
+    kCreate = 7,
+    kCall = 8,
+    kPrepare = 9,
+    kExecute = 10,
+    kBegin = 11,      // BEGIN / START TRANSACTION
+    kCommit = 12,     // COMMIT
+    kRollback = 13,   // ROLLBACK
+    kSet = 14,        // SET (세션 변수)
+    kShow = 15,       // SHOW (메타데이터)
+    kUse = 16,        // USE (DB 선택)
+    kLock = 17,       // LOCK TABLES
+    kSavepoint = 18,  // SAVEPOINT
+    kUnknown = 19,    // 분류 불가 — 정책 엔진에서 kBlock 으로 처리됨
 };
 
 // ---------------------------------------------------------------------------
@@ -62,11 +70,11 @@ enum class SqlCommand : std::uint8_t {
 //   호출자는 parse() 실패 시 반드시 fail-close(차단)를 적용해야 한다.
 // ---------------------------------------------------------------------------
 struct ParsedQuery {
-    SqlCommand               command{SqlCommand::kUnknown};
-    std::vector<std::string> tables{};           // FROM/INTO/UPDATE/JOIN 뒤 테이블명
-    std::string              raw_sql{};          // 원문 SQL (로깅용, 변형 없음)
-    bool                     has_where_clause{}; // DELETE 무조건 삭제 탐지용
-    bool                     has_multi_statement{false}; // 멀티 스테이트먼트 감지 (차단 플래그)
+    SqlCommand command{SqlCommand::kUnknown};
+    std::vector<std::string> tables{};  // FROM/INTO/UPDATE/JOIN 뒤 테이블명
+    std::string raw_sql{};              // 원문 SQL (로깅용, 변형 없음)
+    bool has_where_clause{};            // DELETE 무조건 삭제 탐지용
+    bool has_multi_statement{false};    // 멀티 스테이트먼트 감지 (차단 플래그)
 };
 
 // ---------------------------------------------------------------------------
@@ -80,14 +88,14 @@ struct ParsedQuery {
 // ---------------------------------------------------------------------------
 class SqlParser {
 public:
-    SqlParser()  = default;
+    SqlParser() = default;
     ~SqlParser() = default;
 
     // 복사/이동 허용 (stateless)
-    SqlParser(const SqlParser&)            = default;
+    SqlParser(const SqlParser&) = default;
     SqlParser& operator=(const SqlParser&) = default;
-    SqlParser(SqlParser&&)                 = default;
-    SqlParser& operator=(SqlParser&&)      = default;
+    SqlParser(SqlParser&&) = default;
+    SqlParser& operator=(SqlParser&&) = default;
 
     // parse
     //   sql: 원문 SQL (null-terminated 불필요, view 로 전달)
@@ -97,6 +105,5 @@ public:
     // ORM(예: Hibernate, SQLAlchemy)이 생성하는 복잡한 SELECT 에서
     // 테이블명 추출이 부정확할 수 있다. tables 벡터가 비어있더라도
     // 파싱 성공 자체는 유효하다.
-    [[nodiscard]] std::expected<ParsedQuery, ParseError>
-    parse(std::string_view sql) const;
+    [[nodiscard]] std::expected<ParsedQuery, ParseError> parse(std::string_view sql) const;
 };

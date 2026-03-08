@@ -147,8 +147,8 @@ StructuredLogger::StructuredLogger(
         // 기본 패턴: 타임스탬프만 (구조화 로그는 각 메서드에서 JSON으로 생성)
         logger_->set_pattern("[%Y-%m-%d %H:%M:%S.%e] %v");
 
-        // 매 로그마다 파일을 플러시하도록 설정
-        logger_->flush_on(spdlog::level::trace);
+        // warn 이상 로그만 즉시 flush (info 수준은 버퍼에 축적)
+        logger_->flush_on(spdlog::level::warn);
 
         spdlog::register_logger(logger_);
 

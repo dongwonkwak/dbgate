@@ -150,6 +150,17 @@ SqlCommand keyword_to_command(const std::string& keyword) {
         {"CALL", SqlCommand::kCall},
         {"PREPARE", SqlCommand::kPrepare},
         {"EXECUTE", SqlCommand::kExecute},
+        // 트랜잭션/세션 명령어 — sysbench 등 벤치마크 도구 호환
+        // START TRANSACTION 의 경우 첫 번째 키워드 "START" 로 매핑
+        {"BEGIN", SqlCommand::kBegin},
+        {"START", SqlCommand::kBegin},
+        {"COMMIT", SqlCommand::kCommit},
+        {"ROLLBACK", SqlCommand::kRollback},
+        {"SET", SqlCommand::kSet},
+        {"SHOW", SqlCommand::kShow},
+        {"USE", SqlCommand::kUse},
+        {"LOCK", SqlCommand::kLock},
+        {"SAVEPOINT", SqlCommand::kSavepoint},
     };
 
     const auto it = keyword_map.find(keyword);
@@ -508,6 +519,14 @@ std::expected<ParsedQuery, ParseError> SqlParser::parse(std::string_view sql) co
         case SqlCommand::kCall:
         case SqlCommand::kPrepare:
         case SqlCommand::kExecute:
+        case SqlCommand::kBegin:
+        case SqlCommand::kCommit:
+        case SqlCommand::kRollback:
+        case SqlCommand::kSet:
+        case SqlCommand::kShow:
+        case SqlCommand::kUse:
+        case SqlCommand::kLock:
+        case SqlCommand::kSavepoint:
         case SqlCommand::kUnknown:
         default:
             // 테이블명 추출 불필요 또는 불가
