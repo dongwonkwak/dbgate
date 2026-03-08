@@ -30,7 +30,7 @@ std::string format_iso8601(const std::chrono::system_clock::time_point& tp) {
 
     const std::time_t time_t_val = std::chrono::system_clock::to_time_t(tp);
     std::tm tm_val{};
-#if defined(_WIN32)
+#ifdef _WIN32
     if (gmtime_s(&tm_val, &time_t_val) != 0) {
         return "1970-01-01T00:00:00.000Z";
     }
