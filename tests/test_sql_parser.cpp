@@ -126,6 +126,41 @@ TEST(SqlParser, ExecuteCommand) {
     EXPECT_EQ(result->command, SqlCommand::kExecute);
 }
 
+TEST(SqlParser, BeginCommand) {
+    const SqlParser parser;
+    const auto result = parser.parse("BEGIN");
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->command, SqlCommand::kBegin);
+}
+
+TEST(SqlParser, StartTransactionCommand) {
+    const SqlParser parser;
+    const auto result = parser.parse("START TRANSACTION");
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->command, SqlCommand::kBegin);
+}
+
+TEST(SqlParser, StartTransactionTrailingSemicolonCommand) {
+    const SqlParser parser;
+    const auto result = parser.parse("START TRANSACTION;");
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->command, SqlCommand::kBegin);
+}
+
+TEST(SqlParser, StartReplicaCommandIsUnknown) {
+    const SqlParser parser;
+    const auto result = parser.parse("START REPLICA");
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->command, SqlCommand::kUnknown);
+}
+
+TEST(SqlParser, StartSlaveCommandIsUnknown) {
+    const SqlParser parser;
+    const auto result = parser.parse("START SLAVE");
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->command, SqlCommand::kUnknown);
+}
+
 TEST(SqlParser, UnknownCommand) {
     const SqlParser parser;
     const auto result = parser.parse("FOOBAR something");

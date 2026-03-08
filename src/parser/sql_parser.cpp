@@ -136,6 +136,22 @@ std::string extract_first_keyword(std::string_view normalized_sql) {
     return std::string(trimmed.substr(0, space_pos));
 }
 
+// START TRANSACTION 문인지 확인한다.
+//
+// 보안상 START 키워드를 BEGIN으로 단순 매핑하면 안 된다.
+// START REPLICA / START SLAVE 같은 관리 명령이 BEGIN 허용 경로로
+// 우회될 수 있으므로, 정확히 START TRANSACTION일 때만 kBegin으로 분류한다.
+bool is_start_transaction_statement(std::string_view normalized_sql) {
+    try {
+        static const std::regex start_txn_re(
+            R"(^START\s+TRANSACTION\b)",
+            std::regex_constants::ECMAScript);
+        return std::regex_search(normalized_sql.begin(), normalized_sql.end(), start_txn_re);
+    } catch (const std::regex_error&) {
+        return false;
+    }
+}
+
 // 첫 번째 키워드 → SqlCommand 매핑
 SqlCommand keyword_to_command(const std::string& keyword) {
     static const std::unordered_map<std::string, SqlCommand> keyword_map = {
@@ -150,10 +166,8 @@ SqlCommand keyword_to_command(const std::string& keyword) {
         {"CALL", SqlCommand::kCall},
         {"PREPARE", SqlCommand::kPrepare},
         {"EXECUTE", SqlCommand::kExecute},
-        // 트랜잭션/세션 명령어 — sysbench 등 벤치마크 도구 호환
-        // START TRANSACTION 의 경우 첫 번째 키워드 "START" 로 매핑
+        // 트랜잭션 명령어
         {"BEGIN", SqlCommand::kBegin},
-        {"START", SqlCommand::kBegin},
         {"COMMIT", SqlCommand::kCommit},
         {"ROLLBACK", SqlCommand::kRollback},
         {"SET", SqlCommand::kSet},
@@ -484,7 +498,13 @@ std::expected<ParsedQuery, ParseError> SqlParser::parse(std::string_view sql) co
 
     // 5. 첫 번째 키워드로 SqlCommand 분류
     const std::string first_kw = extract_first_keyword(normalized_trimmed);
-    const SqlCommand cmd = keyword_to_command(first_kw);
+    SqlCommand cmd = keyword_to_command(first_kw);
+
+    // START는 반드시 두 번째 토큰이 TRANSACTION일 때만 BEGIN으로 분류한다.
+    if (cmd == SqlCommand::kUnknown && first_kw == "START" &&
+        is_start_transaction_statement(normalized_trimmed)) {
+        cmd = SqlCommand::kBegin;
+    }
 
     // 6. 테이블명 추출
     // command에 따라 탐색할 키워드가 다름
