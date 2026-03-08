@@ -39,6 +39,7 @@ linters:
       - linters:
           - errcheck
           - gosec
+          - noctx
         path: _test\.go
     paths:
       - third_party$
