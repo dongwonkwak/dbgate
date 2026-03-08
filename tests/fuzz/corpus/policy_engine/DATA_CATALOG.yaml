@@ -1,0 +1,15 @@
+catalog_version: 1
+description: "정책 엔진 퍼즈 테스트용 시드 코퍼스"
+files:
+  normal_select.bin:
+    intent: "일반 SELECT 쿼리에 대한 정책 허용 검증"
+    format: "FuzzedDataProvider: IP(4B) + username(len+str) + dbname(len+str) + SQL(remaining)"
+  drop_attempt.bin:
+    intent: "DROP TABLE 차단 정책 검증"
+    format: "FuzzedDataProvider: IP(4B) + username(len+str) + dbname(len+str) + SQL(remaining)"
+  sqli_attempt.bin:
+    intent: "SQL 인젝션 차단 정책 검증"
+    format: "FuzzedDataProvider: IP(4B) + username(len+str) + dbname(len+str) + SQL(remaining)"
+  empty_sql.bin:
+    intent: "빈 SQL 입력에 대한 정책 엔진 경계값 처리 검증"
+    format: "FuzzedDataProvider: IP(4B) + username(len+str) + dbname(len+str) + SQL(empty)"
