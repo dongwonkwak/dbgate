@@ -114,7 +114,7 @@ public:
     };
 
     explicit RelayBuffer(AsyncStream& stream)
-        : read_stream_{stream}, rbuf_(kInitBufSize), wbuf_{} {
+        : read_stream_{&stream}, rbuf_(kInitBufSize), wbuf_{} {
         wbuf_.reserve(kInitBufSize);
     }
 
@@ -209,7 +209,7 @@ private:
             }
 
             boost::system::error_code ec;
-            const auto bytes = co_await read_stream_.async_read_some(
+            const auto bytes = co_await read_stream_->async_read_some(
                 boost::asio::buffer(rbuf_.data() + rend_, rbuf_.size() - rend_),
                 boost::asio::redirect_error(boost::asio::use_awaitable, ec));
 
@@ -221,7 +221,7 @@ private:
         co_return true;
     }
 
-    AsyncStream& read_stream_;
+    AsyncStream* read_stream_;
     std::vector<std::uint8_t> rbuf_;
     std::size_t rpos_{0};  // 읽기 시작 위치
     std::size_t rend_{0};  // 유효 데이터 끝 위치
@@ -238,7 +238,7 @@ public:
     static constexpr std::size_t kBufSize = 16384UL;  // 16 KB (COM_QUERY 패킷은 보통 < 1KB)
 
     explicit ClientReadBuffer(AsyncStream& stream)
-        : stream_{stream}, buf_(kBufSize) {}
+        : stream_{&stream}, buf_(kBufSize) {}
 
     auto read_packet()
         -> boost::asio::awaitable<std::expected<MysqlPacket, ParseError>> {
@@ -289,7 +289,7 @@ private:
             }
 
             boost::system::error_code ec;
-            const auto bytes = co_await stream_.async_read_some(
+            const auto bytes = co_await stream_->async_read_some(
                 boost::asio::buffer(buf_.data() + end_, buf_.size() - end_),
                 boost::asio::redirect_error(boost::asio::use_awaitable, ec));
 
@@ -301,7 +301,7 @@ private:
         co_return true;
     }
 
-    AsyncStream& stream_;
+    AsyncStream* stream_;
     std::vector<std::uint8_t> buf_;
     std::size_t pos_{0};
     std::size_t end_{0};
@@ -319,7 +319,7 @@ auto write_packet_raw(AsyncStream& stream, const MysqlPacket& pkt)
         pkt.sequence_id(),
     };
 
-    std::array<boost::asio::const_buffer, 2> bufs{
+    const std::array<boost::asio::const_buffer, 2> bufs{
         boost::asio::buffer(header),
         boost::asio::buffer(pkt.payload().data(), pkt.payload().size()),
     };
@@ -552,11 +552,15 @@ auto relay_server_response_buffered(RelayBuffer& relay,
 
             if (num_params > 0) {
                 auto r = co_await relay_stmt_prepare_section(relay, num_params, session_id);
-                if (!r) co_return std::unexpected(r.error());
+                if (!r) {
+                    co_return std::unexpected(r.error());
+                }
             }
             if (num_columns > 0) {
                 auto r = co_await relay_stmt_prepare_section(relay, num_columns, session_id);
-                if (!r) co_return std::unexpected(r.error());
+                if (!r) {
+                    co_return std::unexpected(r.error());
+                }
             }
         }
         co_return co_await relay.flush(client_stream);
@@ -573,7 +577,9 @@ auto relay_server_response_buffered(RelayBuffer& relay,
                      session_id);
         // 이미 enqueue된 패킷을 flush 후 에러 반환
         auto f = co_await relay.flush(client_stream);
-        if (!f) co_return std::unexpected(f.error());
+        if (!f) {
+            co_return std::unexpected(f.error());
+        }
         co_return std::unexpected(ParseError{
             .code = ParseErrorCode::kUnsupportedCommand,
             .message = "LOCAL_INFILE response is not supported",
@@ -621,7 +627,9 @@ auto relay_server_response_buffered(RelayBuffer& relay,
         // 큰 result set 중간 flush
         if (relay.should_flush()) {
             auto f = co_await relay.flush(client_stream);
-            if (!f) co_return std::unexpected(f.error());
+            if (!f) {
+                co_return std::unexpected(f.error());
+            }
         }
 
         if (pkt_payload_empty) {

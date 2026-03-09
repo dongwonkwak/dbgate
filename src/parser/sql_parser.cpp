@@ -348,14 +348,14 @@ void extract_tables_for_keyword(const std::string& normalized_sql,
 // 정규화된 SQL에서 "WHERE" 단어 포함 여부 확인
 // 단어 경계 적용: ELSEWHERE 같은 단어에서 오탐 방지
 bool has_where_keyword(const std::string& normalized_sql) {
-    static constexpr std::string_view kWhere = "WHERE";
+    static constexpr std::string_view k_where = "WHERE";
     std::size_t pos = 0;
-    while ((pos = normalized_sql.find(kWhere, pos)) != std::string::npos) {
+    while ((pos = normalized_sql.find(k_where, pos)) != std::string::npos) {
         const bool valid_start =
             (pos == 0) || !is_word_char(normalized_sql[pos - 1]);
         const bool valid_end =
-            (pos + kWhere.size() >= normalized_sql.size()) ||
-            !is_word_char(normalized_sql[pos + kWhere.size()]);
+            (pos + k_where.size() >= normalized_sql.size()) ||
+            !is_word_char(normalized_sql[pos + k_where.size()]);
         if (valid_start && valid_end) {
             return true;
         }

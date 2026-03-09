@@ -17,7 +17,7 @@
 // - run() 전 stop() 호출 → 크래시/hang 없음
 //
 // [테스트 패턴]
-// - 각 테스트는 임시 소켓 경로(/tmp/test_uds_<pid>_<N>.sock)를 사용한다.
+// - 각 테스트는 워크스페이스 내부 임시 소켓 경로를 사용한다.
 // - UdsServer 를 서버 전용 io_context 에서 백그라운드 스레드로 구동한다.
 // - 클라이언트는 별도 io_context 의 동기 소켓(sync connect/write/read) 사용.
 //
@@ -34,6 +34,8 @@
 
 #include <gtest/gtest.h>
 #include <sys/stat.h>
+#include <sys/socket.h>
+#include <sys/un.h>
 #include <unistd.h>
 
 #include <array>
@@ -86,12 +88,50 @@ std::shared_ptr<PolicyConfig> make_explain_policy_config() {
     return cfg;
 }
 
+std::filesystem::path test_socket_dir() {
+    const auto dir = std::filesystem::current_path() / "test-uds";
+    std::filesystem::create_directories(dir);
+    return dir;
+}
+
+bool uds_bind_supported() {
+    static const bool supported = []() {
+        const auto probe_path = test_socket_dir() / "probe.sock";
+        (void)std::filesystem::remove(probe_path);
+
+        const int fd = ::socket(AF_UNIX, SOCK_STREAM, 0);
+        if (fd < 0) {
+            return false;
+        }
+
+        sockaddr_un addr{};  // NOLINT(cppcoreguidelines-pro-type-member-init,hicpp-member-init)
+        addr.sun_family = AF_UNIX;
+        const auto path_str = probe_path.string();
+        if (path_str.size() >= sizeof(addr.sun_path)) {
+            (void)::close(fd);
+            return false;
+        }
+        std::memcpy(addr.sun_path, path_str.c_str(), path_str.size() + 1);
+
+        const bool ok =
+            (::bind(fd,
+                    reinterpret_cast<const sockaddr*>(&addr),
+                    sizeof(addr)) == 0);  // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
+
+        (void)::close(fd);
+        (void)std::filesystem::remove(probe_path);
+        return ok;
+    }();
+
+    return supported;
+}
+
 // 임시 소켓 경로 생성 (PID + 단조 카운터로 테스트 간 충돌 방지)
 std::filesystem::path temp_socket_path(const char* tag) {
     static std::atomic<int> counter{0};
-    return std::filesystem::path("/tmp") /
-           ("test_uds_" + std::to_string(::getpid()) + "_" + std::to_string(counter.fetch_add(1)) +
-            "_" + tag + ".sock");
+    return test_socket_dir() /
+           ("test_uds_" + std::to_string(::getpid()) + "_" +
+            std::to_string(counter.fetch_add(1)) + "_" + tag + ".sock");
 }
 
 // encode_le4: uint32_t → 4바이트 little-endian 배열
@@ -206,6 +246,9 @@ struct UdsSyncClient {
 class UdsServerTest : public ::testing::Test {
 protected:
     void SetUp() override {
+        if (!uds_bind_supported()) {
+            GTEST_SKIP() << "Unix domain socket bind not permitted in this environment";
+        }
         socket_path_ = temp_socket_path("srv");
         stats_ = std::make_shared<StatsCollector>();
         ioc_ = std::make_unique<asio::io_context>();
@@ -229,7 +272,9 @@ protected:
         if (server_) {
             server_->stop();
         }
-        ioc_->stop();
+        if (ioc_) {
+            ioc_->stop();
+        }
         if (server_thread_.joinable()) {
             server_thread_.join();
         }
@@ -521,6 +566,9 @@ TEST_F(UdsServerTest, CommandField_InjectedInsideNestedObject_UsesTopLevelComman
 class UdsPolicyExplainTest : public ::testing::Test {
 protected:
     void SetUp() override {
+        if (!uds_bind_supported()) {
+            GTEST_SKIP() << "Unix domain socket bind not permitted in this environment";
+        }
         socket_path_ = temp_socket_path("explain");
         stats_ = std::make_shared<StatsCollector>();
         ioc_ = std::make_unique<asio::io_context>();
@@ -548,7 +596,9 @@ protected:
         if (server_) {
             server_->stop();
         }
-        ioc_->stop();
+        if (ioc_) {
+            ioc_->stop();
+        }
         if (server_thread_.joinable()) {
             server_thread_.join();
         }
@@ -863,6 +913,9 @@ TEST_F(UdsServerTest, Stats_ContainsMonitoredBlocks) {
 class UdsPolicyVersioningTest : public ::testing::Test {
 protected:
     void SetUp() override {
+        if (!uds_bind_supported()) {
+            GTEST_SKIP() << "Unix domain socket bind not permitted in this environment";
+        }
         socket_path_ = temp_socket_path("versioning");
         stats_ = std::make_shared<StatsCollector>();
         ioc_ = std::make_unique<asio::io_context>();
@@ -906,7 +959,9 @@ protected:
         if (server_) {
             server_->stop();
         }
-        ioc_->stop();
+        if (ioc_) {
+            ioc_->stop();
+        }
         if (server_thread_.joinable()) {
             server_thread_.join();
         }

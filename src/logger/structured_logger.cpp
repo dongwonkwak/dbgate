@@ -54,7 +54,7 @@ std::string format_iso8601(const std::chrono::system_clock::time_point& tp) {
                         static_cast<int>(date_len),
                         date_buf.data(),
                         static_cast<int>(millis.count()));
-    return std::string(buf.data());
+    return {buf.data()};
 }
 
 // ---------------------------------------------------------------------------
