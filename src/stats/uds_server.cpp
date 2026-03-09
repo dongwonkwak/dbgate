@@ -159,7 +159,7 @@ std::string current_utc_iso8601() {
     const auto time_t_now = std::chrono::system_clock::to_time_t(now);
 
     std::tm utc_tm{};
-#if defined(_WIN32)
+#ifdef _WIN32
     gmtime_s(&utc_tm, &time_t_now);
 #else
     if (gmtime_r(&time_t_now, &utc_tm) == nullptr) {
@@ -179,19 +179,21 @@ std::string current_utc_iso8601() {
 // ---------------------------------------------------------------------------
 std::string safe_strerror(int errnum) {
     std::array<char, 256> buf{};
-#if defined(_WIN32)
+#ifdef _WIN32
     if (strerror_s(buf.data(), buf.size(), errnum) == 0) {
         return std::string{buf.data()};
     }
     return "unknown error";
-#elif defined(__GLIBC__)
-    const char* msg = strerror_r(errnum, buf.data(), buf.size());
-    return std::string{msg != nullptr ? msg : "unknown error"};
 #else
-    if (strerror_r(errnum, buf.data(), buf.size()) == 0) {
-        return std::string{buf.data()};
-    }
-    return "unknown error";
+    #ifdef __GLIBC__
+        const char* msg = strerror_r(errnum, buf.data(), buf.size());
+        return std::string{msg != nullptr ? msg : "unknown error"};
+    #else
+        if (strerror_r(errnum, buf.data(), buf.size()) == 0) {
+            return std::string{buf.data()};
+        }
+        return "unknown error";
+    #endif
 #endif
 }
 
@@ -541,7 +543,7 @@ std::optional<std::uint64_t> parse_top_level_uint64_field(std::string_view objec
                             if (value > (std::numeric_limits<std::uint64_t>::max() - digit) / 10U) {
                                 return std::nullopt;
                             }
-                            value = value * 10U + digit;
+                            value = (value * 10U) + digit;
                             ++cursor;
                         }
 
@@ -1146,6 +1148,7 @@ asio::awaitable<void> UdsServer::handle_client(asio::local::stream_protocol::soc
     deadline.cancel();
 
     spdlog::debug("[uds_server] handled command='{}' response_bytes={}", cmd, write_n);
+    co_return;
 }
 
 // ---------------------------------------------------------------------------

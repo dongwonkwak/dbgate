@@ -90,6 +90,22 @@ std::string_view command_to_string(SqlCommand cmd) {
             return "PREPARE";
         case SqlCommand::kExecute:
             return "EXECUTE";
+        case SqlCommand::kBegin:
+            return "BEGIN";
+        case SqlCommand::kCommit:
+            return "COMMIT";
+        case SqlCommand::kRollback:
+            return "ROLLBACK";
+        case SqlCommand::kSet:
+            return "SET";
+        case SqlCommand::kShow:
+            return "SHOW";
+        case SqlCommand::kUse:
+            return "USE";
+        case SqlCommand::kLock:
+            return "LOCK";
+        case SqlCommand::kSavepoint:
+            return "SAVEPOINT";
         case SqlCommand::kUnknown:
         default:
             return "UNKNOWN";

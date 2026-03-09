@@ -14,13 +14,13 @@ access_control:
   - user: "dbgate"
     source_ip: "0.0.0.0/0"
     allowed_tables: ["*"]
-    allowed_operations: ["SELECT", "INSERT", "UPDATE", "DELETE", "CREATE", "DROP"]
+    allowed_operations: ["*"]
     time_restriction: null
 
   - user: "root"
     source_ip: "0.0.0.0/0"
     allowed_tables: ["*"]
-    allowed_operations: ["SELECT", "INSERT", "UPDATE", "DELETE", "CREATE", "DROP"]
+    allowed_operations: ["*"]
     time_restriction: null
 
 sql_rules:

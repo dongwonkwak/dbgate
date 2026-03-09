@@ -445,16 +445,31 @@ jobs:
         run: cmake --build build/fuzz -j$(nproc)
 
       - name: Run fuzz_mysql_packet (10s)
-        run: ./build/fuzz/fuzz_mysql_packet tests/fuzz/corpus/mysql_packet/ -max_total_time=10
+        run: |
+          mkdir -p tests/fuzz/generated/mysql_packet
+          ./build/fuzz/fuzz_mysql_packet \
+            tests/fuzz/generated/mysql_packet/ \
+            tests/fuzz/seeds/mysql_packet/ \
+            -max_total_time=10
         env:
           ASAN_OPTIONS: detect_leaks=0:abort_on_error=1:symbolize=1
 
       - name: Run fuzz_sql_parser (10s)
-        run: ./build/fuzz/fuzz_sql_parser tests/fuzz/corpus/sql_parser/ -max_total_time=10
+        run: |
+          mkdir -p tests/fuzz/generated/sql_parser
+          ./build/fuzz/fuzz_sql_parser \
+            tests/fuzz/generated/sql_parser/ \
+            tests/fuzz/seeds/sql_parser/ \
+            -max_total_time=10
         env:
           ASAN_OPTIONS: detect_leaks=0:abort_on_error=1:symbolize=1
 
       - name: Run fuzz_policy_engine (10s)
-        run: ./build/fuzz/fuzz_policy_engine tests/fuzz/corpus/policy_engine/ -max_total_time=10
+        run: |
+          mkdir -p tests/fuzz/generated/policy_engine
+          ./build/fuzz/fuzz_policy_engine \
+            tests/fuzz/generated/policy_engine/ \
+            tests/fuzz/seeds/policy_engine/ \
+            -max_total_time=10
         env:
           ASAN_OPTIONS: detect_leaks=0:abort_on_error=1:symbolize=1

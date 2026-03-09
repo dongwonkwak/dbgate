@@ -96,12 +96,71 @@ fi
 if [[ $RUN_GO_LINT -eq 1 ]]; then
   if ! command -v golangci-lint >/dev/null 2>&1; then
     echo "[pre-commit] ⚠️  golangci-lint 미설치 — Go 린트 skip (CI가 최종 검증)"
-  elif ! (cd tools && golangci-lint run --fast --timeout=2m); then
-    echo "[pre-commit] ❌ golangci-lint(--fast) 실패"
-    HAS_ERROR=1
   else
-    echo "[pre-commit] ✅ golangci-lint(--fast) OK"
+    LINT_OUTPUT=$(cd tools && golangci-lint run --timeout=2m 2>&1) && LINT_RC=0 || LINT_RC=$?
+    if [[ $LINT_RC -ne 0 ]]; then
+      if echo "$LINT_OUTPUT" | grep -q "Go language version.*lower"; then
+        echo "[pre-commit] ⚠️  golangci-lint Go 버전 불일치 — Go 린트 skip (CI가 최종 검증)"
+      elif echo "$LINT_OUTPUT" | grep -q "configuration file for golangci-lint v2 with golangci-lint v1"; then
+        echo "[pre-commit] ⚠️  golangci-lint 메이저 버전 불일치(v1 binary vs v2 config) — Go 린트 skip (CI가 최종 검증)"
+      else
+        echo "$LINT_OUTPUT"
+        echo "[pre-commit] ❌ golangci-lint 실패"
+        HAS_ERROR=1
+      fi
+    else
+      echo "[pre-commit] ✅ golangci-lint OK"
+    fi
   fi
+fi
+
+# ④ Fuzz 코퍼스 가드: generated는 비추적, seeds 해시명은 금지
+SEED_ROOT="tests/fuzz/seeds"
+GENERATED_ROOT="tests/fuzz/generated"
+
+# 실수로 seeds에 생성된 untracked 해시 코퍼스는 경고만 출력 (자동 삭제 금지)
+if [[ -d "$SEED_ROOT" ]]; then
+  HASH_JUNK_COUNT=$(git ls-files --others --exclude-standard "$SEED_ROOT" \
+    | awk -F/ '{n=$NF; if (n ~ /^[0-9a-f]{32,}$/) c++} END{print c+0}')
+  if [[ "$HASH_JUNK_COUNT" -gt 0 ]]; then
+    echo "[pre-commit] ⚠️  seeds 내 untracked 해시 코퍼스 ${HASH_JUNK_COUNT}개 감지 (자동 삭제하지 않음)"
+    echo "[pre-commit]    정리 명령: bash scripts/fuzz-prune-generated.sh --seeds-hash"
+  fi
+fi
+
+SEED_HASH_STAGED=()
+GENERATED_STAGED=()
+while IFS= read -r f; do
+  [[ -z "$f" ]] && continue
+  if [[ "$f" =~ ^${GENERATED_ROOT}/ ]]; then
+    if [[ "$f" == "${GENERATED_ROOT}/.gitkeep" ]]; then
+      continue
+    fi
+    GENERATED_STAGED+=("$f")
+    continue
+  fi
+  if [[ "$f" =~ ^${SEED_ROOT}/ ]]; then
+    base=$(basename "$f")
+    if [[ "$base" =~ ^[0-9a-f]{32,}$ ]]; then
+      SEED_HASH_STAGED+=("$f")
+    fi
+  fi
+done <<< "$STAGED"
+
+if [[ ${#GENERATED_STAGED[@]} -gt 0 ]]; then
+  echo "[pre-commit] ❌ tests/fuzz/generated 는 자동 생성 코퍼스 경로라 커밋할 수 없습니다:"
+  for f in "${GENERATED_STAGED[@]}"; do
+    echo "    $f"
+  done
+  HAS_ERROR=1
+fi
+
+if [[ ${#SEED_HASH_STAGED[@]} -gt 0 ]]; then
+  echo "[pre-commit] ❌ tests/fuzz/seeds 에 해시 파일명 코퍼스는 허용되지 않습니다:"
+  for f in "${SEED_HASH_STAGED[@]}"; do
+    echo "    $f"
+  done
+  HAS_ERROR=1
 fi
 
 if [[ $HAS_ERROR -ne 0 ]]; then

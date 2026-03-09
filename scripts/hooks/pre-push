@@ -43,7 +43,7 @@ prepare_cpp_checks() {
     return 1
   fi
 
-  # preset 기본값(g++-14)이 없는 환경에서는 로컬 사용 가능 컴파일러로 override한다.
+  # preset에서 컴파일러를 고정하지 않으므로 로컬 사용 가능 컴파일러로 override한다.
   if command -v g++-14 >/dev/null 2>&1; then
     CPP_COMPILER_OVERRIDE="g++-14"
   elif command -v g++ >/dev/null 2>&1; then
@@ -73,7 +73,7 @@ if paths_changed '^src/' '^tests/' '^CMakeLists\.txt$' '^CMakePresets\.json$' '^
     CPP_CONFIGURE_LOG="$(mktemp)"
     if ! cmake --preset default -DCMAKE_CXX_COMPILER="$CPP_COMPILER_OVERRIDE" >"$CPP_CONFIGURE_LOG" 2>&1; then
       cat "$CPP_CONFIGURE_LOG"
-      if grep -qE "take_exclusive_file_lock|Failed to take the filesystem lock|CMAKE_CXX_COMPILER:.*not found|CMAKE_CXX_COMPILER:.+was not found" "$CPP_CONFIGURE_LOG"; then
+      if grep -qE "take_exclusive_file_lock|Failed to take the filesystem lock|CMAKE_CXX_COMPILER:.*not found|CMAKE_CXX_COMPILER:.+was not found|Could not find toolchain file|unable to find a build program" "$CPP_CONFIGURE_LOG"; then
         echo "[pre-push] ⚠️  로컬 C++ 빌드 환경 미충족 — C++ 로컬 체크 skip (CI가 최종 검증)"
       else
         echo "[pre-push] ❌ cmake configure 실패"
@@ -103,11 +103,21 @@ if paths_changed '^tools/' '^\.golangci\.yml$'; then
   echo "[pre-push] Go 변경 감지 — 린트 + 테스트 실행..."
   if ! command -v golangci-lint >/dev/null 2>&1; then
     echo "[pre-push] ⚠️  golangci-lint 미설치 — Go 린트 skip (CI가 최종 검증)"
-  elif ! (cd tools && golangci-lint run --timeout=5m); then
-    echo "[pre-push] ❌ golangci-lint 실패"
-    exit 1
   else
-    echo "[pre-push] ✅ golangci-lint OK"
+    LINT_OUTPUT=$(cd tools && golangci-lint run --timeout=5m 2>&1) && LINT_RC=0 || LINT_RC=$?
+    if [[ $LINT_RC -ne 0 ]]; then
+      if echo "$LINT_OUTPUT" | grep -q "Go language version.*lower"; then
+        echo "[pre-push] ⚠️  golangci-lint Go 버전 불일치 — Go 린트 skip (CI가 최종 검증)"
+      elif echo "$LINT_OUTPUT" | grep -q "configuration file for golangci-lint v2 with golangci-lint v1"; then
+        echo "[pre-push] ⚠️  golangci-lint 메이저 버전 불일치(v1 binary vs v2 config) — Go 린트 skip (CI가 최종 검증)"
+      else
+        echo "$LINT_OUTPUT"
+        echo "[pre-push] ❌ golangci-lint 실패"
+        exit 1
+      fi
+    else
+      echo "[pre-push] ✅ golangci-lint OK"
+    fi
   fi
   if ! (cd tools && go test -race ./...); then
     echo "[pre-push] ❌ go test 실패"

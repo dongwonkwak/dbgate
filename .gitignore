@@ -30,7 +30,9 @@ CTestTestfile.cmake
 
 # ─── Go ─────────────────────────────────────────────────────────────────────
 tools/cmd/dbgate-cli/dbgate-cli
+tools/cmd/dbgate-dashboard/dbgate-dashboard
 tools/dbgate-cli
+tools/dbgate-dashboard
 tools/vendor/
 
 # ─── Environment ────────────────────────────────────────────────────────────
@@ -49,15 +51,22 @@ docker-compose.override.yaml
 # ─── Fuzzing ────────────────────────────────────────────────────────────────
 crash-*
 leak-*
-corpus/
-# Allow seed corpus checked into the repo
-!tests/fuzz/corpus/
-!tests/fuzz/corpus/**
+tests/fuzz/generated/**
+!tests/fuzz/generated/.gitkeep
+# Allow curated seed corpus checked into the repo
+!tests/fuzz/seeds/
+!tests/fuzz/seeds/**
 
 # ─── Benchmarks ──────────────────────────────────────────────────────────────
 benchmarks/results/*.json
 !benchmarks/results/.gitkeep
 
+# ─── Policy Version Snapshots (자동 생성) ────────────────────────────────────
+.policy_versions/
+
 .claude/settings.local.json
 .claude/agent-memory/
 .claude/worktrees/
+
+# ─── Backup Files ──────────────────────────────────────────────────────────
+*.bck.yml
