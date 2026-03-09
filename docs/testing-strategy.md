@@ -137,24 +137,26 @@ cd build/tsan && ctest --output-on-failure
 cmake --preset fuzz
 cmake --build build/fuzz
 
-# 퍼저 실행 (60초, 시드 코퍼스 사용)
-./build/fuzz/fuzz_mysql_packet tests/fuzz/corpus/mysql_packet/ -max_total_time=60
-./build/fuzz/fuzz_sql_parser tests/fuzz/corpus/sql_parser/ -max_total_time=60
-./build/fuzz/fuzz_policy_engine tests/fuzz/corpus/policy_engine/ -max_total_time=60
+# 퍼저 실행 (60초, 입력=seeds, 출력=generated)
+mkdir -p tests/fuzz/generated/mysql_packet tests/fuzz/generated/sql_parser tests/fuzz/generated/policy_engine
+./build/fuzz/fuzz_mysql_packet tests/fuzz/generated/mysql_packet/ tests/fuzz/seeds/mysql_packet/ -max_total_time=60
+./build/fuzz/fuzz_sql_parser tests/fuzz/generated/sql_parser/ tests/fuzz/seeds/sql_parser/ -max_total_time=60
+./build/fuzz/fuzz_policy_engine tests/fuzz/generated/policy_engine/ tests/fuzz/seeds/policy_engine/ -max_total_time=60
 ```
 
 > **참고**: `fuzz` 프리셋은 `clang++-19`을 컴파일러로 사용한다.
 > 로컬 실행 시 LLVM 19 패키지가 설치되어 있어야 한다.
 
-### 4.4 시드 코퍼스
-- `tests/fuzz/corpus/mysql_packet/` — 정상 MySQL 패킷 바이너리 샘플
-- `tests/fuzz/corpus/sql_parser/` — 정상/비정상 SQL 문자열 샘플
-- `tests/fuzz/corpus/policy_engine/` — 정상 SQL + SessionContext 조합
+### 4.4 시드/생성 코퍼스
+- `tests/fuzz/seeds/mysql_packet/` — 정상 MySQL 패킷 바이너리 시드
+- `tests/fuzz/seeds/sql_parser/` — 정상/비정상 SQL 문자열 시드
+- `tests/fuzz/seeds/policy_engine/` — 정상 SQL + SessionContext 시드
+- `tests/fuzz/generated/*` — libFuzzer가 탐색 중 자동 생성한 코퍼스 (Git 비추적)
 
 ### 4.5 CI 연동
 - PR 시: 각 퍼저 **10초** smoke 실행
 - 주간: 각 퍼저 **10분** 심층 실행
-- 크래시 발견 시 재현 입력을 `tests/fuzz/crashes/`에 자동 저장
+- 크래시 발견 시 재현 입력은 `-artifact_prefix` 경로(주간 CI: `fuzz-artifacts/*/`)에 저장
 
 ---
 
@@ -252,7 +254,8 @@ CI Pipeline
 ## 8. 테스트 데이터 관리
 
 - 정책 파일: `config/policy.yaml` (테스트용 기본 정책)
-- 퍼징 코퍼스: `tests/fuzz/corpus/` (git 추적)
+- 퍼징 시드 코퍼스: `tests/fuzz/seeds/` (git 추적)
+- 퍼징 생성 코퍼스: `tests/fuzz/generated/` (git 비추적)
 - 벤치마크 결과: `benchmarks/results/` (`.gitignore`에 추가, CI 아티팩트로 보관)
 - 통합 테스트: docker-compose로 MySQL 자동 기동, 테스트 데이터 자동 생성
 

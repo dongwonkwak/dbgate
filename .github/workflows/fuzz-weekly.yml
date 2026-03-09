@@ -6,6 +6,10 @@ on:
     - cron: '0 3 * * 1'
   workflow_dispatch:
 
+env:
+  VCPKG_ROOT: /opt/vcpkg
+  VCPKG_BINCACHE: /tmp/vcpkg-bincache
+
 jobs:
   fuzz-deep:
     name: Deep Fuzz (10min/target)
@@ -16,8 +20,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y cmake ninja-build gnupg curl \
-            libboost-all-dev libspdlog-dev
+          sudo apt-get install -y cmake ninja-build gnupg curl
           # LLVM 19 apt repository (clang++-19 for libFuzzer)
           sudo mkdir -p /etc/apt/keyrings
           curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key \
@@ -31,6 +34,28 @@ jobs:
             exit 1
           fi
 
+      - name: Cache vcpkg binary packages
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ${{ env.VCPKG_BINCACHE }}
+          key: vcpkg-linux-x64-fuzz-${{ hashFiles('vcpkg.json') }}
+          restore-keys: |
+            vcpkg-linux-x64-fuzz-
+            vcpkg-linux-x64-
+
+      - name: Install vcpkg
+        run: |
+          git clone --depth=1 --branch 2026.01.16 https://github.com/microsoft/vcpkg.git $VCPKG_ROOT
+          actual_sha=$(git -C $VCPKG_ROOT rev-parse HEAD)
+          expected_sha="66c0373dc7fca549e5803087b9487edfe3aca0a1"
+          if [ "$actual_sha" != "$expected_sha" ]; then
+            echo "vcpkg SHA mismatch: expected $expected_sha, got $actual_sha"
+            exit 1
+          fi
+          $VCPKG_ROOT/bootstrap-vcpkg.sh -disableMetrics
+          mkdir -p $VCPKG_BINCACHE
+          echo "VCPKG_BINARY_SOURCES=clear;files,$VCPKG_BINCACHE,readwrite" >> "$GITHUB_ENV"
+
       - name: Configure (fuzz)
         run: cmake --preset fuzz
 
@@ -39,9 +64,10 @@ jobs:
 
       - name: Run fuzz_mysql_packet (10min)
         run: |
-          mkdir -p fuzz-artifacts/mysql_packet
+          mkdir -p fuzz-artifacts/mysql_packet tests/fuzz/generated/mysql_packet
           ./build/fuzz/fuzz_mysql_packet \
-            tests/fuzz/corpus/mysql_packet/ \
+            tests/fuzz/generated/mysql_packet/ \
+            tests/fuzz/seeds/mysql_packet/ \
             -max_total_time=600 \
             -artifact_prefix=fuzz-artifacts/mysql_packet/
         env:
@@ -49,9 +75,10 @@ jobs:
 
       - name: Run fuzz_sql_parser (10min)
         run: |
-          mkdir -p fuzz-artifacts/sql_parser
+          mkdir -p fuzz-artifacts/sql_parser tests/fuzz/generated/sql_parser
           ./build/fuzz/fuzz_sql_parser \
-            tests/fuzz/corpus/sql_parser/ \
+            tests/fuzz/generated/sql_parser/ \
+            tests/fuzz/seeds/sql_parser/ \
             -max_total_time=600 \
             -artifact_prefix=fuzz-artifacts/sql_parser/
         env:
@@ -59,9 +86,10 @@ jobs:
 
       - name: Run fuzz_policy_engine (10min)
         run: |
-          mkdir -p fuzz-artifacts/policy_engine
+          mkdir -p fuzz-artifacts/policy_engine tests/fuzz/generated/policy_engine
           ./build/fuzz/fuzz_policy_engine \
-            tests/fuzz/corpus/policy_engine/ \
+            tests/fuzz/generated/policy_engine/ \
+            tests/fuzz/seeds/policy_engine/ \
             -max_total_time=600 \
             -artifact_prefix=fuzz-artifacts/policy_engine/
         env:

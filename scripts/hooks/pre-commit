@@ -114,18 +114,59 @@ if [[ $RUN_GO_LINT -eq 1 ]]; then
   fi
 fi
 
-# ④ 테스트 데이터 네이밍 + 카탈로그 검증
-TEST_DATA_SCRIPT="scripts/check-test-data.sh"
-CORPUS_FILES=()
+# ④ Fuzz 코퍼스 가드: generated는 비추적, seeds 해시명은 금지
+SEED_ROOT="tests/fuzz/seeds"
+GENERATED_ROOT="tests/fuzz/generated"
+
+# 실수로 seeds에 생성된 untracked 해시 코퍼스는 자동 정리
+if [[ -d "$SEED_ROOT" ]]; then
+  HASH_JUNK=()
+  while IFS= read -r p; do
+    [[ -z "$p" ]] && continue
+    HASH_JUNK+=("$p")
+  done < <(
+    git ls-files --others --exclude-standard "$SEED_ROOT" |
+      awk -F/ '{n=$NF; if (n ~ /^[0-9a-f]{32,}$/) print}'
+  )
+  if [[ ${#HASH_JUNK[@]} -gt 0 ]]; then
+    rm -f "${HASH_JUNK[@]}"
+    echo "[pre-commit] 🧹 seeds 내 untracked 해시 코퍼스 ${#HASH_JUNK[@]}개 자동 삭제"
+  fi
+fi
+
+SEED_HASH_STAGED=()
+GENERATED_STAGED=()
 while IFS= read -r f; do
   [[ -z "$f" ]] && continue
-  [[ "$f" =~ ^tests/fuzz/corpus/ ]] && CORPUS_FILES+=("$f")
+  if [[ "$f" =~ ^${GENERATED_ROOT}/ ]]; then
+    if [[ "$f" == "${GENERATED_ROOT}/.gitkeep" ]]; then
+      continue
+    fi
+    GENERATED_STAGED+=("$f")
+    continue
+  fi
+  if [[ "$f" =~ ^${SEED_ROOT}/ ]]; then
+    base=$(basename "$f")
+    if [[ "$base" =~ ^[0-9a-f]{32,}$ ]]; then
+      SEED_HASH_STAGED+=("$f")
+    fi
+  fi
 done <<< "$STAGED"
 
-if [[ ${#CORPUS_FILES[@]} -gt 0 && -f "$TEST_DATA_SCRIPT" ]]; then
-  if ! bash "$TEST_DATA_SCRIPT"; then
-    HAS_ERROR=1
-  fi
+if [[ ${#GENERATED_STAGED[@]} -gt 0 ]]; then
+  echo "[pre-commit] ❌ tests/fuzz/generated 는 자동 생성 코퍼스 경로라 커밋할 수 없습니다:"
+  for f in "${GENERATED_STAGED[@]}"; do
+    echo "    $f"
+  done
+  HAS_ERROR=1
+fi
+
+if [[ ${#SEED_HASH_STAGED[@]} -gt 0 ]]; then
+  echo "[pre-commit] ❌ tests/fuzz/seeds 에 해시 파일명 코퍼스는 허용되지 않습니다:"
+  for f in "${SEED_HASH_STAGED[@]}"; do
+    echo "    $f"
+  done
+  HAS_ERROR=1
 fi
 
 if [[ $HAS_ERROR -ne 0 ]]; then

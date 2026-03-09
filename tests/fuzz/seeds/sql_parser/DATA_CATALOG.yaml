@@ -1,0 +1,33 @@
+catalog_version: 1
+description: "SQL 파서 퍼즈 테스트용 시드 코퍼스"
+files:
+  select_simple.sql:
+    intent: "기본 SELECT 구문 파싱 검증"
+  select_join.sql:
+    intent: "JOIN 절 포함 SELECT 구문 파싱 검증"
+  insert.sql:
+    intent: "INSERT 구문 파싱 검증"
+  update.sql:
+    intent: "UPDATE 구문 파싱 검증"
+  delete_where.sql:
+    intent: "WHERE 절 포함 DELETE 구문 파싱 검증"
+  delete_no_where.sql:
+    intent: "WHERE 절 없는 DELETE 구문 파싱 검증 (위험 쿼리 탐지)"
+  create_table.sql:
+    intent: "CREATE TABLE DDL 구문 파싱 검증"
+  alter_table.sql:
+    intent: "ALTER TABLE DDL 구문 파싱 검증"
+  drop_table.sql:
+    intent: "DROP TABLE DDL 구문 파싱 검증"
+  truncate.sql:
+    intent: "TRUNCATE 구문 파싱 검증"
+  call_proc.sql:
+    intent: "스토어드 프로시저 CALL 구문 파싱 검증"
+  prepare.sql:
+    intent: "PREPARE 문(prepared statement) 파싱 검증"
+  empty.sql:
+    intent: "빈 입력 경계값 처리 검증"
+  sqli_or.sql:
+    intent: "OR 1=1 기반 SQL 인젝션 탐지 검증"
+  sqli_union.sql:
+    intent: "UNION 기반 SQL 인젝션 탐지 검증"

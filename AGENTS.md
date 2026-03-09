@@ -62,10 +62,11 @@ fix(logger): 수정                   ← Linear ID 누락
 ## 테스트 데이터 규칙
 
 - 테스트 데이터 파일 생성 시 `docs/test-data-guidelines.md` 규칙을 따른다
-- 코퍼스 파일 추가/수정/삭제 시 해당 디렉토리의 `DATA_CATALOG.yaml`을 반드시 업데이트한다
-- 네이밍: `[category]_[description].[ext]` (소문자 + 언더스코어만 허용)
-- 금지: 해시명, `temp_*`, `tmp_*`, `untitled*`, 대문자, 공백
-- pre-commit 훅이 네이밍 + 카탈로그 동기화를 검증한다
+- `tests/fuzz/seeds/**`만 Git으로 관리한다 (수동 시드)
+- `tests/fuzz/generated/**`는 libFuzzer 자동 생성 코퍼스이며 Git으로 관리하지 않는다
+- `seeds` 파일 네이밍: `[category]_[description].[ext]` (소문자 + 언더스코어 권장)
+- `seeds` 변경 시 `DATA_CATALOG.yaml` 동기화는 권장(강제 훅 없음)
+- pre-commit 훅은 `generated` staged 파일을 거부하고 `seeds`의 untracked 해시 파일을 자동 정리한다
 
 ---
 

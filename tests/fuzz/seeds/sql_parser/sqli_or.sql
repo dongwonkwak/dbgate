@@ -1,0 +1,1 @@
+SELECT * FROM users WHERE name = '' OR 1=1 --
