@@ -1,1 +1,0 @@
-PREPARE stmt FROM "SELECT * FROM users"
