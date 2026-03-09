@@ -79,6 +79,19 @@ target_link_libraries(dbgate PRIVATE
     pthread
 )
 
+# ─── Precompiled Headers ──────────────────────────────────────────────────
+target_precompile_headers(dbgate PRIVATE
+    <string>
+    <vector>
+    <memory>
+    <optional>
+    <expected>
+    <functional>
+    <unordered_map>
+    <boost/asio.hpp>
+    <spdlog/spdlog.h>
+)
+
 # ─── Tests ──────────────────────────────────────────────────────────────────
 enable_testing()
 
@@ -125,6 +138,22 @@ target_link_libraries(dbgate_tests PRIVATE
     OpenSSL::SSL
     OpenSSL::Crypto
     pthread
+)
+
+# GCC 14 + -O3: false-positive -Warray-bounds/-Wstringop-overflow in std::string move ctor (test_logger.cpp:305)
+target_compile_options(dbgate_tests PRIVATE -Wno-array-bounds -Wno-stringop-overflow)
+
+target_precompile_headers(dbgate_tests PRIVATE
+    <string>
+    <vector>
+    <memory>
+    <optional>
+    <expected>
+    <functional>
+    <unordered_map>
+    <boost/asio.hpp>
+    <spdlog/spdlog.h>
+    <gtest/gtest.h>
 )
 
 set(DBGATE_SANITIZER_FLAGS "${CMAKE_CXX_FLAGS} ${CMAKE_EXE_LINKER_FLAGS}")

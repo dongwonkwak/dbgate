@@ -101,6 +101,7 @@
   "containerEnv": {
     "CLAUDE_CONFIG_DIR": "/root/.claude",
     "POWERLEVEL9K_DISABLE_GITSTATUS": "true",
-    "DBGATE_SKIP_POST_FORMAT": "1"
+    "DBGATE_SKIP_POST_FORMAT": "1",
+    "CMAKE_BUILD_PARALLEL_LEVEL": "2"
   }
 }

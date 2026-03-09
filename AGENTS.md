@@ -24,6 +24,15 @@ MySQL 클라이언트와 서버 사이에 위치하여 SQL을 파싱하고 정�
 
 ---
 
+## 빌드 규칙
+
+- **동시 빌드 금지**: 같은 `build/<preset>` 대상으로 `cmake --build`를 중복 실행하지 않는다. 빌드 전 기존 빌드 프로세스가 없는지 확인한다. `scripts/build.sh`를 사용하면 flock으로 자동 직렬화된다.
+- **병렬도 제한**: devcontainer(4vCPU/7.7GB)에서는 `-j2` 또는 `CMAKE_BUILD_PARALLEL_LEVEL=2`를 사용한다. OOM 방지 목적.
+- **PCH 적용**: `boost/asio.hpp`, `spdlog/spdlog.h`, 표준 라이브러리 헤더는 PCH로 사전 컴파일된다. 새 타겟 추가 시 `REUSE_FROM dbgate`로 PCH를 재사용한다.
+- **미적용 최적화**: ccache, `dbgate_lib` 공유 라이브러리 분리는 향후 적용 예정.
+
+---
+
 ## Git Workflow
 
 - 상세 규칙은 `CONTRIBUTING.md` 참조
