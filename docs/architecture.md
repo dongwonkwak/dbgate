@@ -185,6 +185,20 @@ While (세션 활성):
        - Atomic으로 카운터 증가
 ```
 
+### 세션 I/O 최적화
+
+- `proxy::Session`은 작은 패킷을 반복해서 읽고 쓰는 경로에서 syscall 수를 줄이기 위해 내부 read/write buffer를 유지한다.
+- 서버 응답 경로는 `RelayBuffer`가 header+payload를 버퍼에 누적한 뒤 필요 시 flush 하며, result set 중간에도 임계치 기반으로 분할 전송한다.
+- 클라이언트 요청 경로는 `ClientReadBuffer`가 `async_read_some` 기반으로 패킷을 누적 읽어 2단계 read(header, payload)를 단일 버퍼 흐름으로 줄인다.
+- 세션 버퍼는 단일 MySQL 패킷 최대 크기(3-byte length field 기준)를 넘겨 확장하지 않으며, 큰 패킷 처리 후 버퍼가 비면 초기 크기로 축소해 장기 세션의 상주 메모리를 제한한다.
+- packet write는 `write_packet_raw()`가 header와 payload를 scatter-gather로 묶어 전송해 별도 serialize 버퍼 할당을 피한다.
+
+### 로깅과 통계
+
+- `StructuredLogger`는 UTC ISO8601 타임스탬프를 `strftime + snprintf` 로 생성해 문자열 스트림 기반 포맷 비용을 줄인다.
+- 허용/차단/에러 로그는 세션 ID, 사용자, SQL prefix, 평가 경로를 남겨 parser, policy, proxy의 fail-close 판단을 추적 가능하게 한다.
+- `StatsCollector`는 atomic 기반 누적 카운터를 유지하고, UDS stats 서버와 health check는 같은 snapshot을 읽기 전용으로 소비한다.
+
 ## Fail-Close 원칙 (절대 위반 금지)
 
 **Fail-Close의 의미:**

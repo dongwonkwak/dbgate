@@ -30,7 +30,6 @@
 #include <algorithm>
 #include <cctype>
 #include <ranges>
-#include <regex>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -122,6 +121,11 @@ std::string_view trim(std::string_view s) {
                     static_cast<std::size_t>(end - begin));
 }
 
+// 단어 경계 확인용: 알파벳, 숫자, 밑줄
+bool is_word_char(char c) {
+    return (std::isalnum(static_cast<unsigned char>(c)) != 0) || c == '_';
+}
+
 // 정규화된 SQL(대문자, 주석 제거)에서 첫 번째 키워드를 추출한다.
 // 반환값: 첫 번째 공백-구분 토큰, 없으면 빈 문자열
 std::string extract_first_keyword(std::string_view normalized_sql) {
@@ -142,14 +146,29 @@ std::string extract_first_keyword(std::string_view normalized_sql) {
 // START REPLICA / START SLAVE 같은 관리 명령이 BEGIN 허용 경로로
 // 우회될 수 있으므로, 정확히 START TRANSACTION일 때만 kBegin으로 분류한다.
 bool is_start_transaction_statement(std::string_view normalized_sql) {
-    try {
-        static const std::regex start_txn_re(
-            R"(^START\s+TRANSACTION\b)",
-            std::regex_constants::ECMAScript);
-        return std::regex_search(normalized_sql.begin(), normalized_sql.end(), start_txn_re);
-    } catch (const std::regex_error&) {
+    const auto trimmed_sv = trim(normalized_sql);
+    // "START TRANSACTION" = 최소 17자
+    if (trimmed_sv.size() < 17) {
         return false;
     }
+    if (trimmed_sv.substr(0, 5) != "START") {
+        return false;
+    }
+    // START 뒤에 반드시 공백이 하나 이상 있어야 함
+    std::size_t pos = 5;
+    if (std::isspace(static_cast<unsigned char>(trimmed_sv[pos])) == 0) {
+        return false;
+    }
+    while (pos < trimmed_sv.size() &&
+           std::isspace(static_cast<unsigned char>(trimmed_sv[pos])) != 0) {
+        ++pos;
+    }
+    // TRANSACTION 키워드 확인 + 단어 경계
+    const auto remaining = trimmed_sv.substr(pos);
+    if (remaining.size() < 11 || remaining.substr(0, 11) != "TRANSACTION") {
+        return false;
+    }
+    return remaining.size() == 11 || !is_word_char(static_cast<char>(remaining[11]));
 }
 
 // 첫 번째 키워드 → SqlCommand 매핑
@@ -203,85 +222,85 @@ void extract_tables_for_keyword(const std::string& normalized_sql,
                                 std::string_view original_sql,
                                 const std::string& keyword,
                                 std::vector<std::string>& out_tables) {
-    // keyword 다음에 오는 테이블명(들)을 추출하는 정규식
-    // 쉼표 구분 복수 테이블: FROM t1, t2, t3
-    // 각 테이블명은 백틱 선택적 포함
-    const std::string pattern = keyword + R"(\s+(`?[\w.]+`?(?:\s*,\s*`?[\w.]+`?)*))";
+    // P1-1 수정: 원문 대문자 변환을 루프 밖에서 1회만 수행
+    const std::string orig_str(original_sql);
+    const std::string orig_upper = to_upper(original_sql);
 
-    try {
-        const std::regex re(pattern,
-                            std::regex_constants::icase | std::regex_constants::ECMAScript);
+    std::size_t search_pos = 0;
+    while (true) {
+        const auto kw_pos = normalized_sql.find(keyword, search_pos);
+        if (kw_pos == std::string::npos) {
+            break;
+        }
 
-        auto it = std::sregex_iterator(normalized_sql.begin(), normalized_sql.end(), re);
-        const auto end_it = std::sregex_iterator();
+        // 키워드 앞 단어 경계 확인
+        if (kw_pos > 0 && is_word_char(normalized_sql[kw_pos - 1])) {
+            search_pos = kw_pos + 1;
+            continue;
+        }
 
-        for (; it != end_it; ++it) {
-            const std::smatch& m = *it;
-            if (m.size() < 2) {
-                continue;
+        const auto after_kw = kw_pos + keyword.size();
+        // 키워드 뒤에 반드시 공백이 있어야 함
+        if (after_kw >= normalized_sql.size() ||
+            std::isspace(static_cast<unsigned char>(normalized_sql[after_kw])) == 0) {
+            search_pos = kw_pos + 1;
+            continue;
+        }
+
+        // 공백 건너뜀
+        auto pos = after_kw;
+        while (pos < normalized_sql.size() &&
+               std::isspace(static_cast<unsigned char>(normalized_sql[pos])) != 0) {
+            ++pos;
+        }
+
+        // 쉼표 구분 테이블명 추출
+        while (pos < normalized_sql.size()) {
+            // 앞 공백 건너뜀
+            while (pos < normalized_sql.size() &&
+                   std::isspace(static_cast<unsigned char>(normalized_sql[pos])) != 0) {
+                ++pos;
+            }
+            if (pos >= normalized_sql.size()) {
+                break;
             }
 
-            std::string table_list = m[1].str();
+            // 서브쿼리 '(' 시작 → 중단
+            if (normalized_sql[pos] == '(') {
+                break;
+            }
 
-            // 쉼표로 분리하여 각 테이블명 처리
-            std::size_t pos = 0;
-            while (pos <= table_list.size()) {
-                // 앞 공백 건너뜀
-                while (pos < table_list.size() &&
-                       std::isspace(static_cast<unsigned char>(table_list[pos])) != 0) {
-                    ++pos;
-                }
-                if (pos >= table_list.size()) {
-                    break;
-                }
+            // 테이블명 토큰 추출 (알파벳, 숫자, _, ., `)
+            const auto token_start = pos;
+            while (pos < normalized_sql.size() && is_table_name_char(normalized_sql[pos])) {
+                ++pos;
+            }
+            if (pos == token_start) {
+                break;
+            }
 
-                // 쉼표 찾기
-                const auto comma = table_list.find(',', pos);
-                std::string token;
-                if (comma == std::string::npos) {
-                    token = table_list.substr(pos);
-                    pos = table_list.size() + 1;
-                } else {
-                    token = table_list.substr(pos, comma - pos);
-                    pos = comma + 1;
-                }
+            std::string trimmed_token(normalized_sql, token_start, pos - token_start);
 
-                // 토큰 앞뒤 공백 제거
-                const auto trimmed_sv = trim(token);
-                if (trimmed_sv.empty()) {
-                    continue;
-                }
-                std::string trimmed_token(trimmed_sv);
+            // 백틱 제거
+            if (!trimmed_token.empty() && trimmed_token.front() == '`') {
+                trimmed_token.erase(0, 1);
+            }
+            if (!trimmed_token.empty() && trimmed_token.back() == '`') {
+                trimmed_token.pop_back();
+            }
 
-                // 백틱 제거
-                if (!trimmed_token.empty() && trimmed_token.front() == '`') {
-                    trimmed_token.erase(0, 1);
-                }
-                if (!trimmed_token.empty() && trimmed_token.back() == '`') {
-                    trimmed_token.pop_back();
-                }
-
-                // 서브쿼리 시작 '(' 건너뜀
-                if (trimmed_token.empty() || trimmed_token.front() == '(') {
-                    continue;
-                }
-
+            if (!trimmed_token.empty() && trimmed_token.front() != '(') {
                 // 원문 SQL에서 케이스 보존된 이름 추출
                 const std::string upper_token = to_upper(trimmed_token);
-                const std::string orig_str(original_sql);
-                const std::string orig_upper = to_upper(orig_str);
-
                 std::string final_name = trimmed_token;
 
-                // 원문에서 케이스 보존 추출 시도 (단어 경계 확인)
-                std::size_t search_from = 0;
-                while (search_from < orig_upper.size()) {
-                    const auto found = orig_upper.find(upper_token, search_from);
+                std::size_t orig_from = 0;
+                while (orig_from < orig_upper.size()) {
+                    const auto found = orig_upper.find(upper_token, orig_from);
                     if (found == std::string::npos) {
                         break;
                     }
 
-                    // 단어 경계 확인: 앞뒤가 식별자 문자가 아니어야 함
                     const bool valid_start =
                         (found == 0) || (!is_table_name_char(orig_str[found - 1]));
                     const bool valid_end =
@@ -292,7 +311,7 @@ void extract_tables_for_keyword(const std::string& normalized_sql,
                         final_name = orig_str.substr(found, upper_token.size());
                         break;
                     }
-                    search_from = found + 1;
+                    orig_from = found + 1;
                 }
 
                 // 중복 추가 방지 (대소문자 무관)
@@ -308,21 +327,38 @@ void extract_tables_for_keyword(const std::string& normalized_sql,
                     out_tables.push_back(std::move(final_name));
                 }
             }
+
+            // 쉼표 확인 → 다음 테이블
+            while (pos < normalized_sql.size() &&
+                   std::isspace(static_cast<unsigned char>(normalized_sql[pos])) != 0) {
+                ++pos;
+            }
+            if (pos < normalized_sql.size() && normalized_sql[pos] == ',') {
+                ++pos;
+                continue;
+            }
+            break;
         }
-    } catch (const std::regex_error& e) {
-        spdlog::warn("sql_parser: regex error for keyword '{}': {}", keyword, e.what());
+
+        search_pos = kw_pos + keyword.size();
     }
 }
 
 // 정규화된 SQL에서 "WHERE" 단어 포함 여부 확인
 // 단어 경계 적용: ELSEWHERE 같은 단어에서 오탐 방지
 bool has_where_keyword(const std::string& normalized_sql) {
-    try {
-        const std::regex where_re("\\bWHERE\\b", std::regex_constants::ECMAScript);
-        return std::regex_search(normalized_sql, where_re);
-    } catch (const std::regex_error&) {
-        return false;
+    static constexpr std::string_view k_where = "WHERE";
+    std::size_t pos = 0;
+    while ((pos = normalized_sql.find(k_where, pos)) != std::string::npos) {
+        const bool valid_start = (pos == 0) || !is_word_char(normalized_sql[pos - 1]);
+        const bool valid_end = (pos + k_where.size() >= normalized_sql.size()) ||
+                               !is_word_char(normalized_sql[pos + k_where.size()]);
+        if (valid_start && valid_end) {
+            return true;
+        }
+        ++pos;
     }
+    return false;
 }
 
 // ---------------------------------------------------------------------------
