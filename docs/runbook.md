@@ -106,11 +106,19 @@
 
 | 목적 | 명령 | 비고 |
 |---|---|---|
-| 기본 빌드 | `cmake --preset default && cmake --build build/default` | Release |
-| 디버그 빌드 | `cmake --preset debug && cmake --build build/debug` | |
-| ASan 빌드 | `cmake --preset asan && cmake --build build/asan` | 메모리 오류 탐지 |
-| TSan 빌드 | `cmake --preset tsan && cmake --build build/tsan` | 데이터레이스 탐지 |
-| 테스트 실행 | `cmake --build build/default --target test` | 전체 단위 테스트 322개 |
+| 기본 빌드 | `scripts/build.sh default` | Release, 동일 preset configure/build 직렬화 |
+| 디버그 빌드 | `scripts/build.sh debug` | `CMAKE_BUILD_PARALLEL_LEVEL` 미지정 시 `-j2` |
+| ASan 빌드 | `scripts/build.sh asan` | 메모리 오류 탐지 |
+| TSan 빌드 | `scripts/build.sh tsan` | 데이터레이스 탐지 |
+| Fuzz 빌드 | `scripts/build.sh fuzz` | libFuzzer 타깃 빌드 |
+| 테스트 실행 | `ctest --test-dir build/default --output-on-failure -j2` | 기본 프리셋 기준 전체 단위 테스트 |
+
+### 빌드 가드레일
+
+- 같은 `build/<preset>` 대상에 `cmake --preset`/`cmake --build`를 동시에 실행하지 않는다.
+- 로컬/개발 컨테이너 기본 병렬도는 `CMAKE_BUILD_PARALLEL_LEVEL=2` 또는 `-j2`를 사용한다.
+- `scripts/build.sh`는 preset별 flock 잠금으로 configure/build 전체를 직렬화하고 병렬도 기본값도 함께 처리한다.
+- `dbgate`, `dbgate_tests`는 CMake PCH를 사용한다. 정적 분석 도구가 GCC PCH를 읽지 못하는 경우 compile DB에서 `-include .../cmake_pch.hxx`와 `-Winvalid-pch`를 제거해 재현한다.
 
 ### 환경변수 기반 설정 (Docker/로컬)
 
@@ -183,7 +191,7 @@ vcpkg 의존성 컴파일 시간 절감을 위해 바이너리 캐시를 사용�
 | 실패 job | 원인 | 조치 |
 |---|---|---|
 | Build & Test | 빌드 오류 또는 테스트 실패 | 로컬 `cmake --preset default && ctest` 재현 |
-| Static Analysis | clang-tidy error 또는 cppcheck 오류 | `build/default/compile_commands.json` 기준으로 CI와 동일한 extra arg를 넣어 `clang-tidy` 재현 |
+| Static Analysis | clang-tidy error 또는 cppcheck 오류 | `build/debug/compile_commands.json` 기준으로 CI와 동일한 extra arg를 넣어 `clang-tidy` 재현 |
 | ASan | 메모리 오염/누수 | `cmake --preset asan && ctest` 로컬 실행 |
 | TSan | 데이터레이스 | `cmake --preset tsan && ctest` 로컬 실행 |
 | Go CI | 린트 오류 또는 테스트 실패 | `cd tools && golangci-lint run` 로컬 실행 |
@@ -195,16 +203,22 @@ GCC ThreadSanitizer가 aarch64에서 불안정하므로 runner 아키텍처를 �
 
 ### 로컬 clang-tidy 재현
 
-CI의 static analysis job은 `build/default/compile_commands.json` 에서 `src/*.cpp` 엔트리만 추려 별도 compile DB를 만들고, 아래 인자를 추가해 `clang-tidy`를 실행한다.
+CI의 static analysis job은 `build/debug/compile_commands.json` 에서 `src/*.cpp` 엔트리만 추려 별도 compile DB를 만들고, CMake PCH 관련 플래그(`-include .../cmake_pch.hxx`, `-Winvalid-pch`)를 제거한 뒤 아래 인자를 추가해 `clang-tidy`를 실행한다.
 
 ```bash
-db_path="build/default/compile_commands.json"
+db_path="build/debug/compile_commands.json"
 tidy_db_dir="/tmp/clang-tidy-db"
 tidy_db="${tidy_db_dir}/compile_commands.json"
 mkdir -p "${tidy_db_dir}"
 src_root="$(realpath src)"
 
 jq --arg root "${src_root}" '
+  def strip_pch_cmd:
+    gsub("(^| )-Winvalid-pch( |$)"; " ")
+    | gsub("(^| )-include +[^ ]*/cmake_pch\\.hxx( |$)"; " ")
+    | gsub(" +"; " ")
+    | sub("^ "; "")
+    | sub(" $"; "");
   def cmd:
     if .command then .command
     elif ((.arguments | type) == "array") then (.arguments | join(" "))
@@ -216,6 +230,7 @@ jq --arg root "${src_root}" '
         and (cmd | test("(^| )-std=(gnu\\+\\+23|c\\+\\+23)( |$)"))
       )
     | if .command then . else (. + {command: cmd}) end
+    | .command |= strip_pch_cmd
   ]
   | sort_by(.file)
   | unique_by(.file)

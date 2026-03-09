@@ -182,7 +182,13 @@ jobs:
           src_root="$(realpath src)"
           jq \
             --arg root "${src_root}" \
-            'def cmd:
+            'def strip_pch_cmd:
+               gsub("(^| )-Winvalid-pch( |$)"; " ")
+               | gsub("(^| )-include +[^ ]*/cmake_pch\\.hxx( |$)"; " ")
+               | gsub(" +"; " ")
+               | sub("^ "; "")
+               | sub(" $"; "");
+             def cmd:
                if .command then
                  .command
                elif ((.arguments | type) == "array") then
@@ -196,7 +202,11 @@ jobs:
                   (.file | startswith($root + "/"))
                   and (cmd | test("(^| )-std=(gnu\\+\\+23|c\\+\\+23)( |$)"))
                 )
-              | if .command then . else (. + {command: cmd}) end
+              | {
+                  directory,
+                  file,
+                  command: (cmd | strip_pch_cmd)
+                }
             ]
             | sort_by(.file)
             | unique_by(.file)' \
@@ -220,6 +230,10 @@ jobs:
           echo "clang-tidy compile DB entries: ${actual_count}"
           echo "sample compile command:"
           jq -r '.[0].command' "${tidy_db}"
+          if jq -e '.[] | (.command // "") | test("cmake_pch\\.hxx|-Winvalid-pch")' "${tidy_db}" >/dev/null; then
+            echo "❌ clang-tidy compile DB still contains CMake PCH flags"
+            exit 1
+          fi
 
       - name: Run clang-tidy
         run: |

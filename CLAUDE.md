@@ -10,6 +10,7 @@
 - 테스트 데이터(seeds/generated): `AGENTS.md`의 `테스트 데이터 규칙`, `docs/test-data-guidelines.md`
 - 문서 업데이트 의무/예외: `AGENTS.md`의 `Doc Impact 규칙`
 - 리뷰 기준(P0/P1, 보안/성능/품질): `AGENTS.md`의 `Review Guidelines`
+- 빌드 규칙(직렬화/병렬도/PCH): `AGENTS.md`의 `빌드 규칙`
 
 ## 서브에이전트 사용법
 - 서브에이전트 정의: .claude/agents/ 디렉토리
