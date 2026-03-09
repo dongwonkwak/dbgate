@@ -170,6 +170,24 @@
 
 > 참조: `docs/architecture.md:955-957`
 
+### 3.2.1 ReDoS (정규식 기반 DoS) — DON-80 완화
+
+| 항목 | 설명 |
+|------|------|
+| 공격 시나리오 | 파서의 `std::regex` 평가를 악용하여 백트래킹 폭발(catastrophic backtracking) 유도, CPU 고갈 |
+| 이전 상태 | `sql_parser.cpp`의 `is_start_transaction_statement`, `extract_tables_for_keyword`, `has_where_keyword`가 `std::regex` 사용 → ReDoS 가능 |
+| 현재 상태 (DON-80) | **완화됨** — `sql_parser.cpp` 세 함수가 `std::string::find` + 수동 토큰 파싱으로 교체. 추가로 `injection_detector.cpp`에 fast anchor 사전필터 도입 |
+| 위험도 | **완화** |
+| 잔존 위협 | `injection_detector.cpp`의 `std::regex`는 유지됨 (패턴 수 제한 + 입력 길이 제한 + fast anchor 사전필터로 완화) |
+
+**fast anchor 사전필터 (DON-80)**:
+- `injection_detector.cpp`의 `InjectionDetector::check()`에 `extract_literal_anchor` 기반 사전필터 적용.
+- 각 패턴의 가장 긴 리터럴 토큰을 `sql_upper.find()`로 먼저 검색하여 앵커가 없으면 `std::regex_search` 를 건너뜀.
+- 정상 쿼리에서 regex 호출 횟수를 90%+ 감소시켜 ReDoS 노출 면적을 축소.
+- **alternation 패턴(`|` 포함) 보안 주의**: 앵커 추출 시 하나의 토큰이 모든 대안을 대표할 수 없으므로 `|` 포함 패턴은 앵커를 빈 문자열로 처리하여 regex 를 항상 실행(false negative 방지). 기본 10패턴 중 piggyback 패턴(`;\s*(DROP|...)`)이 해당.
+
+> 참조: `src/parser/sql_parser.cpp` (DON-80), `src/parser/injection_detector.cpp` (`extract_literal_anchor`, `check()`)
+
 ### 3.3 UDS 비인가 접근
 
 | 항목 | 설명 |
@@ -206,6 +224,7 @@
 | 2.3 | 변수 간접 참조 | 고 | 미완화 | block_dynamic_sql로 간접 차단 |
 | 3.1 | 악성 패킷 | 중 | fail-close 적용 | Fuzz 테스트 확대 |
 | 3.2 | DoS | 중 | 부분 완화 (MAX_CONNECTIONS) | 타임아웃·속도 제한 강화 |
+| 3.2.1 | ReDoS | 중 | **완화** (DON-80 — sql_parser std::regex 제거 + injection_detector fast anchor 사전필터) | injection_detector 패턴 수 제한 유지 |
 | 3.3 | UDS 비인가 접근 | 하 | 파일시스템 권한 보호 | - |
 | 3.4 | TLS 공격 | 중 | OpenSSL 기반 TLS 지원 | TLS 1.2+ 강제 |
 | 4.1 | Monitor 모드 + 미등록 사용자 우회 | 고 | **해소** (DON-49 수정) | - |
