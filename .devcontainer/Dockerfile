@@ -4,7 +4,7 @@ ARG DEBIAN_FRONTEND=noninteractive
 ARG CLAUDE_CODE_VERSION=latest
 ARG GO_VERSION=1.26.0
 ARG GOPLS_VERSION=v0.21.1
-ARG GOLANGCI_LINT_VERSION=v1.64.8
+ARG GOLANGCI_LINT_VERSION=v2.1.6
 ARG GO_TOOLS_GOPROXY=https://proxy.golang.org,direct
 ARG ZSH_IN_DOCKER_VERSION=1.2.1
 
@@ -32,6 +32,8 @@ RUN set -eux; \
   apt-get install -y --no-install-recommends \
     # Build tools
     build-essential \
+    gcc-14 \
+    g++-14 \
     cmake \
     ninja-build \
     pkg-config \
@@ -51,15 +53,12 @@ RUN set -eux; \
     libmysqlclient-dev \
     # SSL
     libssl-dev \
-    # C++ libraries
-    libboost-all-dev \
-    libspdlog-dev \
-    libyaml-cpp-dev \
-    libgtest-dev \
     # clang tools (19: first version with Standard: c++23 support)
+    clang-19 \
     clang-tools-19 \
     clang-format-19 \
     clang-tidy-19 \
+    libclang-rt-19-dev \
     cppcheck \
     # Debugging / networking
     gdb \
@@ -80,9 +79,15 @@ RUN set -eux; \
   rm -rf /var/lib/apt/lists/*
 
 # -----------------------------
-# Set clang tools as default
+# Set GCC 14 as default
 # -----------------------------
 RUN set -eux; \
+  update-alternatives --install /usr/bin/gcc         gcc         /usr/bin/gcc-14         100; \
+  update-alternatives --install /usr/bin/g++         g++         /usr/bin/g++-14         100; \
+  update-alternatives --install /usr/bin/cc          cc          /usr/bin/gcc-14         100; \
+  update-alternatives --install /usr/bin/c++         c++         /usr/bin/g++-14         100; \
+  update-alternatives --install /usr/bin/clang       clang       /usr/bin/clang-19       100; \
+  update-alternatives --install /usr/bin/clang++     clang++     /usr/bin/clang++-19     100; \
   update-alternatives --install /usr/bin/clang-format clang-format /usr/bin/clang-format-19 100; \
   update-alternatives --install /usr/bin/clang-tidy   clang-tidy   /usr/bin/clang-tidy-19   100
 
@@ -127,7 +132,7 @@ ENV GOPATH=/workspace/.cache/go \
 RUN GOPROXY=${GO_TOOLS_GOPROXY} GOBIN=/usr/local/bin go install \
   golang.org/x/tools/gopls@${GOPLS_VERSION}
 RUN GOPROXY=${GO_TOOLS_GOPROXY} GOBIN=/usr/local/bin go install \
-  github.com/golangci/golangci-lint/cmd/golangci-lint@${GOLANGCI_LINT_VERSION}
+  github.com/golangci/golangci-lint/v2/cmd/golangci-lint@${GOLANGCI_LINT_VERSION}
 
 # -----------------------------
 # Devcontainer marker + workspace
@@ -190,6 +195,7 @@ RUN set -eux; \
 # -----------------------------
 ENV VCPKG_ROOT=/opt/vcpkg \
     VCPKG_DEFAULT_TRIPLET=x64-linux
+ENV CMAKE_TOOLCHAIN_FILE=${VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake
 RUN set -eux; \
   git clone https://github.com/microsoft/vcpkg.git "${VCPKG_ROOT}"; \
   "${VCPKG_ROOT}/bootstrap-vcpkg.sh" -disableMetrics; \
