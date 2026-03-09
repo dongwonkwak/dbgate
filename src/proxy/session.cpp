@@ -119,35 +119,31 @@ public:
     }
 
     // 서버에서 패킷 1개 읽기 (버퍼에서 제로카피)
-    auto read_packet()
-        -> boost::asio::awaitable<std::expected<PacketView, ParseError>> {
+    auto read_packet() -> boost::asio::awaitable<std::expected<PacketView, ParseError>> {
         // 헤더 4바이트 확보
         if (!co_await ensure_available(4)) {
-            co_return std::unexpected(ParseError{
-                .code = ParseErrorCode::kMalformedPacket,
-                .message = "failed to read packet header",
-                .context = "eof or read error"});
+            co_return std::unexpected(ParseError{.code = ParseErrorCode::kMalformedPacket,
+                                                 .message = "failed to read packet header",
+                                                 .context = "eof or read error"});
         }
 
         // payload 길이 파싱 (3바이트 LE)
-        const std::uint32_t payload_len =
-            static_cast<std::uint32_t>(rbuf_[rpos_]) |
-            (static_cast<std::uint32_t>(rbuf_[rpos_ + 1]) << 8U) |
-            (static_cast<std::uint32_t>(rbuf_[rpos_ + 2]) << 16U);
+        const std::uint32_t payload_len = static_cast<std::uint32_t>(rbuf_[rpos_]) |
+                                          (static_cast<std::uint32_t>(rbuf_[rpos_ + 1]) << 8U) |
+                                          (static_cast<std::uint32_t>(rbuf_[rpos_ + 2]) << 16U);
 
         const std::size_t total = 4 + payload_len;
 
         // 전체 패킷 확보
         if (!co_await ensure_available(total)) {
-            co_return std::unexpected(ParseError{
-                .code = ParseErrorCode::kMalformedPacket,
-                .message = "failed to read packet payload",
-                .context = "eof or read error"});
+            co_return std::unexpected(ParseError{.code = ParseErrorCode::kMalformedPacket,
+                                                 .message = "failed to read packet payload",
+                                                 .context = "eof or read error"});
         }
 
         // 제로카피 뷰 반환 — 다음 ensure_available 이전까지만 유효
         PacketView view{
-            .raw     = std::span<const std::uint8_t>(rbuf_.data() + rpos_, total),
+            .raw = std::span<const std::uint8_t>(rbuf_.data() + rpos_, total),
             .payload = std::span<const std::uint8_t>(rbuf_.data() + rpos_ + 4, payload_len),
             .sequence_id = rbuf_[rpos_ + 3],
         };
@@ -162,13 +158,10 @@ public:
     }
 
     // 출력 버퍼가 flush 임계값을 초과하는지 확인
-    [[nodiscard]] bool should_flush() const noexcept {
-        return wbuf_.size() >= kFlushThreshold;
-    }
+    [[nodiscard]] bool should_flush() const noexcept { return wbuf_.size() >= kFlushThreshold; }
 
     // 출력 버퍼를 대상 스트림으로 flush
-    auto flush(AsyncStream& dest)
-        -> boost::asio::awaitable<std::expected<void, ParseError>> {
+    auto flush(AsyncStream& dest) -> boost::asio::awaitable<std::expected<void, ParseError>> {
         if (wbuf_.empty()) {
             co_return std::expected<void, ParseError>{};
         }
@@ -181,18 +174,16 @@ public:
         wbuf_.clear();
 
         if (ec) {
-            co_return std::unexpected(ParseError{
-                .code = ParseErrorCode::kInternalError,
-                .message = "failed to flush relay buffer",
-                .context = ec.message()});
+            co_return std::unexpected(ParseError{.code = ParseErrorCode::kInternalError,
+                                                 .message = "failed to flush relay buffer",
+                                                 .context = ec.message()});
         }
         co_return std::expected<void, ParseError>{};
     }
 
 private:
     // 버퍼에 n바이트 이상이 연속으로 확보될 때까지 읽기를 반복한다.
-    auto ensure_available(std::size_t n)
-        -> boost::asio::awaitable<bool> {
+    auto ensure_available(std::size_t n) -> boost::asio::awaitable<bool> {
         while (rend_ - rpos_ < n) {
             // 컴팩션: 소비된 앞쪽 공간을 회수한다.
             if (rpos_ > 0) {
@@ -237,43 +228,36 @@ class ClientReadBuffer {
 public:
     static constexpr std::size_t kBufSize = 16384UL;  // 16 KB (COM_QUERY 패킷은 보통 < 1KB)
 
-    explicit ClientReadBuffer(AsyncStream& stream)
-        : stream_{&stream}, buf_(kBufSize) {}
+    explicit ClientReadBuffer(AsyncStream& stream) : stream_{&stream}, buf_(kBufSize) {}
 
-    auto read_packet()
-        -> boost::asio::awaitable<std::expected<MysqlPacket, ParseError>> {
+    auto read_packet() -> boost::asio::awaitable<std::expected<MysqlPacket, ParseError>> {
         // 헤더 4바이트 확보
         if (!co_await ensure_available(4)) {
-            co_return std::unexpected(ParseError{
-                .code = ParseErrorCode::kMalformedPacket,
-                .message = "failed to read packet header",
-                .context = "eof or read error"});
+            co_return std::unexpected(ParseError{.code = ParseErrorCode::kMalformedPacket,
+                                                 .message = "failed to read packet header",
+                                                 .context = "eof or read error"});
         }
 
-        const std::uint32_t payload_len =
-            static_cast<std::uint32_t>(buf_[pos_]) |
-            (static_cast<std::uint32_t>(buf_[pos_ + 1]) << 8U) |
-            (static_cast<std::uint32_t>(buf_[pos_ + 2]) << 16U);
+        const std::uint32_t payload_len = static_cast<std::uint32_t>(buf_[pos_]) |
+                                          (static_cast<std::uint32_t>(buf_[pos_ + 1]) << 8U) |
+                                          (static_cast<std::uint32_t>(buf_[pos_ + 2]) << 16U);
 
         const std::size_t total = 4 + payload_len;
 
         if (!co_await ensure_available(total)) {
-            co_return std::unexpected(ParseError{
-                .code = ParseErrorCode::kMalformedPacket,
-                .message = "failed to read packet payload",
-                .context = "eof or read error"});
+            co_return std::unexpected(ParseError{.code = ParseErrorCode::kMalformedPacket,
+                                                 .message = "failed to read packet payload",
+                                                 .context = "eof or read error"});
         }
 
-        auto result = MysqlPacket::parse(
-            std::span<const std::uint8_t>(buf_.data() + pos_, total));
+        auto result = MysqlPacket::parse(std::span<const std::uint8_t>(buf_.data() + pos_, total));
         pos_ += total;
 
         co_return result;
     }
 
 private:
-    auto ensure_available(std::size_t n)
-        -> boost::asio::awaitable<bool> {
+    auto ensure_available(std::size_t n) -> boost::asio::awaitable<bool> {
         while (end_ - pos_ < n) {
             // 컴팩션
             if (pos_ > 0) {
@@ -325,9 +309,8 @@ auto write_packet_raw(AsyncStream& stream, const MysqlPacket& pkt)
     };
 
     boost::system::error_code ec;
-    co_await boost::asio::async_write(stream,
-                                      bufs,
-                                      boost::asio::redirect_error(boost::asio::use_awaitable, ec));
+    co_await boost::asio::async_write(
+        stream, bufs, boost::asio::redirect_error(boost::asio::use_awaitable, ec));
 
     if (ec) {
         co_return std::unexpected(ParseError{.code = ParseErrorCode::kInternalError,
@@ -442,9 +425,7 @@ auto is_metadata_terminator_packet(std::span<const std::uint8_t> payload) -> boo
            is_resultset_final_ok_packet(payload);
 }
 
-auto relay_stmt_prepare_section(RelayBuffer& relay,
-                                std::uint16_t count,
-                                std::uint64_t session_id)
+auto relay_stmt_prepare_section(RelayBuffer& relay, std::uint16_t count, std::uint64_t session_id)
     -> boost::asio::awaitable<std::expected<void, ParseError>> {
     for (std::uint16_t i = 0; i < count; ++i) {
         auto def_result = co_await relay.read_packet();
@@ -495,10 +476,10 @@ auto relay_server_response_buffered(RelayBuffer& relay,
                                     std::uint64_t session_id)
     -> boost::asio::awaitable<std::expected<void, ParseError>> {
     enum class ResponseState {  // NOLINT(performance-enum-size)
-        kFirst,       // 첫 패킷 분석 중
-        kColumnDefs,  // column definition 읽는 중
-        kRows,        // row 데이터 읽는 중
-        kDone,        // 응답 완료
+        kFirst,                 // 첫 패킷 분석 중
+        kColumnDefs,            // column definition 읽는 중
+        kRows,                  // row 데이터 읽는 중
+        kDone,                  // 응답 완료
     };
 
     // --- 첫 패킷 ---
@@ -524,8 +505,8 @@ auto relay_server_response_buffered(RelayBuffer& relay,
             first_payload_size >= 12) {
             num_columns = static_cast<std::uint16_t>(first_result->payload[5]) |
                           (static_cast<std::uint16_t>(first_result->payload[6]) << 8U);
-            num_params  = static_cast<std::uint16_t>(first_result->payload[7]) |
-                          (static_cast<std::uint16_t>(first_result->payload[8]) << 8U);
+            num_params = static_cast<std::uint16_t>(first_result->payload[7]) |
+                         (static_cast<std::uint16_t>(first_result->payload[8]) << 8U);
         }
     }
 
@@ -580,16 +561,15 @@ auto relay_server_response_buffered(RelayBuffer& relay,
         if (!f) {
             co_return std::unexpected(f.error());
         }
-        co_return std::unexpected(ParseError{
-            .code = ParseErrorCode::kUnsupportedCommand,
-            .message = "LOCAL_INFILE response is not supported",
-            .context = "server response first byte = 0xFB"});
+        co_return std::unexpected(ParseError{.code = ParseErrorCode::kUnsupportedCommand,
+                                             .message = "LOCAL_INFILE response is not supported",
+                                             .context = "server response first byte = 0xFB"});
     }
 
     // Result Set: 첫 바이트 = column count (0x01~0xFC)
     if (first_byte < 0x01 || first_byte > 0xFC) {
-        spdlog::warn("[session {}] unexpected first byte in response: 0x{:02x}",
-                     session_id, first_byte);
+        spdlog::warn(
+            "[session {}] unexpected first byte in response: 0x{:02x}", session_id, first_byte);
         co_return co_await relay.flush(client_stream);
     }
 
@@ -605,14 +585,14 @@ auto relay_server_response_buffered(RelayBuffer& relay,
         }
 
         // PacketView 정보 추출 — enqueue 전에 수행 (span 유효 구간)
-        const std::uint8_t pkt_seq_id  = pkt_result->sequence_id;
-        const bool pkt_payload_empty   = pkt_result->payload.empty();
-        std::uint8_t byte0             = 0;
-        std::size_t  pkt_payload_size  = 0;
-        bool is_row_or_coldef          = false;
+        const std::uint8_t pkt_seq_id = pkt_result->sequence_id;
+        const bool pkt_payload_empty = pkt_result->payload.empty();
+        std::uint8_t byte0 = 0;
+        std::size_t pkt_payload_size = 0;
+        bool is_row_or_coldef = false;
 
         if (!pkt_payload_empty) {
-            byte0            = pkt_result->payload[0];
+            byte0 = pkt_result->payload[0];
             pkt_payload_size = pkt_result->payload.size();
         }
 
@@ -643,7 +623,9 @@ auto relay_server_response_buffered(RelayBuffer& relay,
 
         if (pkt_seq_id < prev_seq_id && prev_seq_id != 0xFF) {
             spdlog::warn("[session {}] seq_id reversed ({} -> {}), stopping relay",
-                         session_id, prev_seq_id, pkt_seq_id);
+                         session_id,
+                         prev_seq_id,
+                         pkt_seq_id);
             state = ResponseState::kDone;
             continue;
         }
@@ -659,20 +641,19 @@ auto relay_server_response_buffered(RelayBuffer& relay,
                     ++column_defs_read;
                     if (column_defs_read > column_count + 1) {
                         spdlog::warn("[session {}] too many column definitions: {} > {}",
-                                     session_id, column_defs_read, column_count);
+                                     session_id,
+                                     column_defs_read,
+                                     column_count);
                         state = ResponseState::kDone;
                     }
                 }
                 break;
 
             case ResponseState::kRows: {
-                const bool eof_or_err =
-                    (byte0 == 0xFE && pkt_payload_size < 9) || byte0 == 0xFF;
+                const bool eof_or_err = (byte0 == 0xFE && pkt_payload_size < 9) || byte0 == 0xFF;
                 // is_row_or_coldef: true이면 일반 row/coldef → 아직 결과 진행 중
                 const bool final_ok =
-                    request_type == CommandType::kComQuery &&
-                    byte0 == 0x00 &&
-                    !is_row_or_coldef;
+                    request_type == CommandType::kComQuery && byte0 == 0x00 && !is_row_or_coldef;
                 if (eof_or_err || final_ok) {
                     state = ResponseState::kDone;
                 }
@@ -1070,8 +1051,7 @@ auto Session::run() -> boost::asio::awaitable<void> {
                 }
 
                 auto relay_result = co_await relay_server_response_buffered(
-                    server_relay, client_stream_,
-                    cmd.command_type, cmd.sequence_id, session_id_);
+                    server_relay, client_stream_, cmd.command_type, cmd.sequence_id, session_id_);
                 if (!relay_result) {
                     spdlog::warn("[session {}] relay_server_response failed: {}",
                                  session_id_,
@@ -1150,8 +1130,7 @@ auto Session::run() -> boost::asio::awaitable<void> {
             }
 
             auto relay_result = co_await relay_server_response_buffered(
-                server_relay, client_stream_,
-                cmd.command_type, cmd.sequence_id, session_id_);
+                server_relay, client_stream_, cmd.command_type, cmd.sequence_id, session_id_);
             if (!relay_result) {
                 spdlog::warn("[session {}] failed to relay server response: {}",
                              session_id_,

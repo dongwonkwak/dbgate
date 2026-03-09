@@ -33,8 +33,8 @@
 // ---------------------------------------------------------------------------
 
 #include <gtest/gtest.h>
-#include <sys/stat.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/un.h>
 #include <unistd.h>
 
@@ -129,9 +129,8 @@ bool uds_bind_supported() {
 // 임시 소켓 경로 생성 (PID + 단조 카운터로 테스트 간 충돌 방지)
 std::filesystem::path temp_socket_path(const char* tag) {
     static std::atomic<int> counter{0};
-    return test_socket_dir() /
-           ("test_uds_" + std::to_string(::getpid()) + "_" +
-            std::to_string(counter.fetch_add(1)) + "_" + tag + ".sock");
+    return test_socket_dir() / ("test_uds_" + std::to_string(::getpid()) + "_" +
+                                std::to_string(counter.fetch_add(1)) + "_" + tag + ".sock");
 }
 
 // encode_le4: uint32_t → 4바이트 little-endian 배열
@@ -517,8 +516,7 @@ TEST_F(UdsServerTest, CommandField_InjectedInsideStringValue_UsesTopLevelCommand
     const std::string resp = client.recv();
 
     ASSERT_FALSE(resp.empty()) << "stats command must return a non-empty response";
-    EXPECT_NE(resp.find(R"("ok":true)"), std::string::npos)
-        << "stats must succeed. Got: " << resp;
+    EXPECT_NE(resp.find(R"("ok":true)"), std::string::npos) << "stats must succeed. Got: " << resp;
     // stats 응답에는 "payload" 필드가 있어야 함
     EXPECT_NE(resp.find(R"("payload")"), std::string::npos)
         << "stats response must contain 'payload' field. Got: " << resp;
@@ -547,8 +545,7 @@ TEST_F(UdsServerTest, CommandField_InjectedInsideNestedObject_UsesTopLevelComman
     const std::string resp = client.recv();
 
     ASSERT_FALSE(resp.empty()) << "stats command must return a non-empty response";
-    EXPECT_NE(resp.find(R"("ok":true)"), std::string::npos)
-        << "stats must succeed. Got: " << resp;
+    EXPECT_NE(resp.find(R"("ok":true)"), std::string::npos) << "stats must succeed. Got: " << resp;
     // stats 응답에는 "payload" 필드가 있어야 함
     EXPECT_NE(resp.find(R"("payload")"), std::string::npos)
         << "stats response must contain 'payload' field. Got: " << resp;
@@ -1191,7 +1188,8 @@ TEST_F(UdsPolicyVersioningTest, PolicyRollback_TargetVersionOutsidePayload_IsIgn
 //   payload 문자열 리터럴에 포함된 \"target_version\":N 패턴이
 //   실제 payload.target_version 값을 덮어쓰면 안 된다.
 // ---------------------------------------------------------------------------
-TEST_F(UdsPolicyVersioningTest, PolicyRollback_TargetVersionStringLiteral_DoesNotOverridePayloadField) {
+TEST_F(UdsPolicyVersioningTest,
+       PolicyRollback_TargetVersionStringLiteral_DoesNotOverridePayloadField) {
     const auto tmp_policy_path = version_dir_ / "rollback_literal_policy.yaml";
     {
         std::ofstream f(tmp_policy_path);
@@ -1249,7 +1247,8 @@ TEST_F(UdsPolicyVersioningTest, PolicyRollback_TargetVersionStringLiteral_DoesNo
 //   uint64 범위를 넘는 target_version 입력은 거부되어야 하며,
 //   현재 정책 버전이 변경되면 안 된다.
 // ---------------------------------------------------------------------------
-TEST_F(UdsPolicyVersioningTest, PolicyRollback_TargetVersionOverflow_ReturnsErrorAndKeepsCurrentPolicy) {
+TEST_F(UdsPolicyVersioningTest,
+       PolicyRollback_TargetVersionOverflow_ReturnsErrorAndKeepsCurrentPolicy) {
     const auto tmp_policy_path = version_dir_ / "rollback_overflow_policy.yaml";
     {
         std::ofstream f(tmp_policy_path);
@@ -1577,7 +1576,7 @@ TEST_F(UdsServerTest, SocketPermissions_0600) {
     start_server();
     ASSERT_TRUE(wait_for_socket());
 
-    struct stat st {};
+    struct stat st{};
     ASSERT_EQ(::stat(socket_path_.c_str(), &st), 0) << "stat() failed on socket file";
     // 하위 9비트만 비교 (owner/group/other rwx)
     const auto perms = st.st_mode & 0777;

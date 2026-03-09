@@ -41,14 +41,14 @@ std::string format_iso8601(const std::chrono::system_clock::time_point& tp) {
 
     // strftime + snprintf로 타임스탬프 포맷 (ostringstream 대비 ~10x 빠름)
     std::array<char, 32> date_buf{};
-    const auto date_len = std::strftime(date_buf.data(), date_buf.size(),
-                                         "%Y-%m-%dT%H:%M:%S", &tm_val);
+    const auto date_len =
+        std::strftime(date_buf.data(), date_buf.size(), "%Y-%m-%dT%H:%M:%S", &tm_val);
     if (date_len == 0) {
         return "1970-01-01T00:00:00.000Z";
     }
 
     std::array<char, 48> buf{};
-    (void)std::snprintf(buf.data(),   // NOLINT(cppcoreguidelines-pro-type-vararg)
+    (void)std::snprintf(buf.data(),  // NOLINT(cppcoreguidelines-pro-type-vararg)
                         buf.size(),
                         "%.*s.%03dZ",
                         static_cast<int>(date_len),

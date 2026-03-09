@@ -168,8 +168,7 @@ bool is_start_transaction_statement(std::string_view normalized_sql) {
     if (remaining.size() < 11 || remaining.substr(0, 11) != "TRANSACTION") {
         return false;
     }
-    return remaining.size() == 11 ||
-           !is_word_char(static_cast<char>(remaining[11]));
+    return remaining.size() == 11 || !is_word_char(static_cast<char>(remaining[11]));
 }
 
 // 첫 번째 키워드 → SqlCommand 매핑
@@ -351,11 +350,9 @@ bool has_where_keyword(const std::string& normalized_sql) {
     static constexpr std::string_view k_where = "WHERE";
     std::size_t pos = 0;
     while ((pos = normalized_sql.find(k_where, pos)) != std::string::npos) {
-        const bool valid_start =
-            (pos == 0) || !is_word_char(normalized_sql[pos - 1]);
-        const bool valid_end =
-            (pos + k_where.size() >= normalized_sql.size()) ||
-            !is_word_char(normalized_sql[pos + k_where.size()]);
+        const bool valid_start = (pos == 0) || !is_word_char(normalized_sql[pos - 1]);
+        const bool valid_end = (pos + k_where.size() >= normalized_sql.size()) ||
+                               !is_word_char(normalized_sql[pos + k_where.size()]);
         if (valid_start && valid_end) {
             return true;
         }
