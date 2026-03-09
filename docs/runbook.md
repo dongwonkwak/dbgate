@@ -106,7 +106,7 @@
 
 | 목적 | 명령 | 비고 |
 |---|---|---|
-| 기본 빌드 | `scripts/build.sh default` | Release, 동일 preset 빌드 직렬화 |
+| 기본 빌드 | `scripts/build.sh default` | Release, 동일 preset configure/build 직렬화 |
 | 디버그 빌드 | `scripts/build.sh debug` | `CMAKE_BUILD_PARALLEL_LEVEL` 미지정 시 `-j2` |
 | ASan 빌드 | `scripts/build.sh asan` | 메모리 오류 탐지 |
 | TSan 빌드 | `scripts/build.sh tsan` | 데이터레이스 탐지 |
@@ -115,9 +115,9 @@
 
 ### 빌드 가드레일
 
-- 같은 `build/<preset>` 대상에 `cmake --build`를 동시에 실행하지 않는다.
+- 같은 `build/<preset>` 대상에 `cmake --preset`/`cmake --build`를 동시에 실행하지 않는다.
 - 로컬/개발 컨테이너 기본 병렬도는 `CMAKE_BUILD_PARALLEL_LEVEL=2` 또는 `-j2`를 사용한다.
-- `scripts/build.sh`는 preset별 flock 잠금과 병렬도 기본값을 함께 처리한다.
+- `scripts/build.sh`는 preset별 flock 잠금으로 configure/build 전체를 직렬화하고 병렬도 기본값도 함께 처리한다.
 - `dbgate`, `dbgate_tests`는 CMake PCH를 사용한다. 정적 분석 도구가 GCC PCH를 읽지 못하는 경우 compile DB에서 `-include .../cmake_pch.hxx`와 `-Winvalid-pch`를 제거해 재현한다.
 
 ### 환경변수 기반 설정 (Docker/로컬)

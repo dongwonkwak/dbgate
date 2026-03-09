@@ -21,17 +21,17 @@ LOCK_FILE="/tmp/dbgate-build-${PRESET}.lock"
 
 export CMAKE_BUILD_PARALLEL_LEVEL="${CMAKE_BUILD_PARALLEL_LEVEL:-2}"
 
-# configure if build directory doesn't exist
-if [[ ! -d "${BUILD_DIR}" ]]; then
-    echo "[build.sh] Configuring preset '${PRESET}'..."
-    cmake --preset "${PRESET}"
-fi
-
-# flock: 동일 preset에 대해 한 번에 하나의 빌드만 실행
+# flock: 동일 preset에 대해 configure/build 전체를 직렬화한다.
 exec 9>"${LOCK_FILE}"
 if ! flock -n 9; then
     echo "[build.sh] 다른 빌드가 '${PRESET}' 대상으로 실행 중입니다. 대기합니다..." >&2
     flock 9
+fi
+
+# configure if the preset has not been generated yet
+if [[ ! -f "${BUILD_DIR}/CMakeCache.txt" ]]; then
+    echo "[build.sh] Configuring preset '${PRESET}'..."
+    cmake --preset "${PRESET}"
 fi
 
 echo "[build.sh] Building preset '${PRESET}' (-j${CMAKE_BUILD_PARALLEL_LEVEL})..."
