@@ -42,16 +42,20 @@
   - `readability-braces-around-statements`
   - `misc-const-correctness`
   - `modernize-return-braced-init-list`
+  - Boost.Asio `awaitable.hpp` 경유 `clang-analyzer-core.NullDereference`
 - 원인:
   - 세션 내부 보조 버퍼 클래스가 reference data member를 유지함
   - coroutine early return 분기에 brace가 빠져 style check에 걸림
   - 변경되지 않는 scatter-gather 전송 버퍼가 `const`로 선언되지 않음
   - 단순 문자열 반환식이 최신 초기화 스타일과 맞지 않음
+  - clang static analyzer가 coroutine + Boost.Asio awaitable 경로를 추적하며 외부 헤더 false positive를 낼 수 있음
 - 복구:
   - non-owning stream 참조는 pointer 등 재바인딩 가능한 형태로 저장
   - 단일문 분기에도 brace를 사용
   - 불변 로컬 버퍼는 `const`로 선언
   - 단순 생성 반환은 braced-init-list 사용
+  - `clang-tidy -p build/default <file>.cpp` 단독 실행 대신 CI와 같은 extra arg/별도 compile DB 구성으로 재현한다
+  - 외부 Boost 헤더에서만 발생한 `clang-analyzer-core.NullDereference`는 `.clang-tidy`에서 `WarningsAsErrors` 제외 항목이므로, 프로젝트 소스 error가 없으면 CI 실패 원인으로 보지 않는다
 
 ### 5) devcontainer에서 Integration Test 확인이 불안정한 경우
 - 증상:

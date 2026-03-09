@@ -90,6 +90,10 @@ Session::Session(std::uint64_t session_id,
 // ---------------------------------------------------------------------------
 namespace {
 
+constexpr std::size_t kMysqlMaxPayloadLen = 0x00FFFFFFU;
+constexpr std::size_t kMysqlMaxPacketSize = kMysqlMaxPayloadLen + 4U;
+constexpr std::size_t kRetainedBufferCeiling = 262144U;
+
 // ---------------------------------------------------------------------------
 // RelayBuffer
 //   서버→클라이언트 릴레이 전용 버퍼.
@@ -133,6 +137,11 @@ public:
                                           (static_cast<std::uint32_t>(rbuf_[rpos_ + 2]) << 16U);
 
         const std::size_t total = 4 + payload_len;
+        if (total > kMysqlMaxPacketSize) {
+            co_return std::unexpected(ParseError{.code = ParseErrorCode::kMalformedPacket,
+                                                 .message = "packet exceeds MySQL max size",
+                                                 .context = std::format("size={}", total)});
+        }
 
         // 전체 패킷 확보
         if (!co_await ensure_available(total)) {
@@ -172,6 +181,7 @@ public:
             boost::asio::buffer(wbuf_),
             boost::asio::redirect_error(boost::asio::use_awaitable, ec));
         wbuf_.clear();
+        shrink_write_buffer_if_idle();
 
         if (ec) {
             co_return std::unexpected(ParseError{.code = ParseErrorCode::kInternalError,
@@ -184,6 +194,10 @@ public:
 private:
     // 버퍼에 n바이트 이상이 연속으로 확보될 때까지 읽기를 반복한다.
     auto ensure_available(std::size_t n) -> boost::asio::awaitable<bool> {
+        if (n > kMysqlMaxPacketSize) {
+            co_return false;
+        }
+
         while (rend_ - rpos_ < n) {
             // 컴팩션: 소비된 앞쪽 공간을 회수한다.
             if (rpos_ > 0) {
@@ -192,11 +206,16 @@ private:
                 rend_ = avail;
                 rpos_ = 0;
             }
+            shrink_read_buffer_if_idle();
 
             // 남은 공간이 부족하면 버퍼 확장
             const std::size_t need = n - (rend_ - rpos_);
             if (rbuf_.size() - rend_ < need) {
-                rbuf_.resize(std::max(rbuf_.size() * 2, rend_ + n + 4096));
+                const std::size_t grow_to = std::max(rbuf_.size() * 2, rend_ + n);
+                if (grow_to > kMysqlMaxPacketSize) {
+                    co_return false;
+                }
+                rbuf_.resize(grow_to);
             }
 
             boost::system::error_code ec;
@@ -210,6 +229,26 @@ private:
             rend_ += bytes;
         }
         co_return true;
+    }
+
+    void shrink_read_buffer_if_idle() {
+        if (rpos_ != rend_ || rbuf_.size() <= kRetainedBufferCeiling) {
+            return;
+        }
+
+        rbuf_ = std::vector<std::uint8_t>(kInitBufSize);
+        rpos_ = 0;
+        rend_ = 0;
+    }
+
+    void shrink_write_buffer_if_idle() {
+        if (!wbuf_.empty() || wbuf_.capacity() <= kRetainedBufferCeiling) {
+            return;
+        }
+
+        std::vector<std::uint8_t> shrunk;
+        shrunk.reserve(kInitBufSize);
+        wbuf_.swap(shrunk);
     }
 
     AsyncStream* read_stream_;
@@ -243,6 +282,11 @@ public:
                                           (static_cast<std::uint32_t>(buf_[pos_ + 2]) << 16U);
 
         const std::size_t total = 4 + payload_len;
+        if (total > kMysqlMaxPacketSize) {
+            co_return std::unexpected(ParseError{.code = ParseErrorCode::kMalformedPacket,
+                                                 .message = "packet exceeds MySQL max size",
+                                                 .context = std::format("size={}", total)});
+        }
 
         if (!co_await ensure_available(total)) {
             co_return std::unexpected(ParseError{.code = ParseErrorCode::kMalformedPacket,
@@ -258,6 +302,10 @@ public:
 
 private:
     auto ensure_available(std::size_t n) -> boost::asio::awaitable<bool> {
+        if (n > kMysqlMaxPacketSize) {
+            co_return false;
+        }
+
         while (end_ - pos_ < n) {
             // 컴팩션
             if (pos_ > 0) {
@@ -268,8 +316,13 @@ private:
                 end_ = avail;
                 pos_ = 0;
             }
+            shrink_if_idle();
             if (buf_.size() - end_ < n - (end_ - pos_)) {
-                buf_.resize(std::max(buf_.size() * 2, end_ + n + 4096));
+                const std::size_t grow_to = std::max(buf_.size() * 2, end_ + n);
+                if (grow_to > kMysqlMaxPacketSize) {
+                    co_return false;
+                }
+                buf_.resize(grow_to);
             }
 
             boost::system::error_code ec;
@@ -283,6 +336,16 @@ private:
             end_ += bytes;
         }
         co_return true;
+    }
+
+    void shrink_if_idle() {
+        if (pos_ != end_ || buf_.size() <= kRetainedBufferCeiling) {
+            return;
+        }
+
+        buf_ = std::vector<std::uint8_t>(kBufSize);
+        pos_ = 0;
+        end_ = 0;
     }
 
     AsyncStream* stream_;

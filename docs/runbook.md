@@ -183,7 +183,7 @@ vcpkg 의존성 컴파일 시간 절감을 위해 바이너리 캐시를 사용�
 | 실패 job | 원인 | 조치 |
 |---|---|---|
 | Build & Test | 빌드 오류 또는 테스트 실패 | 로컬 `cmake --preset default && ctest` 재현 |
-| Static Analysis | clang-tidy error 또는 cppcheck 오류 | `clang-tidy -p build/debug <파일>.cpp` 로컬 실행 |
+| Static Analysis | clang-tidy error 또는 cppcheck 오류 | `build/default/compile_commands.json` 기준으로 CI와 동일한 extra arg를 넣어 `clang-tidy` 재현 |
 | ASan | 메모리 오염/누수 | `cmake --preset asan && ctest` 로컬 실행 |
 | TSan | 데이터레이스 | `cmake --preset tsan && ctest` 로컬 실행 |
 | Go CI | 린트 오류 또는 테스트 실패 | `cd tools && golangci-lint run` 로컬 실행 |
@@ -192,6 +192,53 @@ vcpkg 의존성 컴파일 시간 절감을 위해 바이너리 캐시를 사용�
 ### TSan runner 제약
 TSan job은 `ubuntu-24.04` (x86_64 고정) 에서만 실행한다.
 GCC ThreadSanitizer가 aarch64에서 불안정하므로 runner 아키텍처를 명시적으로 제한한다.
+
+### 로컬 clang-tidy 재현
+
+CI의 static analysis job은 `build/default/compile_commands.json` 에서 `src/*.cpp` 엔트리만 추려 별도 compile DB를 만들고, 아래 인자를 추가해 `clang-tidy`를 실행한다.
+
+```bash
+db_path="build/default/compile_commands.json"
+tidy_db_dir="/tmp/clang-tidy-db"
+tidy_db="${tidy_db_dir}/compile_commands.json"
+mkdir -p "${tidy_db_dir}"
+src_root="$(realpath src)"
+
+jq --arg root "${src_root}" '
+  def cmd:
+    if .command then .command
+    elif ((.arguments | type) == "array") then (.arguments | join(" "))
+    else "" end;
+  [
+    .[]
+    | select(
+        (.file | startswith($root + "/"))
+        and (cmd | test("(^| )-std=(gnu\\+\\+23|c\\+\\+23)( |$)"))
+      )
+    | if .command then . else (. + {command: cmd}) end
+  ]
+  | sort_by(.file)
+  | unique_by(.file)
+' "${db_path}" > "${tidy_db}"
+
+gcc_major="$(g++-14 -dumpfullversion -dumpversion | cut -d. -f1)"
+gcc_triple="$(g++-14 -dumpmachine)"
+args=(
+  -p "${tidy_db_dir}"
+  --extra-arg=-std=c++23
+  --extra-arg=--gcc-toolchain=/usr
+)
+if [ -d "/usr/include/c++/${gcc_major}" ]; then
+  args+=(--extra-arg=-isystem --extra-arg="/usr/include/c++/${gcc_major}")
+fi
+if [ -d "/usr/include/${gcc_triple}/c++/${gcc_major}" ]; then
+  args+=(--extra-arg=-isystem --extra-arg="/usr/include/${gcc_triple}/c++/${gcc_major}")
+fi
+
+clang-tidy "${args[@]}" "$(realpath src/proxy/session.cpp)"
+```
+
+로컬에서 단일 파일만 확인할 때도 위 인자 구성을 유지해야 CI와 같은 결과를 얻는다.
 
 ## Docker 배포 (멀티 인스턴스 + HAProxy)
 

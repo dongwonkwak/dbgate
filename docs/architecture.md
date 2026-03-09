@@ -190,6 +190,7 @@ While (세션 활성):
 - `proxy::Session`은 작은 패킷을 반복해서 읽고 쓰는 경로에서 syscall 수를 줄이기 위해 내부 read/write buffer를 유지한다.
 - 서버 응답 경로는 `RelayBuffer`가 header+payload를 버퍼에 누적한 뒤 필요 시 flush 하며, result set 중간에도 임계치 기반으로 분할 전송한다.
 - 클라이언트 요청 경로는 `ClientReadBuffer`가 `async_read_some` 기반으로 패킷을 누적 읽어 2단계 read(header, payload)를 단일 버퍼 흐름으로 줄인다.
+- 세션 버퍼는 단일 MySQL 패킷 최대 크기(3-byte length field 기준)를 넘겨 확장하지 않으며, 큰 패킷 처리 후 버퍼가 비면 초기 크기로 축소해 장기 세션의 상주 메모리를 제한한다.
 - packet write는 `write_packet_raw()`가 header와 payload를 scatter-gather로 묶어 전송해 별도 serialize 버퍼 할당을 피한다.
 
 ### 로깅과 통계
