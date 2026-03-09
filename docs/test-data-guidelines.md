@@ -45,4 +45,17 @@ empty_payload.bin
 1. 수동 시드는 `tests/fuzz/seeds/`에 추가/수정
 2. 퍼저 실행 시 출력 코퍼스는 `tests/fuzz/generated/`(또는 `/tmp`)로 지정
 3. `generated` 산출물은 커밋하지 않는다
-4. pre-commit 훅은 `generated` staged 파일을 거부하고, `seeds`의 untracked 해시 파일을 자동 정리한다
+4. pre-commit 훅은 `generated` staged 파일을 거부한다 (자동 삭제 없음)
+
+## 정리 명령
+
+```bash
+# generated 3일 초과 파일 정리 (기본)
+bash scripts/fuzz-prune-generated.sh
+
+# generated 전체 정리 (.gitkeep 제외)
+bash scripts/fuzz-prune-generated.sh --all
+
+# seeds에 잘못 생성된 해시형(untracked) 파일까지 함께 정리
+bash scripts/fuzz-prune-generated.sh --seeds-hash
+```

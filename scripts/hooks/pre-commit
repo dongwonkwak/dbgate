@@ -118,19 +118,13 @@ fi
 SEED_ROOT="tests/fuzz/seeds"
 GENERATED_ROOT="tests/fuzz/generated"
 
-# 실수로 seeds에 생성된 untracked 해시 코퍼스는 자동 정리
+# 실수로 seeds에 생성된 untracked 해시 코퍼스는 경고만 출력 (자동 삭제 금지)
 if [[ -d "$SEED_ROOT" ]]; then
-  HASH_JUNK=()
-  while IFS= read -r p; do
-    [[ -z "$p" ]] && continue
-    HASH_JUNK+=("$p")
-  done < <(
-    git ls-files --others --exclude-standard "$SEED_ROOT" |
-      awk -F/ '{n=$NF; if (n ~ /^[0-9a-f]{32,}$/) print}'
-  )
-  if [[ ${#HASH_JUNK[@]} -gt 0 ]]; then
-    rm -f "${HASH_JUNK[@]}"
-    echo "[pre-commit] 🧹 seeds 내 untracked 해시 코퍼스 ${#HASH_JUNK[@]}개 자동 삭제"
+  HASH_JUNK_COUNT=$(git ls-files --others --exclude-standard "$SEED_ROOT" \
+    | awk -F/ '{n=$NF; if (n ~ /^[0-9a-f]{32,}$/) c++} END{print c+0}')
+  if [[ "$HASH_JUNK_COUNT" -gt 0 ]]; then
+    echo "[pre-commit] ⚠️  seeds 내 untracked 해시 코퍼스 ${HASH_JUNK_COUNT}개 감지 (자동 삭제하지 않음)"
+    echo "[pre-commit]    정리 명령: bash scripts/fuzz-prune-generated.sh --seeds-hash"
   fi
 fi
 

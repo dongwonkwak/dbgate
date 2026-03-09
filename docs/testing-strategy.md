@@ -142,6 +142,9 @@ mkdir -p tests/fuzz/generated/mysql_packet tests/fuzz/generated/sql_parser tests
 ./build/fuzz/fuzz_mysql_packet tests/fuzz/generated/mysql_packet/ tests/fuzz/seeds/mysql_packet/ -max_total_time=60
 ./build/fuzz/fuzz_sql_parser tests/fuzz/generated/sql_parser/ tests/fuzz/seeds/sql_parser/ -max_total_time=60
 ./build/fuzz/fuzz_policy_engine tests/fuzz/generated/policy_engine/ tests/fuzz/seeds/policy_engine/ -max_total_time=60
+
+# generated 코퍼스 정리 (기본: 3일 초과 파일)
+bash scripts/fuzz-prune-generated.sh
 ```
 
 > **참고**: `fuzz` 프리셋은 `clang++-19`을 컴파일러로 사용한다.

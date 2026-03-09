@@ -4,6 +4,13 @@
 
 ---
 
+## 공유 규칙 참조 포인터
+- 아키텍처/의존성/fail-close: `AGENTS.md`의 `아키텍처 규칙`
+- 브랜치/PR/커밋 메시지: `AGENTS.md`의 `Git Workflow`, `커밋 메시지 형식`
+- 테스트 데이터(seeds/generated): `AGENTS.md`의 `테스트 데이터 규칙`, `docs/test-data-guidelines.md`
+- 문서 업데이트 의무/예외: `AGENTS.md`의 `Doc Impact 규칙`
+- 리뷰 기준(P0/P1, 보안/성능/품질): `AGENTS.md`의 `Review Guidelines`
+
 ## 서브에이전트 사용법
 - 서브에이전트 정의: .claude/agents/ 디렉토리
 - 호출: "[에이전트명] 서브에이전트를 사용해서 [작업]해줘"
@@ -29,6 +36,11 @@
 ## 프로세스 및 문서 참조
 - `docs/process/execution-brief-template.md` — Execution Brief 작성 규칙
 - `docs/process/state-transition-checklist.md` — 상태 전이 체크리스트
+- `docs/test-data-guidelines.md` — 퍼징 코퍼스 운영 규칙(`seeds`/`generated` 분리, 정리 스크립트)
+
+## 퍼징 코퍼스 작업 메모
+- 상세 규칙은 중복 기재하지 않고 `AGENTS.md`/`docs/test-data-guidelines.md`를 단일 기준으로 따른다.
+- 코퍼스 정리가 필요하면 `bash scripts/fuzz-prune-generated.sh`를 사용한다.
 
 ## Docker/배포 보안 규칙
 - 시크릿(비밀번호, 토큰, 인증정보)은 YAML/코드에 **평문 하드코딩 금지** → `env_file` 또는 docker secret 사용하고 `.env.example`만 커밋

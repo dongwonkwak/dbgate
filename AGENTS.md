@@ -66,7 +66,8 @@ fix(logger): 수정                   ← Linear ID 누락
 - `tests/fuzz/generated/**`는 libFuzzer 자동 생성 코퍼스이며 Git으로 관리하지 않는다
 - `seeds` 파일 네이밍: `[category]_[description].[ext]` (소문자 + 언더스코어 권장)
 - `seeds` 변경 시 `DATA_CATALOG.yaml` 동기화는 권장(강제 훅 없음)
-- pre-commit 훅은 `generated` staged 파일을 거부하고 `seeds`의 untracked 해시 파일을 자동 정리한다
+- pre-commit 훅은 `generated` staged 파일을 거부한다 (자동 삭제는 수행하지 않음)
+- 코퍼스 정리는 `scripts/fuzz-prune-generated.sh`를 사용한다
 
 ---
 
