@@ -1305,7 +1305,10 @@ auto HandshakeRelay::relay_handshake(AsyncStream& client_stream,
                 co_return std::expected<void, ParseError>{};
             }
             case detail::HandshakeAction::kTerminate: {
-                co_await write_packet(client_stream, pkt);
+                co_await relay_with_delta(client_stream,
+                                          pkt.serialize(),
+                                          ssl.server_to_client_delta(),
+                                          "failed to relay auth failure packet");
                 co_return std::unexpected(ParseError{
                     .code = ParseErrorCode::kMalformedPacket,
                     .message = "handshake auth failed",
