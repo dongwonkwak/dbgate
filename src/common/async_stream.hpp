@@ -15,6 +15,10 @@
 //   // TLS 모드
 //   AsyncStream stream{ssl::stream<tcp::socket>{std::move(tcp_socket), ssl_ctx}};
 //
+//   // MySQL 프로토콜 레벨 SSL 업그레이드
+//   auto res = stream.upgrade_to_ssl(ssl_ctx);  // tcp→ssl 타입 전환 (동기)
+//   co_await stream.async_handshake(client);    // 이후 TLS 핸드셰이크
+//
 //   // 공통 읽기/쓰기 (co_await 사용)
 //   co_await async_read(stream, buffer, use_awaitable);
 //
@@ -23,17 +27,24 @@
 //   - async_handshake: 평문 모드에서는 즉시 성공(no-op)
 //   - async_shutdown:  평문 모드에서는 no-op
 //   - lowest_layer():  TCP 소켓 직접 접근 (connect/close/cancel용)
+//   - upgrade_to_ssl(): 동기 함수 — variant 타입만 변경, TLS 핸드셰이크는 수행하지 않음
 // ---------------------------------------------------------------------------
 
 #include <boost/asio/any_io_executor.hpp>
 #include <boost/asio/async_result.hpp>
 #include <boost/asio/ip/tcp.hpp>
 #include <boost/asio/post.hpp>
+#include <boost/asio/ssl/context.hpp>
 #include <boost/asio/ssl/stream.hpp>
 #include <boost/asio/ssl/stream_base.hpp>
 #include <boost/system/error_code.hpp>
+#include <expected>
+#include <string>
 #include <type_traits>
 #include <variant>
+
+// OpenSSL forward declaration
+using SSL = struct ssl_st;
 
 // ---------------------------------------------------------------------------
 // AsyncStream
@@ -153,6 +164,26 @@ public:
     //   현재 TLS 모드인지 여부.
     // -----------------------------------------------------------------------
     [[nodiscard]] bool is_ssl() const noexcept;
+
+    // -----------------------------------------------------------------------
+    // upgrade_to_ssl  (동기 함수)
+    //   Pre-condition:  !is_ssl() (tcp_socket을 보유 중)
+    //   Post-condition: is_ssl() == true
+    //
+    //   내부 tcp_socket을 variant에서 꺼내 ssl_socket{move(tcp), ctx}으로
+    //   재구성한 뒤 variant에 저장한다.
+    //   TLS 핸드셰이크는 수행하지 않는다 — 호출자가 async_handshake()로 수행.
+    //
+    //   이미 SSL이면 에러 반환 (fail-close).
+    // -----------------------------------------------------------------------
+    auto upgrade_to_ssl(boost::asio::ssl::context& ctx) -> std::expected<void, std::string>;
+
+    // -----------------------------------------------------------------------
+    // native_ssl_handle
+    //   SSL* 핸들 반환 (SNI/인증서 검증 설정 등 OpenSSL 직접 접근용).
+    //   SSL 모드가 아니면 nullptr 반환.
+    // -----------------------------------------------------------------------
+    [[nodiscard]] auto native_ssl_handle() noexcept -> SSL*;
 
 private:
     std::variant<tcp_socket, ssl_socket> stream_;

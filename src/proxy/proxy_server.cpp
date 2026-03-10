@@ -457,18 +457,16 @@ boost::asio::awaitable<void> ProxyServer::accept_loop(boost::asio::ip::tcp::endp
         const auto server_ep = *resolve_results.begin();
 
         // ──────────────────────────────────────────────────────────────────
-        // Frontend SSL 처리
-        //   SSL이 활성화된 경우: ssl::stream으로 래핑 (핸드셰이크는 Session::run에서 수행)
-        //   SSL이 비활성화된 경우: tcp::socket → AsyncStream
+        // client_stream: 항상 평문 TCP AsyncStream으로 생성한다.
+        // MySQL 프로토콜 레벨 SSL 업그레이드는 HandshakeRelay::relay_handshake()
+        // 내부에서 수행된다 (frontend_ssl_ctx_ptr가 유효한 경우).
         // ──────────────────────────────────────────────────────────────────
-        AsyncStream client_stream{AsyncStream::tcp_socket{client_sock.get_executor()}};
+        AsyncStream client_stream{std::move(client_sock)};
 
-        if (frontend_ssl_ctx_.has_value()) {
-            AsyncStream::ssl_socket ssl_client_sock{std::move(client_sock), *frontend_ssl_ctx_};
-            client_stream = AsyncStream{std::move(ssl_client_sock)};
-        } else {
-            client_stream = AsyncStream{std::move(client_sock)};
-        }
+        // Frontend SSL context 포인터 (nullptr이면 평문)
+        // NOLINTNEXTLINE(misc-const-correctness)
+        boost::asio::ssl::context* frontend_ssl_ctx_ptr =
+            frontend_ssl_ctx_.has_value() ? &(*frontend_ssl_ctx_) : nullptr;
 
         // Backend SSL context 포인터 (nullptr이면 평문)
         // NOLINTNEXTLINE(misc-const-correctness)
@@ -482,6 +480,7 @@ boost::asio::awaitable<void> ProxyServer::accept_loop(boost::asio::ip::tcp::endp
         auto session = std::make_shared<Session>(sid,
                                                  std::move(client_stream),
                                                  server_ep,
+                                                 frontend_ssl_ctx_ptr,
                                                  backend_ssl_ctx_ptr,
                                                  config_.backend_ssl_verify,
                                                  backend_tls_server_name,

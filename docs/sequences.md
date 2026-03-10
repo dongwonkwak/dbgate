@@ -47,6 +47,8 @@ sequenceDiagram
 4. 파싱 실패/정책 오류 (`fail-close`)
 5. UDS stats 조회 (`tools` -> `src/stats`)
 6. 정책 리로드 (CLI/신호 기반)
+7. SSL/TLS 양 구간 핸드셰이크 시퀀스
+8. MySQL 프로토콜 레벨 SSL 업그레이드 (SSLRequest) — Frontend only, Backend only, Both
 
 ## 시나리오 1: MySQL 핸드셰이크 패스스루
 - 목적: 클라이언트 인증 플러그인 호환성을 유지하면서 핸드셰이크를 투명 릴레이한다.
@@ -614,6 +616,153 @@ co_await server_stream_.async_write_some(buffer, use_awaitable);
 // - TLS 모드: ssl::stream의 메서드 호출 (암호화)
 // - 평문 모드: tcp::socket의 메서드 호출 (평문)
 // → 호출 코드는 변경 불필요
+```
+
+## 시나리오 8: MySQL 프로토콜 레벨 SSL 업그레이드 (SSLRequest)
+
+- 목적: Frontend/Backend SSL 업그레이드 중 MySQL 프로토콜 레벨의 32B SSLRequest 핸들링
+- 트리거: `HandshakeRelay::relay_handshake()` 중 Backend SSL 활성화 또는 Frontend에서 SSLRequest 수신
+- 관련 컴포넌트: `protocol/handshake` (is_ssl_request, build_ssl_request, SslUpgradeState), `common/async_stream` (upgrade_to_ssl)
+- 결과: Frontend/Backend TLS 독립적 업그레이드 + seq_id 자동 보정
+
+### 서브 시나리오 8-1: Backend SSL Only (프록시 → MySQL)
+
+```
+목적: 프록시가 Backend SSL을 설정했을 때, MySQL 서버로의 SSLRequest 자동 전송
+
+Proxy                                    MySQL Server
+  |                                         |
+  |(1) relay_handshake() 진입               |
+  |(2) Backend SSL 검출 + 서버 greeting 수신 |
+  |                                         |
+  |(3) CLIENT_SSL capability 검증           |
+  |    서버 미지원 → fail-close, 세션 종료
+  |                                         |
+  |(4) 클라이언트에 greeting relay          |
+  |    (Frontend SSL 없으면 CLIENT_SSL 비트 제거)
+  |                                         |
+  |(5) 클라이언트 응답 수신                 |
+  |    (평문 또는 (이미 Frontend TLS) HandshakeResponse)
+  |                                         |
+  |(6) username/db 추출                    |
+  |                                         |
+  |(7) SSLRequest 생성 (seq_id=1)         |
+  |--- SSLRequest(32B) ----------------->|
+  |    capability(4B): CLIENT_SSL SET    |
+  |    max_packet(4B): from response    |
+  |    charset(1B): from response       |
+  |    reserved(23B): 0x00              |
+  |                                        |
+  |(8) Backend TLS 업그레이드              |
+  |    server_stream.upgrade_to_ssl()     |
+  |    SNI 설정, 인증서 검증              |
+  |    async_handshake(client role)       |
+  |    실패 → fail-close, ParseError      |
+  |                                        |
+  |(9) HandshakeResponse relay (seq_id=2)|
+  |--- HandshakeResponse41 ------------->|
+  |    CLIENT_SSL 강제 SET                |
+  |    EOF/QUERY_ATTRIBUTES 제거          |
+  |                                        |
+  |(10) State: kWaitServerAuth 전환      |
+```
+
+### 서브 시나리오 8-2: Frontend SSL + Backend SSL (클라이언트 → 프록시 → MySQL)
+
+```
+목적: 클라이언트가 프로토콜 레벨 SSLRequest를 보내고,
+      프록시도 동시에 Backend SSL을 사용하는 경우
+
+Client                 Proxy                       MySQL Server
+  |                      |                              |
+  |(1) TCP 연결 수립       |                              |
+  |<--- greeting ---------|                              |
+  |(Proxy가 relay,        |                              |
+  | CLIENT_SSL 유지됨)    |                              |
+  |                       |                              |
+  |(2) SSLRequest(32B) -->|                              |
+  |    is_ssl_request()   |                              |
+  |    = true (32B,       |                              |
+  |    CLIENT_SSL set)    |                              |
+  |                       |                              |
+  |                       |(3) Frontend TLS upgrade      |
+  |                       |    client_stream.upgrade_to_ssl(server role)
+  |                       |    async_handshake()        |
+  |                       |                              |
+  |<--- TLS Handshake ----|                              |
+  |    Frontend [TLS] 완료 |                              |
+  |                       |                              |
+  |--- HandshakeResp41 -->|                              |
+  |    (TLS 위에서 전송)   |                              |
+  |                       |(4) Backend SSLRequest 생성   |
+  |                       |--- SSLRequest (seq_id=1) -->|
+  |                       |                              |
+  |                       |(5) Backend TLS upgrade      |
+  |                       |    server_stream.upgrade_to_ssl(client role)
+  |                       |    async_handshake()        |
+  |                       |                              |
+  |                       |<--- TLS Handshake ---------|
+  |                       |    Backend [TLS] 완료       |
+  |                       |                              |
+  |                       |(6) HandshakeResp relay     |
+  |                       |--- seq_id=2 (delta 적용) ->|
+  |                       |    CLIENT_SSL 강제 SET      |
+  |                       |                              |
+  |                       |(7) seq_id delta 계산        |
+  |                       |    frontend=1, backend=1    |
+  |                       |    delta = (1) - (1) = 0    |
+  |                       |    (이후 auth 패킷 보정 없음)|
+```
+
+### seq_id 델타 계산 규칙
+
+```
+SslUpgradeState 구조체:
+  bool frontend = false;  // Frontend TLS 업그레이드 완료
+  bool backend = false;   // Backend TLS 업그레이드 완료
+
+Client→Server 방향 (relay_with_delta(..., client_to_server_delta())):
+  delta = (backend ? 1 : 0) - (frontend ? 1 : 0)
+  - Backend만: delta = +1 (backend seq_id 밀림)
+  - Frontend만: delta = -1 (frontend seq_id 밀림)
+  - Both: delta = 0 (대칭)
+  - None: delta = 0 (평문 모드)
+
+Server→Client 방향 (relay_with_delta(..., server_to_client_delta())):
+  delta = (frontend ? 1 : 0) - (backend ? 1 : 0)
+  - Frontend만: delta = +1
+  - Backend만: delta = -1
+  - Both: delta = 0
+  - None: delta = 0
+
+적용 시점:
+  - 모든 auth 응답 패킷 (OK, ERR, AuthSwitch, AuthMoreData) relay 시
+  - HandshakeResponse relay 시 (state=kWaitClientResponse)
+  - 완료 패킷 (OK) relay 시
+```
+
+### 에러 처리 (fail-close)
+
+```
+실패 상황:
+1. 서버가 CLIENT_SSL 미지원
+   → spdlog::error(...) 로깅
+   → ParseError 반환
+   → 세션 즉시 종료
+
+2. Frontend TLS 핸드셰이크 실패
+   → ParseError
+   → 세션 종료
+
+3. Backend TLS 핸드셰이크 실패
+   → ParseError
+   → 세션 종료
+
+4. SSLRequest/HandshakeResponse 전송 실패
+   → ParseError
+   → 세션 종료
+
+모든 경우: fail-close 원칙 준수
 ```
 
 ## 시나리오 2+: TODO

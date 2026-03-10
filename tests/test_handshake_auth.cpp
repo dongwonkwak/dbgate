@@ -17,6 +17,7 @@
 #include <string>
 #include <vector>
 
+#include "protocol/handshake.hpp"
 #include "protocol/handshake_detail.hpp"
 #include "protocol/mysql_packet.hpp"
 
@@ -1162,4 +1163,147 @@ TEST(ExtractHandshakeResponseFields, LegacyAuthResponseNoNullTerminator_IsError)
     EXPECT_EQ(result.error().code, ParseErrorCode::kMalformedPacket);
     EXPECT_NE(result.error().message.find("auth_response missing null terminator"),
               std::string::npos);
+}
+
+// ===========================================================================
+// DON-79: is_ssl_request — SSLRequest 패킷 판별 순수 함수
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// IS-1. 정확히 32바이트 + CLIENT_SSL(0x0800) set → true
+// ---------------------------------------------------------------------------
+TEST(IsSslRequest, Exactly32BytesWithSslBit_ReturnsTrue) {
+    // SSLRequest payload: capability_flags(4B LE) + max_packet_size(4B) + charset(1B) +
+    // reserved(23B)
+    std::vector<std::uint8_t> payload(32, 0x00U);
+    // capability_flags = CLIENT_PROTOCOL_41(0x0200) | CLIENT_SSL(0x0800)
+    constexpr std::uint32_t caps = 0x00000A00U;
+    payload[0] = static_cast<std::uint8_t>(caps & 0xFFU);
+    payload[1] = static_cast<std::uint8_t>((caps >> 8U) & 0xFFU);
+    payload[2] = static_cast<std::uint8_t>((caps >> 16U) & 0xFFU);
+    payload[3] = static_cast<std::uint8_t>((caps >> 24U) & 0xFFU);
+
+    EXPECT_TRUE(HandshakeRelay::is_ssl_request(std::span<const std::uint8_t>{payload}));
+}
+
+// ---------------------------------------------------------------------------
+// IS-2. 32바이트이지만 CLIENT_SSL bit 없음 → false
+// ---------------------------------------------------------------------------
+TEST(IsSslRequest, Exactly32BytesWithoutSslBit_ReturnsFalse) {
+    std::vector<std::uint8_t> payload(32, 0x00U);
+    // CLIENT_PROTOCOL_41만 설정 (CLIENT_SSL 없음)
+    constexpr std::uint32_t caps = 0x00000200U;
+    payload[0] = static_cast<std::uint8_t>(caps & 0xFFU);
+    payload[1] = static_cast<std::uint8_t>((caps >> 8U) & 0xFFU);
+
+    EXPECT_FALSE(HandshakeRelay::is_ssl_request(std::span<const std::uint8_t>{payload}));
+}
+
+// ---------------------------------------------------------------------------
+// IS-3. payload가 32바이트보다 짧으면 → false
+// ---------------------------------------------------------------------------
+TEST(IsSslRequest, PayloadTooShort_ReturnsFalse) {
+    std::vector<std::uint8_t> payload(31, 0x00U);
+    // CLIENT_SSL bit 설정해도 길이가 틀리면 false
+    payload[0] = 0x00U;
+    payload[1] = 0x08U;  // 0x0800 LE high byte
+
+    EXPECT_FALSE(HandshakeRelay::is_ssl_request(std::span<const std::uint8_t>{payload}));
+}
+
+// ---------------------------------------------------------------------------
+// IS-4. payload가 32바이트보다 길면 → false (HandshakeResponse41 아님)
+// ---------------------------------------------------------------------------
+TEST(IsSslRequest, PayloadTooLong_ReturnsFalse) {
+    std::vector<std::uint8_t> payload(33, 0x00U);
+    // CLIENT_SSL bit 설정해도 길이가 틀리면 false
+    payload[1] = 0x08U;
+
+    EXPECT_FALSE(HandshakeRelay::is_ssl_request(std::span<const std::uint8_t>{payload}));
+}
+
+// ---------------------------------------------------------------------------
+// IS-5. 빈 payload → false
+// ---------------------------------------------------------------------------
+TEST(IsSslRequest, EmptyPayload_ReturnsFalse) {
+    const std::vector<std::uint8_t> payload;
+    EXPECT_FALSE(HandshakeRelay::is_ssl_request(std::span<const std::uint8_t>{payload}));
+}
+
+// ===========================================================================
+// DON-79: build_ssl_request — SSLRequest 패킷 빌더
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// BSR-1. 반환값은 정확히 36바이트 (헤더 4 + payload 32)
+// ---------------------------------------------------------------------------
+TEST(BuildSslRequest, ReturnsExactly36Bytes) {
+    constexpr std::uint32_t caps = 0x00000A00U;
+    const auto buf = HandshakeRelay::build_ssl_request(1U, caps, 0x00FFFFFFU, 33U);
+    EXPECT_EQ(buf.size(), 36U);
+}
+
+// ---------------------------------------------------------------------------
+// BSR-2. 헤더의 payload 길이 필드 = 32 (3바이트 LE)
+// ---------------------------------------------------------------------------
+TEST(BuildSslRequest, HeaderPayloadLength_Is32) {
+    constexpr std::uint32_t caps = 0x00000A00U;
+    const auto buf = HandshakeRelay::build_ssl_request(1U, caps, 0x00FFFFFFU, 33U);
+    ASSERT_GE(buf.size(), 4U);
+
+    const std::uint32_t len = static_cast<std::uint32_t>(buf[0]) |
+                              (static_cast<std::uint32_t>(buf[1]) << 8U) |
+                              (static_cast<std::uint32_t>(buf[2]) << 16U);
+    EXPECT_EQ(len, 32U);
+}
+
+// ---------------------------------------------------------------------------
+// BSR-3. 헤더의 seq_id 필드가 전달한 값과 일치
+// ---------------------------------------------------------------------------
+TEST(BuildSslRequest, SequenceId_MatchesInput) {
+    constexpr std::uint32_t caps = 0x00000A00U;
+    const auto buf = HandshakeRelay::build_ssl_request(/*seq_id=*/3U, caps, 0x00FFFFFFU, 33U);
+    ASSERT_GE(buf.size(), 4U);
+    EXPECT_EQ(buf[3], 3U);
+}
+
+// ---------------------------------------------------------------------------
+// BSR-4. payload의 capability_flags가 전달한 값과 일치
+// ---------------------------------------------------------------------------
+TEST(BuildSslRequest, CapabilityFlags_MatchesInput) {
+    constexpr std::uint32_t caps =
+        0x00008A00U;  // CLIENT_SSL | CLIENT_PROTOCOL_41 | CLIENT_SECURE_CONNECTION
+    const auto buf = HandshakeRelay::build_ssl_request(1U, caps, 0x00FFFFFFU, 33U);
+    ASSERT_GE(buf.size(), 8U);
+
+    const std::uint32_t extracted =
+        static_cast<std::uint32_t>(buf[4]) | (static_cast<std::uint32_t>(buf[5]) << 8U) |
+        (static_cast<std::uint32_t>(buf[6]) << 16U) | (static_cast<std::uint32_t>(buf[7]) << 24U);
+    EXPECT_EQ(extracted, caps);
+}
+
+// ---------------------------------------------------------------------------
+// BSR-5. build_ssl_request로 만든 패킷의 payload(offset 4+)는 is_ssl_request로 검증 가능
+// ---------------------------------------------------------------------------
+TEST(BuildSslRequest, PayloadSatisfiesIsSslRequest) {
+    constexpr std::uint32_t caps = 0x00000A00U;  // CLIENT_SSL set
+    const auto buf = HandshakeRelay::build_ssl_request(1U, caps, 0x00FFFFFFU, 33U);
+    ASSERT_EQ(buf.size(), 36U);
+
+    // payload는 offset 4부터 32바이트
+    const std::span<const std::uint8_t> payload{buf.data() + 4, 32U};
+    EXPECT_TRUE(HandshakeRelay::is_ssl_request(payload));
+}
+
+// ---------------------------------------------------------------------------
+// BSR-6. build_ssl_request — charset 필드가 올바른 위치에 기록됨
+// ---------------------------------------------------------------------------
+TEST(BuildSslRequest, CharsetField_AtCorrectOffset) {
+    constexpr std::uint32_t caps = 0x00000A00U;
+    constexpr std::uint8_t charset = 45U;  // utf8mb4
+    const auto buf = HandshakeRelay::build_ssl_request(1U, caps, 0x00FFFFFFU, charset);
+    ASSERT_GE(buf.size(), 17U);
+
+    // payload offset 0..3 = cap_flags, 4..7 = max_pkt, 8 = charset
+    EXPECT_EQ(buf[4 + 8], charset);
 }

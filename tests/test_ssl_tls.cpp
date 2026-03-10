@@ -361,6 +361,7 @@ TEST(SessionSslTest, BackendSslCtxNull_PlaintextMode) {
     const auto session = std::make_shared<Session>(10ULL,
                                                    std::move(client_stream),
                                                    server_ep,
+                                                   nullptr,  // frontend_ssl_ctx=nullptr: 평문 모드
                                                    nullptr,  // backend_ssl_ctx=nullptr: 평문 모드
                                                    false,
                                                    "",
@@ -509,6 +510,7 @@ TEST(SessionSslModeTest, NullBackendSslCtx_InitialStateIsHandshaking) {
     const auto session = std::make_shared<Session>(20ULL,
                                                    std::move(client_stream),
                                                    server_ep,
+                                                   nullptr,  // frontend_ssl_ctx=nullptr: 평문 모드
                                                    nullptr,  // backend_ssl_ctx=nullptr: 평문 모드
                                                    false,
                                                    "",
@@ -538,6 +540,7 @@ TEST(SessionSslModeTest, ValidBackendSslCtx_InitialStateIsHandshaking) {
         std::make_shared<Session>(21ULL,
                                   std::move(client_stream),
                                   server_ep,
+                                  nullptr,           // frontend_ssl_ctx=nullptr: 평문 모드
                                   &backend_ssl_ctx,  // backend_ssl_ctx 유효 포인터: TLS 모드 준비
                                   false,
                                   "",
@@ -588,6 +591,7 @@ TEST(SessionSslModeTest, ValidBackendSslCtx_CloseIdempotent) {
     const auto session = std::make_shared<Session>(22ULL,
                                                    std::move(client_stream),
                                                    server_ep,
+                                                   nullptr,  // frontend_ssl_ctx=nullptr: 평문 모드
                                                    &backend_ssl_ctx,
                                                    false,
                                                    "",

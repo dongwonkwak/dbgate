@@ -235,20 +235,89 @@ class HandshakeRelay {
 public:
     HandshakeRelay() = default;
 
-    // 핸드셰이크 수행 (AsyncStream 인터페이스)
-    // client_stream: 클라이언트 측 AsyncStream (accept 된 소켓, 평문 또는 TLS)
-    // server_stream: MySQL 서버 측 AsyncStream (connect 된 소켓, 평문 또는 TLS)
-    // ctx: [out] db_user, db_name, handshake_done 이 채워짐
-    // 반환: co_awaitable, 성공 시 expected<void, ParseError>
+    // relay_handshake
+    //   MySQL 핸드셰이크를 클라이언트 ↔ 서버 간 투명하게 릴레이한다.
+    //   MySQL 프로토콜 레벨 SSL 업그레이드(SSLRequest) 지원.
+    //
+    //   client_stream: 클라이언트 측 AsyncStream (accept 된 소켓, 평문 또는 TLS)
+    //   server_stream: MySQL 서버 측 AsyncStream (connect 된 소켓, 평문 또는 TLS)
+    //   ctx: [out] db_user, db_name, handshake_done 이 채워짐
+    //   ssl_config: SSL 설정 (frontend/backend 여부, SNI 등)
+    //
+    //   반환: co_awaitable, 성공 시 expected<void, ParseError>
+    //
+    //   MySQL 프로토콜 레벨 SSL 업그레이드 흐름:
+    //   - Backend SSL: 서버 greeting 수신 후 SSLRequest 전송 → TLS 업그레이드
+    //   - Frontend SSL: 클라이언트가 SSLRequest 발송 시 → TLS 업그레이드 후 실제 HandshakeResponse41 읽기
+    //   - seq_id 자동 보정: Frontend/Backend 간 seq_id 델타 추적 및 적용
     static auto relay_handshake(
-        AsyncStream&           client_stream,
-        AsyncStream&           server_stream,
-        SessionContext&        ctx
+        AsyncStream&                    client_stream,
+        AsyncStream&                    server_stream,
+        SessionContext&                 ctx,
+        const HandshakeSSLConfig&       ssl_config = {}
     ) -> boost::asio::awaitable<std::expected<void, ParseError>>;
+
+    // is_ssl_request
+    //   payload가 MySQL SSLRequest 패킷인지 판별한다.
+    //   조건: payload 정확히 32바이트 AND CLIENT_SSL capability bit(0x0800) set
+    //
+    //   SSLRequest 포맷 (32B):
+    //     capability_flags (4B LE) — CLIENT_SSL(0x0800) 포함
+    //     max_packet_size (4B LE)
+    //     charset (1B)
+    //     reserved (23B zero padding)
+    [[nodiscard]] static auto is_ssl_request(std::span<const std::uint8_t> payload) noexcept
+        -> bool;
+
+    // build_ssl_request
+    //   MySQL 프로토콜 레벨 SSL 업그레이드용 SSLRequest 패킷을 생성한다.
+    //
+    //   seq_id: 패킷 시퀀스 번호 (일반적으로 1)
+    //   capability_flags: 클라이언트 capability (CLIENT_SSL 비트 반드시 포함, 0x0800)
+    //   max_packet_size: 최대 패킷 크기 (일반적으로 2^24 - 1 또는 16MB)
+    //   charset: 문자 집합 ID (latin1=33 등)
+    //
+    //   반환: 36B 완전한 MySQL 패킷 (4B 헤더 + 32B payload)
+    //         헤더: payload_length(3B)=32 + seq_id(1B)
+    //         payload: capability_flags(4) + max_packet_size(4) + charset(1) + reserved(23)
+    [[nodiscard]] static auto build_ssl_request(std::uint8_t seq_id,
+                                                std::uint32_t capability_flags,
+                                                std::uint32_t max_packet_size,
+                                                std::uint8_t charset) -> std::vector<std::uint8_t>;
 };
 ```
 
-**동작** (8-state 상태 머신):
+**동작** (8-state 상태 머신 + MySQL 프로토콜 레벨 SSL 업그레이드):
+
+#### 0단계: Backend SSL 사전 처리 (상태: kWaitServerGreeting)
+
+Backend SSL 설정 활성화 시 수행 (순차 진행, 실패 시 fail-close):
+
+1. **서버 greeting 수신**
+   - 서버가 CLIENT_SSL(0x0800) capability를 지원하는지 검증
+   - 미지원 시 ParseError 반환 (fail-close)
+
+2. **클라이언트에 greeting relay**
+   - Frontend SSL 여부 반영하여 capability flags 수정
+   - CLIENT_SSL 비트: Frontend SSL 있으면 유지, 없으면 제거
+
+3. **클라이언트 응답 읽기**
+   - Frontend SSL이면 SSLRequest 수신 → `is_ssl_request()` 판별 후 TLS 업그레이드
+   - 평문 클라이언트면 HandshakeResponse41 바로 읽기
+
+4. **Backend에 SSLRequest 전송 (seq_id=1)**
+   - 클라이언트 HandshakeResponse41의 첫 32B를 활용해 SSLRequest 생성
+   - CLIENT_SSL 비트 강제 SET, EOF/QUERY_ATTRIBUTES 제거
+
+5. **Backend TLS 업그레이드**
+   - `server_stream.upgrade_to_ssl()` 호출
+   - SNI 설정 (backend_tls_server_name)
+   - 인증서 검증 (backend_ssl_verify)
+   - TLS 핸드셰이크 실패 시 ParseError 반환 (fail-close)
+
+6. **HandshakeResponse41을 백엔드로 relay (seq_id=2)**
+   - CLIENT_SSL 비트 강제 SET, EOF/QUERY_ATTRIBUTES 제거
+   - 이후 상태: kWaitServerAuth로 전환
 
 #### 1단계: Initial Handshake (서버 → 클라이언트)
 - 상태: `kWaitServerGreeting`
@@ -259,7 +328,17 @@ public:
 #### 2단계: Handshake Response (클라이언트 → 서버)
 - 상태: `kWaitClientResponse`
 - 패킷 수신 (seq=1)
-- 페이로드에서 username, database 필드 추출:
+
+**Frontend SSL 경로** (Backend SSL이 없거나 Frontend SSL만 추가인 경우):
+- `is_ssl_request()` 판별: payload=32B AND CLIENT_SSL bit set?
+- **Yes**: SSLRequest 수신
+  - `client_stream.upgrade_to_ssl()` 호출 → TLS 핸드셰이크 (server 역할)
+  - 진짜 HandshakeResponse41 재읽기
+  - 이후 정상 경로로 진행 (username/db 추출 및 서버 relay, seq_id delta 적용)
+- **No**: 정상 HandshakeResponse41
+
+**공통 경로**:
+- 페이로드에서 username, database 필드 추출 (1회만):
   - **Capability flags 읽기**: offset 0-3, 4byte LE
   - **Username**: offset 32 이후의 null-terminated string
   - **Auth Response 건너뜀**:
@@ -271,12 +350,20 @@ public:
   - **Database**: `CLIENT_CONNECT_WITH_DB (0x00000008)` 플래그 확인 후 추출
     - 플래그 설정 시 반드시 null-terminated string 필요 → 없으면 ParseError
     - 플래그 미설정 시 빈 문자열
-- 서버로 투명 전달 → 다음 상태: `kWaitServerAuth`
+- 서버로 전달 (seq_id delta 적용):
+  - Backend SSL 활성화 시: seq_id delta 자동 계산 및 적용
+  - 클라이언트 capability: CLIENT_SSL 조건부 SET (backend SSL 시 강제)
+  - → 다음 상태: `kWaitServerAuth`
 - 액션: `kRelayToServer`
 
 #### 3단계: Server Auth Response (서버 → 클라이언트)
 - 상태: `kWaitServerAuth`
-- 패킷 수신 (seq=2)
+- 패킷 수신 (seq=2, 또는 seq_id delta 적용 후 조정됨)
+- **seq_id delta 추적**:
+  - Frontend TLS 업그레이드 시: frontend=true → delta 변화
+  - Backend TLS 업그레이드 시: backend=true → delta 변화
+  - 모든 auth 응답 패킷 relay 시: `relay_with_delta(pkt, server_to_client_delta())` 적용
+  - delta 계산: `server_to_client_delta() = (frontend ? 1 : 0) - (backend ? 1 : 0)`
 - 응답 타입 판단 (`classify_auth_response`):
 
 | 응답 타입 | 패킷 첫바이트 | 조건 | 다음 상태 | 액션 |

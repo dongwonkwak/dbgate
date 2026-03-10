@@ -1,5 +1,7 @@
 #include "common/async_stream.hpp"
 
+#include <openssl/ssl.h>
+
 // ---------------------------------------------------------------------------
 // AsyncStream — 비템플릿 메서드 구현
 //
@@ -73,4 +75,38 @@ auto AsyncStream::lowest_layer() -> tcp_socket& {
 
 bool AsyncStream::is_ssl() const noexcept {
     return std::holds_alternative<ssl_socket>(stream_);
+}
+
+// ─── upgrade_to_ssl ─────────────────────────────────────────────────────────
+//   Pre-condition:  variant가 tcp_socket을 보유 중 (!is_ssl())
+//   Post-condition: variant가 ssl_socket을 보유 중 (is_ssl())
+//
+//   tcp_socket을 variant에서 move out → ssl_socket{move(tcp), ctx} 생성 →
+//   variant에 저장한다. TLS 핸드셰이크는 수행하지 않는다.
+//
+//   GCC -Wmaybe-uninitialized 오진단을 방지하기 위해 pragma로 억제한다.
+
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmaybe-uninitialized"
+
+auto AsyncStream::upgrade_to_ssl(boost::asio::ssl::context& ctx)
+    -> std::expected<void, std::string> {
+    if (is_ssl()) {
+        return std::unexpected(std::string{"upgrade_to_ssl: stream is already in SSL mode"});
+    }
+
+    auto tcp_sock = std::move(std::get<tcp_socket>(stream_));
+    stream_.emplace<ssl_socket>(std::move(tcp_sock), ctx);
+    return {};
+}
+
+#pragma GCC diagnostic pop
+
+// ─── native_ssl_handle ──────────────────────────────────────────────────────
+
+auto AsyncStream::native_ssl_handle() noexcept -> SSL* {
+    if (!is_ssl()) {
+        return nullptr;
+    }
+    return std::get<ssl_socket>(stream_).native_handle();
 }

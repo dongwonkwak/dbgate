@@ -153,6 +153,7 @@ TEST(SessionTest, InitialState) {
     auto session = std::make_shared<Session>(42ULL,
                                              std::move(client_stream),
                                              server_ep,
+                                             nullptr,  // frontend_ssl_ctx: 평문 모드
                                              nullptr,  // backend_ssl_ctx: 평문 모드
                                              false,
                                              "",
@@ -174,6 +175,7 @@ TEST(SessionTest, ContextAfterConstruction) {
     auto session = std::make_shared<Session>(99ULL,
                                              std::move(client_stream),
                                              server_ep,
+                                             nullptr,  // frontend_ssl_ctx: 평문 모드
                                              nullptr,  // backend_ssl_ctx: 평문 모드
                                              false,
                                              "",
@@ -200,6 +202,7 @@ TEST(SessionTest, CloseIdempotent) {
     auto session = std::make_shared<Session>(1ULL,
                                              std::move(client_stream),
                                              server_ep,
+                                             nullptr,  // frontend_ssl_ctx: 평문 모드
                                              nullptr,  // backend_ssl_ctx: 평문 모드
                                              false,
                                              "",

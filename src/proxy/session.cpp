@@ -1,8 +1,5 @@
 #include "proxy/session.hpp"
 
-#include <openssl/err.h>
-#include <openssl/ssl.h>
-#include <openssl/x509_vfy.h>
 #include <spdlog/spdlog.h>
 
 #include <array>
@@ -12,7 +9,6 @@
 #include <boost/asio/post.hpp>
 #include <boost/asio/read.hpp>
 #include <boost/asio/redirect_error.hpp>
-#include <boost/asio/ssl/stream.hpp>
 #include <boost/asio/use_awaitable.hpp>
 #include <boost/asio/write.hpp>
 #include <chrono>
@@ -58,6 +54,7 @@ static const std::vector<std::string> kDefaultInjectionPatterns = {
 Session::Session(std::uint64_t session_id,
                  AsyncStream client_stream,
                  boost::asio::ip::tcp::endpoint server_endpoint,
+                 boost::asio::ssl::context* frontend_ssl_ctx,
                  boost::asio::ssl::context* backend_ssl_ctx,
                  bool backend_ssl_verify,
                  const std::string& backend_tls_server_name,  // NOLINT(modernize-pass-by-value)
@@ -70,6 +67,7 @@ Session::Session(std::uint64_t session_id,
       ,
       server_stream_{boost::asio::ip::tcp::socket{client_stream_.get_executor()}},
       server_endpoint_{std::move(server_endpoint)},
+      frontend_ssl_ctx_{frontend_ssl_ctx},
       backend_ssl_ctx_{backend_ssl_ctx},
       backend_ssl_verify_{backend_ssl_verify},
       backend_tls_server_name_{backend_tls_server_name},
@@ -763,30 +761,7 @@ auto Session::run() -> boost::asio::awaitable<void> {
     } const stats_guard{stats_.get()};
 
     // -----------------------------------------------------------------------
-    // 3. Frontend TLS 핸드셰이크 (클라이언트 구간 TLS 활성화 시)
-    // -----------------------------------------------------------------------
-    if (client_stream_.is_ssl()) {
-        boost::system::error_code tls_ec;
-        co_await client_stream_.async_handshake(
-            boost::asio::ssl::stream_base::server,
-            boost::asio::redirect_error(boost::asio::use_awaitable, tls_ec));
-
-        if (tls_ec) {
-            spdlog::warn(
-                "[session {}] frontend TLS handshake failed: {}", session_id_, tls_ec.message());
-            state_ = SessionState::kClosed;
-            boost::system::error_code close_ec;
-            // NOLINTNEXTLINE(bugprone-unused-return-value,cert-err33-c)
-            client_stream_.lowest_layer().shutdown(boost::asio::ip::tcp::socket::shutdown_both,
-                                                   close_ec);
-            // NOLINTNEXTLINE(bugprone-unused-return-value,cert-err33-c)
-            client_stream_.lowest_layer().close(close_ec);
-            co_return;
-        }
-    }
-
-    // -----------------------------------------------------------------------
-    // 4. MySQL 서버 TCP connect
+    // 3. MySQL 서버 TCP connect
     // -----------------------------------------------------------------------
     // 로컬 tcp::socket으로 서버에 먼저 연결
     boost::asio::ip::tcp::socket raw_server_sock{client_stream_.get_executor()};
@@ -832,115 +807,29 @@ auto Session::run() -> boost::asio::awaitable<void> {
     }
 
     // -----------------------------------------------------------------------
-    // 5. Backend SSL 핸드셰이크 (backend_ssl_ctx_가 유효한 경우)
-    //    TCP connect 성공 후 ssl::stream으로 업그레이드하고 server_stream_ 교체
+    // 5. server_stream_ 초기화 (평문 TCP)
+    //    MySQL 프로토콜 레벨 SSL 업그레이드는 HandshakeRelay::relay_handshake()
+    //    내부에서 수행된다 (backend_ssl_ctx_가 유효한 경우).
     // -----------------------------------------------------------------------
-    if (backend_ssl_ctx_ != nullptr) {
-        spdlog::debug("[session {}] backend SSL: upgrading TCP to TLS", session_id_);
-
-        // ssl::stream으로 래핑
-        boost::asio::ssl::stream<boost::asio::ip::tcp::socket> ssl_server_sock{
-            std::move(raw_server_sock), *backend_ssl_ctx_};
-
-        const auto verify_name = backend_tls_server_name_.empty()
-                                     ? server_endpoint_.address().to_string()
-                                     : backend_tls_server_name_;
-        boost::system::error_code ip_ec;
-        const bool verify_name_is_ip =
-            !boost::asio::ip::make_address(verify_name, ip_ec).is_unspecified() && !ip_ec;
-
-        // SNI는 호스트명 기반 TLS에서만 설정한다.
-        if (!verify_name.empty() && !verify_name_is_ip) {
-            if (SSL_set_tlsext_host_name(ssl_server_sock.native_handle(), verify_name.c_str()) !=
-                1) {
-                const auto err = ERR_get_error();
-                spdlog::error("[session {}] backend TLS SNI setup failed for {}: {}",
-                              session_id_,
-                              verify_name,
-                              err != 0 ? ERR_error_string(err, nullptr) : "unknown");
-                state_ = SessionState::kClosed;
-                boost::system::error_code close_ec;
-                // NOLINTNEXTLINE(bugprone-unused-return-value,cert-err33-c)
-                client_stream_.lowest_layer().shutdown(boost::asio::ip::tcp::socket::shutdown_both,
-                                                       close_ec);
-                // NOLINTNEXTLINE(bugprone-unused-return-value,cert-err33-c)
-                client_stream_.lowest_layer().close(close_ec);
-                co_return;
-            }
-        }
-
-        // verify_peer가 활성화되면 인증서 체인 + 호스트명/IP 일치 검증을 모두 수행한다.
-        if (backend_ssl_verify_) {
-            int verify_ok = 0;
-            if (verify_name_is_ip) {
-                X509_VERIFY_PARAM* verify_param = SSL_get0_param(ssl_server_sock.native_handle());
-                verify_ok = X509_VERIFY_PARAM_set1_ip_asc(verify_param, verify_name.c_str());
-            } else {
-                verify_ok = SSL_set1_host(ssl_server_sock.native_handle(), verify_name.c_str());
-            }
-            if (verify_ok != 1) {
-                const auto err = ERR_get_error();
-                spdlog::error(
-                    "[session {}] backend TLS hostname verification setup failed for {}: {}",
-                    session_id_,
-                    verify_name,
-                    err != 0 ? ERR_error_string(err, nullptr) : "unknown");
-                state_ = SessionState::kClosed;
-                boost::system::error_code close_ec;
-                // NOLINTNEXTLINE(bugprone-unused-return-value,cert-err33-c)
-                client_stream_.lowest_layer().shutdown(boost::asio::ip::tcp::socket::shutdown_both,
-                                                       close_ec);
-                // NOLINTNEXTLINE(bugprone-unused-return-value,cert-err33-c)
-                client_stream_.lowest_layer().close(close_ec);
-                co_return;
-            }
-        }
-
-        // TLS 핸드셰이크 (client 역할 — 프록시가 MySQL 서버에 연결하는 클라이언트)
-        boost::system::error_code tls_ec;
-        co_await ssl_server_sock.async_handshake(
-            boost::asio::ssl::stream_base::client,
-            boost::asio::redirect_error(boost::asio::use_awaitable, tls_ec));
-
-        if (tls_ec) {
-            spdlog::error(
-                "[session {}] backend TLS handshake failed: {}", session_id_, tls_ec.message());
-
-            const auto err_pkt =
-                MysqlPacket::make_error(2026,  // CR_SSL_CONNECTION_ERROR
-                                        std::format("SSL connection error: {}", tls_ec.message()),
-                                        0);
-            boost::system::error_code wr_ec;
-            const auto err_bytes = err_pkt.serialize();
-            co_await boost::asio::async_write(
-                client_stream_,
-                boost::asio::buffer(err_bytes),
-                boost::asio::redirect_error(boost::asio::use_awaitable, wr_ec));
-
-            state_ = SessionState::kClosed;
-            boost::system::error_code close_ec;
-            // NOLINTNEXTLINE(bugprone-unused-return-value,cert-err33-c)
-            client_stream_.lowest_layer().shutdown(boost::asio::ip::tcp::socket::shutdown_both,
-                                                   close_ec);
-            // NOLINTNEXTLINE(bugprone-unused-return-value,cert-err33-c)
-            client_stream_.lowest_layer().close(close_ec);
-            co_return;
-        }
-
-        spdlog::debug("[session {}] backend TLS handshake succeeded", session_id_);
-
-        // server_stream_을 TLS stream으로 교체 (move-assign)
-        server_stream_ = AsyncStream{std::move(ssl_server_sock)};
-
-    } else {
-        // 평문 모드: raw tcp::socket으로 AsyncStream 생성
-        server_stream_ = AsyncStream{std::move(raw_server_sock)};
-    }
+    server_stream_ = AsyncStream{std::move(raw_server_sock)};
 
     // -----------------------------------------------------------------------
     // 6. HandshakeRelay::relay_handshake()
+    //    HandshakeSSLConfig를 구성하여 MySQL 프로토콜 레벨 SSL 업그레이드를 위임한다.
     // -----------------------------------------------------------------------
-    auto hs_result = co_await HandshakeRelay::relay_handshake(client_stream_, server_stream_, ctx_);
+    const auto backend_tls_server_name_resolved = backend_tls_server_name_.empty()
+                                                      ? server_endpoint_.address().to_string()
+                                                      : backend_tls_server_name_;
+
+    const HandshakeSSLConfig ssl_config{
+        .frontend_ssl_ctx = frontend_ssl_ctx_,
+        .backend_ssl_ctx = backend_ssl_ctx_,
+        .backend_ssl_verify = backend_ssl_verify_,
+        .backend_tls_server_name = backend_tls_server_name_resolved,
+    };
+
+    auto hs_result =
+        co_await HandshakeRelay::relay_handshake(client_stream_, server_stream_, ctx_, ssl_config);
 
     if (!hs_result) {
         spdlog::error("[session {}] handshake failed: {}", session_id_, hs_result.error().message);
