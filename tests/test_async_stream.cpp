@@ -245,3 +245,93 @@ TEST(AsyncStreamTest, AsyncShutdownNoOpForTcp) {
     EXPECT_TRUE(called);
     EXPECT_FALSE(result_ec);
 }
+
+// ---------------------------------------------------------------------------
+// upgrade_to_ssl 테스트  (DON-79: MySQL 프로토콜 레벨 SSL 업그레이드)
+// ---------------------------------------------------------------------------
+
+// upgrade_to_ssl: 평문 → SSL 전환 성공
+TEST(AsyncStreamTest, UpgradeToSsl_TcpToSsl_Succeeds) {
+    boost::asio::io_context ioc;
+    AsyncStream stream{make_tcp_socket(ioc)};
+
+    EXPECT_FALSE(stream.is_ssl());
+
+    boost::asio::ssl::context ssl_ctx{boost::asio::ssl::context::tls_client};
+    const auto result = stream.upgrade_to_ssl(ssl_ctx);
+
+    EXPECT_TRUE(result.has_value());
+    EXPECT_TRUE(stream.is_ssl());
+}
+
+// upgrade_to_ssl: 이미 SSL인 경우 에러 반환 (fail-close)
+TEST(AsyncStreamTest, UpgradeToSsl_AlreadySsl_ReturnsError) {
+    boost::asio::io_context ioc;
+    boost::asio::ssl::context ssl_ctx{boost::asio::ssl::context::tls_client};
+
+    AsyncStream::ssl_socket ssl_sock{make_tcp_socket(ioc), ssl_ctx};
+    AsyncStream stream{std::move(ssl_sock)};
+
+    EXPECT_TRUE(stream.is_ssl());
+
+    boost::asio::ssl::context ssl_ctx2{boost::asio::ssl::context::tls_client};
+    const auto result = stream.upgrade_to_ssl(ssl_ctx2);
+
+    // 에러 반환 (이미 SSL)
+    EXPECT_FALSE(result.has_value());
+    EXPECT_FALSE(result.error().empty());
+    // 업그레이드 실패 후에도 여전히 SSL 상태 유지
+    EXPECT_TRUE(stream.is_ssl());
+}
+
+// upgrade_to_ssl 후 lowest_layer() 접근 정상
+TEST(AsyncStreamTest, UpgradeToSsl_LowestLayerAccessible) {
+    boost::asio::io_context ioc;
+    AsyncStream stream{make_tcp_socket(ioc)};
+
+    boost::asio::ssl::context ssl_ctx{boost::asio::ssl::context::tls_client};
+    const auto result = stream.upgrade_to_ssl(ssl_ctx);
+
+    ASSERT_TRUE(result.has_value());
+
+    // lowest_layer() 접근 가능해야 함
+    const boost::asio::ip::tcp::socket& tcp_sock = stream.lowest_layer();
+    EXPECT_FALSE(tcp_sock.is_open());
+}
+
+// ---------------------------------------------------------------------------
+// native_ssl_handle 테스트
+// ---------------------------------------------------------------------------
+
+// native_ssl_handle: 평문 모드 → nullptr 반환
+TEST(AsyncStreamTest, NativeSslHandle_PlainMode_ReturnsNull) {
+    boost::asio::io_context ioc;
+    AsyncStream stream{make_tcp_socket(ioc)};
+
+    EXPECT_EQ(stream.native_ssl_handle(), nullptr);
+}
+
+// native_ssl_handle: SSL 모드 → 유효한 포인터 반환
+TEST(AsyncStreamTest, NativeSslHandle_SslMode_ReturnsNonNull) {
+    boost::asio::io_context ioc;
+    boost::asio::ssl::context ssl_ctx{boost::asio::ssl::context::tls_client};
+
+    AsyncStream::ssl_socket ssl_sock{make_tcp_socket(ioc), ssl_ctx};
+    AsyncStream stream{std::move(ssl_sock)};
+
+    EXPECT_NE(stream.native_ssl_handle(), nullptr);
+}
+
+// native_ssl_handle: upgrade_to_ssl 후 유효한 포인터 반환
+TEST(AsyncStreamTest, NativeSslHandle_AfterUpgrade_ReturnsNonNull) {
+    boost::asio::io_context ioc;
+    AsyncStream stream{make_tcp_socket(ioc)};
+
+    EXPECT_EQ(stream.native_ssl_handle(), nullptr);  // 업그레이드 전: nullptr
+
+    boost::asio::ssl::context ssl_ctx{boost::asio::ssl::context::tls_client};
+    const auto result = stream.upgrade_to_ssl(ssl_ctx);
+    ASSERT_TRUE(result.has_value());
+
+    EXPECT_NE(stream.native_ssl_handle(), nullptr);  // 업그레이드 후: 유효한 포인터
+}

@@ -1,7 +1,13 @@
 #include "protocol/handshake.hpp"
 
+#include <openssl/err.h>
+#include <openssl/ssl.h>
+#include <openssl/x509_vfy.h>
+#include <spdlog/spdlog.h>
+
 #include <boost/asio/read.hpp>
 #include <boost/asio/redirect_error.hpp>
+#include <boost/asio/ssl/stream_base.hpp>
 #include <boost/asio/use_awaitable.hpp>
 #include <boost/asio/write.hpp>
 #include <format>
@@ -92,8 +98,9 @@ auto read_packet(AsyncStream& stream)
 //
 //   제거 대상:
 //   1) CLIENT_SSL (capability_flags_1 bit 11, 0x0800):
-//      프록시는 TLS 미지원. 서버가 SSL을 광고하면 mysql 클라이언트가
-//      SSLRequest(32B)를 전송해 HandshakeResponse41 파싱 실패.
+//      keep_client_ssl=false인 경우에만 제거.
+//      frontend SSL이 활성화된 경우 클라이언트에게 SSL 지원을 광고해야 하므로
+//      해당 비트를 유지한다.
 //
 //   2) CLIENT_QUERY_ATTRIBUTES (capability_flags_2 bit 11, 0x0800 of upper 2B
 //      = full value 0x08000000):
@@ -113,7 +120,7 @@ auto read_packet(AsyncStream& stream)
 //     [4B  connection_id]
 //     [8B  auth_plugin_data_part_1]
 //     [1B  filler]
-//     [2B  capability_flags_1]  ← CLIENT_SSL(bit 11) 제거
+//     [2B  capability_flags_1]  ← CLIENT_SSL(bit 11): keep_client_ssl=false 시 제거
 //     [1B  charset]
 //     [2B  status_flags]
 //     [2B  capability_flags_2]  ← CLIENT_QUERY_ATTRIBUTES(bit 11),
@@ -122,7 +129,8 @@ auto read_packet(AsyncStream& stream)
 //
 //   파싱 실패 시 원본 직렬화 바이트를 반환한다 (fail-safe).
 // -----------------------------------------------------------------------
-auto strip_unsupported_capabilities(const MysqlPacket& pkt) -> std::vector<std::uint8_t> {
+auto strip_unsupported_capabilities(const MysqlPacket& pkt, bool keep_client_ssl)
+    -> std::vector<std::uint8_t> {
     auto bytes = pkt.serialize();
     const auto payload = pkt.payload();
 
@@ -155,7 +163,10 @@ auto strip_unsupported_capabilities(const MysqlPacket& pkt) -> std::vector<std::
     const std::size_t cap2_offset = cap1_offset + 5;  // +charset(1)+status(2)+cap_flags_1(2)
 
     // 1) CLIENT_SSL = 0x0800 in cap_flags_1: high byte bit 3
-    bytes[cap1_offset + 1] &= static_cast<std::uint8_t>(~0x08U);
+    //    keep_client_ssl=true이면 유지 (frontend SSL 광고용)
+    if (!keep_client_ssl) {
+        bytes[cap1_offset + 1] &= static_cast<std::uint8_t>(~0x08U);
+    }
 
     // cap_flags_2 high byte (bits 24-31):
     //   bit 0 (0x01) = CLIENT_DEPRECATE_EOF   (full: 0x01000000)
@@ -172,10 +183,14 @@ auto strip_unsupported_capabilities(const MysqlPacket& pkt) -> std::vector<std::
 //   클라이언트 HandshakeResponse41 payload의 capability_flags(4B LE)에서
 //   프록시가 지원하지 않는 비트를 제거한다.
 //
+//   keep_client_ssl=true이면 CLIENT_SSL은 제거하지 않는다
+//   (frontend SSL 업그레이드 완료 후 진짜 HandshakeResponse41을 서버에 중계할 때).
+//
 //   payload layout (offset 0):
 //     [4B capability_flags] [4B max_packet_size] [1B charset] [23B reserved] ...
 // -----------------------------------------------------------------------
-auto strip_unsupported_client_capabilities(const MysqlPacket& pkt) -> std::vector<std::uint8_t> {
+auto strip_unsupported_client_capabilities(const MysqlPacket& pkt, bool keep_client_ssl)
+    -> std::vector<std::uint8_t> {
     auto bytes = pkt.serialize();
     const auto payload = pkt.payload();
 
@@ -184,9 +199,11 @@ auto strip_unsupported_client_capabilities(const MysqlPacket& pkt) -> std::vecto
         return bytes;
     }
 
-    constexpr std::uint32_t unsupported_mask = 0x00000800U     // CLIENT_SSL
-                                               | 0x01000000U   // CLIENT_DEPRECATE_EOF
-                                               | 0x08000000U;  // CLIENT_QUERY_ATTRIBUTES
+    // keep_client_ssl=true이면 CLIENT_SSL(0x0800)은 제거하지 않는다.
+    const std::uint32_t ssl_mask = keep_client_ssl ? 0U : 0x00000800U;
+
+    const std::uint32_t unsupported_mask = ssl_mask | 0x01000000U  // CLIENT_DEPRECATE_EOF
+                                           | 0x08000000U;          // CLIENT_QUERY_ATTRIBUTES
 
     // serialized bytes에서 payload 시작 오프셋은 4
     std::uint32_t cap_flags = static_cast<std::uint32_t>(bytes[4]) |
@@ -223,6 +240,121 @@ auto write_packet(AsyncStream& stream, const MysqlPacket& pkt)
                                              .context = ec.message()});
     }
 
+    co_return std::expected<void, ParseError>{};
+}
+
+// -----------------------------------------------------------------------
+// write_raw_bytes
+//   원시 바이트를 소켓에 비동기 전송한다.
+// -----------------------------------------------------------------------
+auto write_raw_bytes(AsyncStream& stream, const std::vector<std::uint8_t>& bytes)
+    -> boost::asio::awaitable<std::expected<void, ParseError>> {
+    boost::system::error_code ec;
+    co_await boost::asio::async_write(stream,
+                                      boost::asio::buffer(bytes),
+                                      boost::asio::redirect_error(boost::asio::use_awaitable, ec));
+
+    if (ec) {
+        co_return std::unexpected(ParseError{.code = ParseErrorCode::kInternalError,
+                                             .message = "failed to write raw bytes",
+                                             .context = ec.message()});
+    }
+    co_return std::expected<void, ParseError>{};
+}
+
+// -----------------------------------------------------------------------
+// setup_backend_tls
+//   server_stream을 SSL로 업그레이드하고 SNI/인증서 검증 설정 후
+//   TLS 핸드셰이크를 수행한다.
+// -----------------------------------------------------------------------
+auto setup_backend_tls(AsyncStream& server_stream,
+                       boost::asio::ssl::context& ctx,
+                       bool verify_peer,
+                       const std::string& server_name)
+    -> boost::asio::awaitable<std::expected<void, ParseError>> {
+    // tcp→ssl 타입 전환 (동기)
+    auto upgrade_result = server_stream.upgrade_to_ssl(ctx);
+    if (!upgrade_result) {
+        co_return std::unexpected(ParseError{.code = ParseErrorCode::kInternalError,
+                                             .message = "backend SSL upgrade failed",
+                                             .context = upgrade_result.error()});
+    }
+
+    // SNI 및 인증서 검증 설정
+    SSL* ssl_handle = server_stream.native_ssl_handle();
+    if (ssl_handle != nullptr && !server_name.empty()) {
+        // IP 주소인지 확인
+        boost::system::error_code ip_ec;
+        const bool is_ip =
+            !boost::asio::ip::make_address(server_name, ip_ec).is_unspecified() && !ip_ec;
+
+        // SNI는 호스트명 기반 TLS에서만 설정한다.
+        if (!is_ip) {
+            if (SSL_set_tlsext_host_name(ssl_handle, server_name.c_str()) != 1) {
+                const auto err = ERR_get_error();
+                co_return std::unexpected(
+                    ParseError{.code = ParseErrorCode::kInternalError,
+                               .message = "backend TLS SNI setup failed",
+                               .context = err != 0 ? ERR_error_string(err, nullptr) : server_name});
+            }
+        }
+
+        if (verify_peer) {
+            int verify_ok = 0;
+            if (is_ip) {
+                X509_VERIFY_PARAM* param = SSL_get0_param(ssl_handle);
+                verify_ok = X509_VERIFY_PARAM_set1_ip_asc(param, server_name.c_str());
+            } else {
+                verify_ok = SSL_set1_host(ssl_handle, server_name.c_str());
+            }
+            if (verify_ok != 1) {
+                const auto err = ERR_get_error();
+                co_return std::unexpected(
+                    ParseError{.code = ParseErrorCode::kInternalError,
+                               .message = "backend TLS hostname verification setup failed",
+                               .context = err != 0 ? ERR_error_string(err, nullptr) : server_name});
+            }
+        }
+    }
+
+    // TLS 핸드셰이크 (프록시 → MySQL: client 역할)
+    boost::system::error_code tls_ec;
+    co_await server_stream.async_handshake(
+        boost::asio::ssl::stream_base::client,
+        boost::asio::redirect_error(boost::asio::use_awaitable, tls_ec));
+
+    if (tls_ec) {
+        co_return std::unexpected(ParseError{.code = ParseErrorCode::kInternalError,
+                                             .message = "backend TLS handshake failed",
+                                             .context = tls_ec.message()});
+    }
+    co_return std::expected<void, ParseError>{};
+}
+
+// -----------------------------------------------------------------------
+// setup_frontend_tls
+//   client_stream을 SSL로 업그레이드하고 TLS 핸드셰이크를 수행한다.
+//   (프록시 → 클라이언트: server 역할)
+// -----------------------------------------------------------------------
+auto setup_frontend_tls(AsyncStream& client_stream, boost::asio::ssl::context& ctx)
+    -> boost::asio::awaitable<std::expected<void, ParseError>> {
+    auto upgrade_result = client_stream.upgrade_to_ssl(ctx);
+    if (!upgrade_result) {
+        co_return std::unexpected(ParseError{.code = ParseErrorCode::kInternalError,
+                                             .message = "frontend SSL upgrade failed",
+                                             .context = upgrade_result.error()});
+    }
+
+    boost::system::error_code tls_ec;
+    co_await client_stream.async_handshake(
+        boost::asio::ssl::stream_base::server,
+        boost::asio::redirect_error(boost::asio::use_awaitable, tls_ec));
+
+    if (tls_ec) {
+        co_return std::unexpected(ParseError{.code = ParseErrorCode::kInternalError,
+                                             .message = "frontend TLS handshake failed",
+                                             .context = tls_ec.message()});
+    }
     co_return std::expected<void, ParseError>{};
 }
 
@@ -663,23 +795,95 @@ auto extract_handshake_response_fields(std::span<const std::uint8_t> payload,
 }  // namespace detail
 
 // ===========================================================================
+// HandshakeRelay — public 헬퍼 함수 구현
+// ===========================================================================
+
+// static
+auto HandshakeRelay::is_ssl_request(std::span<const std::uint8_t> payload) noexcept -> bool {
+    // SSLRequest: payload 정확히 32바이트 AND CLIENT_SSL bit(0x0800) set
+    if (payload.size() != 32) {
+        return false;
+    }
+    // capability_flags는 4바이트 LE (bytes[0..3])
+    const std::uint32_t cap_flags = static_cast<std::uint32_t>(payload[0]) |
+                                    (static_cast<std::uint32_t>(payload[1]) << 8U) |
+                                    (static_cast<std::uint32_t>(payload[2]) << 16U) |
+                                    (static_cast<std::uint32_t>(payload[3]) << 24U);
+    return (cap_flags & 0x00000800U) != 0U;  // CLIENT_SSL
+}
+
+// static
+auto HandshakeRelay::build_ssl_request(std::uint8_t seq_id,
+                                       std::uint32_t capability_flags,
+                                       std::uint32_t max_packet_size,
+                                       std::uint8_t charset) -> std::vector<std::uint8_t> {
+    // MySQL SSLRequest 패킷:
+    //   4B 헤더 (payload=32, seq_id) + 32B payload
+    std::vector<std::uint8_t> buf(4 + 32, 0x00U);
+
+    // 헤더: payload 길이 = 32 (3B LE) + seq_id
+    buf[0] = 0x20U;  // 32
+    buf[1] = 0x00U;
+    buf[2] = 0x00U;
+    buf[3] = seq_id;
+
+    // payload: capability_flags(4) + max_packet_size(4) + charset(1) + reserved(23)
+    buf[4] = static_cast<std::uint8_t>(capability_flags & 0xFFU);
+    buf[5] = static_cast<std::uint8_t>((capability_flags >> 8U) & 0xFFU);
+    buf[6] = static_cast<std::uint8_t>((capability_flags >> 16U) & 0xFFU);
+    buf[7] = static_cast<std::uint8_t>((capability_flags >> 24U) & 0xFFU);
+
+    buf[8] = static_cast<std::uint8_t>(max_packet_size & 0xFFU);
+    buf[9] = static_cast<std::uint8_t>((max_packet_size >> 8U) & 0xFFU);
+    buf[10] = static_cast<std::uint8_t>((max_packet_size >> 16U) & 0xFFU);
+    buf[11] = static_cast<std::uint8_t>((max_packet_size >> 24U) & 0xFFU);
+
+    buf[12] = charset;
+    // buf[13..35] = reserved (already zero)
+
+    return buf;
+}
+
+// ===========================================================================
 // HandshakeRelay::relay_handshake — 얇은 I/O 껍질
 //
 // 상태 판단 로직은 전부 detail::process_handshake_packet에 위임한다.
-// 이 함수는 소켓 read/write + 순수 함수 호출만 담당한다.
+// 이 함수는 소켓 read/write + 순수 함수 호출 + MySQL 프로토콜 SSL 업그레이드를 담당한다.
+//
+// MySQL 프로토콜 레벨 SSL 업그레이드 흐름:
+//
+//   [Backend SSL]
+//     1. 서버 greeting 수신 후, backend SSL 설정이 있고 서버가 CLIENT_SSL 지원 시:
+//        SSLRequest 전송 → server_stream.upgrade_to_ssl() → async_handshake()
+//     2. 이후 서버에 클라이언트 greeting을 relay (CLIENT_SSL 비트 포함)
+//
+//   [Frontend SSL]
+//     1. 클라이언트에 서버 greeting relay 시 CLIENT_SSL 비트 유지
+//     2. 클라이언트로부터 32바이트 SSLRequest 수신 확인 (is_ssl_request)
+//     3. client_stream.upgrade_to_ssl() → async_handshake()
+//     4. 진짜 HandshakeResponse41 읽기
+//     5. 이후 기존 흐름으로 서버에 relay
 // ===========================================================================
 
 // static
 auto HandshakeRelay::relay_handshake(AsyncStream& client_stream,
                                      AsyncStream& server_stream,
-                                     SessionContext& ctx)
+                                     SessionContext& ctx,
+                                     const HandshakeSSLConfig& ssl_config)
     -> boost::asio::awaitable<std::expected<void, ParseError>> {
+    const bool has_frontend_ssl = (ssl_config.frontend_ssl_ctx != nullptr);
+    const bool has_backend_ssl = (ssl_config.backend_ssl_ctx != nullptr);
+
     detail::HandshakeState state = detail::HandshakeState::kWaitServerGreeting;
     int round_trips = 0;
 
     std::string extracted_user;
     std::string extracted_db;
     bool fields_extracted = false;
+
+    // backend SSLRequest에서 capability_flags를 캡처하기 위한 변수
+    // (서버 greeting에서 파악한 cap을 SSLRequest에 사용)
+    std::uint32_t server_caps = 0U;
 
     // -----------------------------------------------------------------------
     // 패킷 릴레이 루프
@@ -695,9 +899,99 @@ auto HandshakeRelay::relay_handshake(AsyncStream& client_stream,
                                        state == detail::HandshakeState::kWaitServerMoreData);
 
         AsyncStream& src_stream = read_from_server ? server_stream : client_stream;
-        // (dst는 action에 따라 결정 — src_stream만 사용)
 
-        // 패킷 읽기
+        // ───────────────────────────────────────────────────────────────────
+        // Backend SSL: 서버 greeting 수신 후 SSL 업그레이드 (최초 1회)
+        // ───────────────────────────────────────────────────────────────────
+        if (state == detail::HandshakeState::kWaitServerGreeting && has_backend_ssl) {
+            // 서버 greeting 읽기
+            auto pkt_result = co_await read_packet(src_stream);
+            if (!pkt_result) {
+                co_return std::unexpected(pkt_result.error());
+            }
+            const MysqlPacket& greeting_pkt = *pkt_result;
+            const auto greeting_payload = greeting_pkt.payload();
+
+            // 서버 greeting에서 capability_flags 추출
+            // HandshakeV10 구조: protocol(1) + server_version(NUL) + conn_id(4)
+            //                    + auth_data_1(8) + filler(1) + cap_flags_1(2B LE)
+            //                    + charset(1) + status(2) + cap_flags_2(2B LE)
+            // capability = cap_flags_1 | (cap_flags_2 << 16)
+            // 서버가 CLIENT_SSL(0x0800)을 광고하는지 확인
+            bool server_supports_ssl = false;
+            {
+                std::size_t pos = 1;
+                while (pos < greeting_payload.size() && greeting_payload[pos] != 0x00) {
+                    ++pos;
+                }
+                if (pos < greeting_payload.size()) {
+                    ++pos;      // NUL 건너뜀
+                    pos += 13;  // conn_id(4) + auth_data_1(8) + filler(1)
+                    if (pos + 4 <= greeting_payload.size()) {
+                        const std::uint32_t cap1 =
+                            static_cast<std::uint32_t>(greeting_payload[pos]) |
+                            (static_cast<std::uint32_t>(greeting_payload[pos + 1]) << 8U);
+                        // cap_flags_2는 cap1(2) + charset(1) + status(2) = 5바이트 이후
+                        std::uint32_t cap2 = 0U;
+                        if (pos + 4 + 4 <= greeting_payload.size()) {
+                            cap2 = static_cast<std::uint32_t>(greeting_payload[pos + 5]) |
+                                   (static_cast<std::uint32_t>(greeting_payload[pos + 6]) << 8U);
+                        }
+                        server_caps = cap1 | (cap2 << 16U);
+                        server_supports_ssl = (server_caps & 0x00000800U) != 0U;
+                    }
+                }
+            }
+
+            if (server_supports_ssl) {
+                spdlog::debug("[handshake] backend SSL: server supports SSL, sending SSLRequest");
+
+                // SSLRequest 전송 (seq_id=1, CLIENT_SSL 포함, 기타 필수 caps)
+                // CLIENT_PROTOCOL_41(0x0200) | CLIENT_SSL(0x0800) |
+                // CLIENT_SECURE_CONNECTION(0x8000)
+                constexpr std::uint32_t kSslReqCaps = 0x00000200U    // CLIENT_PROTOCOL_41
+                                                      | 0x00000800U  // CLIENT_SSL
+                                                      | 0x00008000U  // CLIENT_SECURE_CONNECTION
+                    ;
+                const auto ssl_req = build_ssl_request(/*seq_id=*/1,
+                                                       kSslReqCaps,
+                                                       /*max_pkt=*/0x00FFFFFFU,
+                                                       /*charset=*/33U);  // utf8
+
+                auto wr_result = co_await write_raw_bytes(server_stream, ssl_req);
+                if (!wr_result) {
+                    co_return std::unexpected(wr_result.error());
+                }
+
+                // server_stream을 SSL로 업그레이드
+                auto tls_result = co_await setup_backend_tls(server_stream,
+                                                             *ssl_config.backend_ssl_ctx,
+                                                             ssl_config.backend_ssl_verify,
+                                                             ssl_config.backend_tls_server_name);
+                if (!tls_result) {
+                    co_return std::unexpected(tls_result.error());
+                }
+
+                spdlog::debug("[handshake] backend TLS handshake succeeded");
+            } else {
+                spdlog::debug(
+                    "[handshake] backend SSL requested but server does not advertise "
+                    "CLIENT_SSL — falling back to plain");
+            }
+
+            // 서버 greeting을 클라이언트에 relay (CLIENT_SSL 비트는 frontend_ssl 여부에 따라 결정)
+            const auto modified = strip_unsupported_capabilities(greeting_pkt, has_frontend_ssl);
+            auto wr = co_await write_raw_bytes(client_stream, modified);
+            if (!wr) {
+                co_return std::unexpected(wr.error());
+            }
+
+            // 상태 전이: kWaitServerGreeting → kWaitClientResponse
+            state = detail::HandshakeState::kWaitClientResponse;
+            continue;
+        }
+
+        // 패킷 읽기 (일반 경로)
         auto pkt_result = co_await read_packet(src_stream);
         if (!pkt_result) {
             co_return std::unexpected(pkt_result.error());
@@ -706,7 +1000,63 @@ auto HandshakeRelay::relay_handshake(AsyncStream& client_stream,
         const MysqlPacket& pkt = *pkt_result;
         const auto payload = pkt.payload();
 
-        // 클라이언트 HandshakeResponse에서 username/db 추출
+        // ───────────────────────────────────────────────────────────────────
+        // Frontend SSL: 클라이언트가 SSLRequest를 보낸 경우 업그레이드
+        // ───────────────────────────────────────────────────────────────────
+        if (state == detail::HandshakeState::kWaitClientResponse && has_frontend_ssl) {
+            if (is_ssl_request(payload)) {
+                spdlog::debug("[handshake] frontend SSL: SSLRequest received, upgrading client");
+
+                // client_stream을 SSL로 업그레이드
+                auto tls_result =
+                    co_await setup_frontend_tls(client_stream, *ssl_config.frontend_ssl_ctx);
+                if (!tls_result) {
+                    co_return std::unexpected(tls_result.error());
+                }
+
+                spdlog::debug("[handshake] frontend TLS handshake succeeded");
+
+                // TLS 업그레이드 후 진짜 HandshakeResponse41 읽기
+                auto real_pkt_result = co_await read_packet(client_stream);
+                if (!real_pkt_result) {
+                    co_return std::unexpected(real_pkt_result.error());
+                }
+
+                // 진짜 HandshakeResponse41에서 username/db 추출
+                const auto real_payload = real_pkt_result->payload();
+                auto extract_result = detail::extract_handshake_response_fields(
+                    real_payload, extracted_user, extracted_db);
+                if (!extract_result) {
+                    co_return std::unexpected(extract_result.error());
+                }
+                fields_extracted = true;
+
+                // 서버에 relay: CLIENT_SSL 비트 제거 (서버와의 SSL은 backend_ssl로 이미 처리)
+                // 단, backend SSL이 없으면 CLIENT_SSL 비트도 제거
+                const auto modified =
+                    strip_unsupported_client_capabilities(*real_pkt_result, false);
+                boost::system::error_code write_ec;
+                co_await boost::asio::async_write(
+                    server_stream,
+                    boost::asio::buffer(modified),
+                    boost::asio::redirect_error(boost::asio::use_awaitable, write_ec));
+                if (write_ec) {
+                    co_return std::unexpected(
+                        ParseError{.code = ParseErrorCode::kInternalError,
+                                   .message = "failed to relay HandshakeResponse41 after SSL",
+                                   .context = write_ec.message()});
+                }
+
+                // 상태 전이
+                state = detail::HandshakeState::kWaitServerAuth;
+                continue;
+            }
+            // SSLRequest가 아닌 경우: 일반 HandshakeResponse41로 처리 (아래 공통 경로)
+        }
+
+        // ───────────────────────────────────────────────────────────────────
+        // 클라이언트 HandshakeResponse에서 username/db 추출 (일반 경로)
+        // ───────────────────────────────────────────────────────────────────
         if (state == detail::HandshakeState::kWaitClientResponse && !fields_extracted) {
             auto extract_result =
                 detail::extract_handshake_response_fields(payload, extracted_user, extracted_db);
@@ -728,10 +1078,9 @@ auto HandshakeRelay::relay_handshake(AsyncStream& client_stream,
         switch (transition.action) {
             case detail::HandshakeAction::kRelayToClient: {
                 if (state == detail::HandshakeState::kWaitServerGreeting) {
-                    // Initial Handshake 릴레이: CLIENT_SSL 비트 제거
-                    // 프록시는 TLS 미지원 — SSL 광고를 유지하면 클라이언트가
-                    // SSLRequest(32B)를 보내 HandshakeResponse41 파싱 실패
-                    const auto modified = strip_unsupported_capabilities(pkt);
+                    // backend SSL이 없는 경우의 greeting relay
+                    // (backend SSL 경로는 위의 특수 처리로 이미 done)
+                    const auto modified = strip_unsupported_capabilities(pkt, has_frontend_ssl);
                     boost::system::error_code write_ec;
                     co_await boost::asio::async_write(
                         client_stream,
@@ -755,7 +1104,8 @@ auto HandshakeRelay::relay_handshake(AsyncStream& client_stream,
                 if (state == detail::HandshakeState::kWaitClientResponse) {
                     // HandshakeResponse41 릴레이: 서버 그리팅에서 제거한 capability와
                     // 동일한 비트를 클라이언트 응답에서도 제거해 양방향 정합성 유지
-                    const auto modified = strip_unsupported_client_capabilities(pkt);
+                    // (frontend SSL 없는 경우: CLIENT_SSL 비트 제거)
+                    const auto modified = strip_unsupported_client_capabilities(pkt, false);
                     boost::system::error_code write_ec;
                     co_await boost::asio::async_write(
                         server_stream,

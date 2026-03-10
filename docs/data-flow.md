@@ -463,6 +463,79 @@
 
 각 시나리오는 실제 구현된 코드 경로를 기준으로 작성되었습니다. 구현 변경 시 이 문서도 함께 업데이트해야 합니다.
 
+## 시나리오 9: MySQL 프로토콜 레벨 SSL 업그레이드 흐름 (DON-79)
+
+> dbgate는 TCP 레벨 SSL 래핑 대신 MySQL 프로토콜 레벨 SSL 업그레이드(SSLRequest 방식)를 사용한다.
+> 이는 MySQL 클라이언트 드라이버의 표준 SSL 협상 방식과 일치한다.
+
+### 9-1. Frontend SSL (클라이언트 → 프록시)
+
+#### 입력
+- 클라이언트가 SSL 협상을 요청하는 MySQL 연결
+
+#### 사전 조건
+- `frontend_ssl_enabled = true` + 유효한 cert/key 파일 구성
+
+#### 주요 컴포넌트
+- `ProxyServer::accept_loop`: 항상 평문 TCP socket으로 `AsyncStream` 생성
+- `HandshakeRelay::relay_handshake`: SSL 업그레이드 로직 담당
+- `AsyncStream::upgrade_to_ssl`: tcp_socket → ssl_socket 타입 전환 (동기)
+
+#### 단계
+1. `ProxyServer::accept_loop`이 클라이언트 TCP 연결을 accept하고 **평문 `AsyncStream`** 을 생성한다.
+2. `Session::run()`이 서버에 TCP connect 후 **평문 `AsyncStream` server_stream_** 을 생성한다.
+3. `HandshakeRelay::relay_handshake(ssl_config)`가 호출된다.
+4. 서버 Initial Handshake 수신 후 **`CLIENT_SSL` 비트를 유지**하여 클라이언트에 relay한다.
+5. 클라이언트가 **32바이트 SSLRequest** 패킷을 전송한다.
+6. `is_ssl_request(payload)` 검사로 SSLRequest를 감지한다.
+7. `client_stream.upgrade_to_ssl(frontend_ssl_ctx)` → tcp→ssl 타입 전환 (동기, 핸드셰이크 없음).
+8. `client_stream.async_handshake(server)` → TLS 핸드셰이크 완료.
+9. TLS 완료 후 클라이언트로부터 **진짜 HandshakeResponse41**을 읽는다.
+10. HandshakeResponse41을 서버에 relay하고 이후 정상 인증 흐름으로 진행한다.
+
+#### 에러 경로
+- SSLRequest 이후 TLS 핸드셰이크 실패 → `ParseError{kInternalError}` 반환 → 세션 종료
+
+### 9-2. Backend SSL (프록시 → MySQL 서버)
+
+#### 입력
+- MySQL 서버가 `CLIENT_SSL`을 광고하는 환경
+
+#### 사전 조건
+- `backend_ssl_enabled = true`
+
+#### 주요 컴포넌트
+- `HandshakeRelay::relay_handshake`: backend SSL 업그레이드 로직 담당
+- `AsyncStream::upgrade_to_ssl`: tcp_socket → ssl_socket 타입 전환 (동기)
+- `build_ssl_request`: MySQL SSLRequest 패킷 빌더
+
+#### 단계
+1. 서버 Initial Handshake 수신 시 `CLIENT_SSL` 광고 여부를 capability_flags에서 확인한다.
+2. `CLIENT_SSL` 지원 확인 시 `build_ssl_request()`로 32바이트 SSLRequest 패킷을 생성하여 서버로 전송한다.
+3. `server_stream.upgrade_to_ssl(backend_ssl_ctx)` → tcp→ssl 타입 전환 (동기).
+4. SNI 호스트명 설정 (`SSL_set_tlsext_host_name`) 및 verify_peer 설정 (`SSL_set1_host` / `X509_VERIFY_PARAM_set1_ip_asc`).
+5. `server_stream.async_handshake(client)` → TLS 핸드셰이크 완료.
+6. 이후 서버 greeting을 클라이언트에 relay하고 정상 핸드셰이크 흐름으로 진행한다.
+
+#### 에러 경로
+- SNI 설정 실패 / TLS 핸드셰이크 실패 → `ParseError{kInternalError}` 반환 → 세션 종료
+- 서버가 `CLIENT_SSL`을 광고하지 않으면 평문으로 폴백 (경고 로그)
+
+#### 관측성 포인트
+- 로그: `[handshake] backend SSL: server supports SSL, sending SSLRequest`
+- 로그: `[handshake] backend TLS handshake succeeded`
+- 로그: `[handshake] frontend TLS handshake succeeded`
+- 로그: `[handshake] backend SSL requested but server does not advertise CLIENT_SSL — falling back to plain`
+
+#### 설계 차이점 (DON-79 이전 vs 이후)
+
+| 항목 | 이전 (TCP 레벨 래핑) | 이후 (MySQL 프로토콜 레벨) |
+|------|---------------------|--------------------------|
+| Frontend SSL 처리 위치 | `ProxyServer::accept_loop` | `HandshakeRelay::relay_handshake` |
+| Backend SSL 처리 위치 | `Session::run` | `HandshakeRelay::relay_handshake` |
+| client_stream 타입 | TCP 또는 SSL (accept 시 결정) | 항상 평문 TCP (업그레이드는 핸드셰이크 내부) |
+| SSLRequest 처리 | 불가 (CLIENT_SSL 제거) | 가능 (is_ssl_request로 감지 후 업그레이드) |
+
 ## 변경 체크리스트 (문서 유지보수용)
 - 데이터 흐름 단계가 실제 구현과 일치하는가?
 - 파서/정책/로깅/통계 호출 순서가 바뀌었는가?
@@ -470,3 +543,4 @@
 - 관련 테스트/README/운영 문서와 충돌하지 않는가?
 - graceful shutdown / hot reload 흐름이 구현과 일치하는가?
 - UDS 서버 및 Health Check HTTP 엔드포인트가 정확히 문서화되었는가?
+- MySQL 프로토콜 레벨 SSL 업그레이드(DON-79) 흐름이 구현과 일치하는가?

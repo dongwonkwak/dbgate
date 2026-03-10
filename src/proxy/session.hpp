@@ -53,29 +53,38 @@ enum class SessionState : std::uint8_t {
 //     모든 비동기 핸들러는 strand_ 위에서 직렬화되므로 수동 락이 불필요하다.
 //
 //   SSL 지원:
-//     - client_stream: ProxyServer에서 accept 시 TCP 또는 TLS AsyncStream으로
-//       이미 결정되어 생성자에 전달됨.
-//     - server_stream: run() 내부에서 TCP connect 후 backend_ssl_ctx_가
-//       유효하면 TLS 업그레이드하여 AsyncStream으로 재생성.
+//     - client_stream: 항상 평문 TCP AsyncStream으로 전달됨.
+//       frontend_ssl_ctx_가 유효하면 MySQL 프로토콜 레벨 SSL 업그레이드를
+//       HandshakeRelay::relay_handshake() 내부에서 수행.
+//     - server_stream: run() 내부에서 TCP connect 후,
+//       backend_ssl_ctx_가 유효하면 MySQL 프로토콜 레벨 SSL 업그레이드를
+//       HandshakeRelay::relay_handshake() 내부에서 수행.
 // ---------------------------------------------------------------------------
 class Session : public std::enable_shared_from_this<Session> {
 public:
     // -----------------------------------------------------------------------
     // 생성자
-    //   session_id       : 프로세스 범위 유일 ID
-    //   client_stream    : accept 된 클라이언트 AsyncStream (move 소유권 이전)
-    //                      ProxyServer가 frontend SSL 여부에 따라 생성하여 전달
-    //   server_endpoint  : 업스트림 MySQL 서버 엔드포인트
-    //   backend_ssl_ctx  : Backend TLS용 ssl::context 포인터
-    //                      nullptr이면 backend 평문 모드
-    //                      유효한 포인터면 backend TLS 모드
-    //   policy           : 정책 판정 엔진 (shared 소유권)
-    //   logger           : 구조화 로거 (shared 소유권)
-    //   stats            : 통계 수집기 (shared 소유권)
+    //   session_id             : 프로세스 범위 유일 ID
+    //   client_stream          : accept 된 클라이언트 AsyncStream (move 소유권 이전)
+    //                            항상 평문 TCP — MySQL 프로토콜 레벨 SSL 업그레이드는
+    //                            HandshakeRelay::relay_handshake()에서 수행
+    //   server_endpoint        : 업스트림 MySQL 서버 엔드포인트
+    //   frontend_ssl_ctx       : Frontend TLS용 ssl::context 포인터
+    //                            nullptr이면 frontend 평문 모드
+    //                            유효한 포인터면 MySQL 프로토콜 레벨 frontend TLS 모드
+    //   backend_ssl_ctx        : Backend TLS용 ssl::context 포인터
+    //                            nullptr이면 backend 평문 모드
+    //                            유효한 포인터면 MySQL 프로토콜 레벨 backend TLS 모드
+    //   backend_ssl_verify     : 서버 인증서 검증 여부
+    //   backend_tls_server_name: SNI 호스트명
+    //   policy                 : 정책 판정 엔진 (shared 소유권)
+    //   logger                 : 구조화 로거 (shared 소유권)
+    //   stats                  : 통계 수집기 (shared 소유권)
     // -----------------------------------------------------------------------
     Session(std::uint64_t session_id,
             AsyncStream client_stream,
             boost::asio::ip::tcp::endpoint server_endpoint,
+            boost::asio::ssl::context* frontend_ssl_ctx,
             boost::asio::ssl::context* backend_ssl_ctx,
             bool backend_ssl_verify,
             const std::string& backend_tls_server_name,
@@ -123,7 +132,11 @@ private:
     AsyncStream server_stream_;
     boost::asio::ip::tcp::endpoint server_endpoint_;
 
-    // Backend TLS: nullptr이면 평문 모드, 유효하면 TLS 모드
+    // Frontend TLS: nullptr이면 평문 모드, 유효하면 MySQL 프로토콜 레벨 TLS 모드
+    // (TCP 레벨 래핑 없음 — HandshakeRelay::relay_handshake()에서 프로토콜 레벨 업그레이드)
+    boost::asio::ssl::context* frontend_ssl_ctx_{nullptr};
+
+    // Backend TLS: nullptr이면 평문 모드, 유효하면 MySQL 프로토콜 레벨 TLS 모드
     boost::asio::ssl::context* backend_ssl_ctx_{nullptr};
     bool backend_ssl_verify_{false};
     std::string backend_tls_server_name_{};
@@ -145,6 +158,4 @@ private:
 
     // close() 중복 호출 방지용 atomic 플래그
     std::atomic<bool> closing_{false};
-
-
 };

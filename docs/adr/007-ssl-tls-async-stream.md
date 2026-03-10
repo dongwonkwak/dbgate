@@ -251,21 +251,144 @@ struct ProxyConfig {
 - `ProxyServer::init_ssl()`에서 설정 로깅
 - `Session::run()` 에서 backend TLS 핸드셰이크 전 SNI 설정 (현재는 미구현 — Phase 2 예정)
 
+## Addendum: 프로토콜 레벨 SSL 업그레이드 지원 (DON-79)
+
+### 배경
+
+초기 ADR-007에서는 **TCP 레벨 SSL 업그레이드**를 다루었다:
+- Backend TCP connect 직후 즉시 TLS 핸드셰이크
+- AsyncStream 사용으로 투명한 TLS 지원
+- `client_stream_.is_ssl()` 또는 `server_stream_.is_ssl()`으로 TLS 모드 확인
+
+그러나 MySQL 클라이언트(예: mysql-connector-python, JDBC)는 **MySQL 프로토콜 레벨의 SSL 업그레이드**를 지원한다:
+
+1. 클라이언트가 서버 Initial Handshake 수신
+2. 서버 capability flags에서 `CLIENT_SSL(0x0800)` 비트 확인
+3. TLS upgrade 의도를 반영해 HandshakeResponse에서 `CLIENT_SSL` 비트 설정 전송
+4. auth 데이터 없이 순수 32B SSLRequest 패킷 전송
+5. 서버가 SSLRequest 수신 후 프로토콜 전환 (이하 TLS 계층)
+6. TLS 핸드셰이크 수행
+7. TLS 위에서 actual HandshakeResponse41 전송 및 인증
+
+이 프로토콜 흐름은 SQL Injection 탐지, 정책 검사 등이 **TLS 핸드셰이크 완료 후**에 수행되도록 설계되었다.
+
+### 현재 구현 상태 (Phase 2)
+
+**TCP 레벨 TLS만 구현 완료**:
+
+- `Session::run()` (라인 838-938): Backend connect 직후 `ssl::stream`으로 즉시 업그레이드
+- `strip_unsupported_capabilities()` (handshake.cpp 라인 125-168): 서버 greeting에서 `CLIENT_SSL` 제거
+- `strip_unsupported_client_capabilities()` (handshake.cpp 라인 178-205): 클라이언트 응답에서 `CLIENT_SSL` 제거
+- 결과: MySQL 클라이언트가 SSL 업그레이드를 시도하면 실패 (SSLRequest 미지원)
+
+### 프로토콜 레벨 SSL 업그레이드 설계 (Phase 3 계획)
+
+#### 예상 세션 흐름
+
+```
+Client                   Proxy                   MySQL Server
+  |                        |                        |
+  |                        |<-- Initial Handshake --|  (CLIENT_SSL capability 포함)
+  |<-- relay greeting -----|                        |
+  |--- SSLRequest(32B) --->|                        |  (CLIENT_SSL bit set, auth 데이터 없음)
+  |      [TLS Handshake]   |                        |  (Frontend 측 TLS upgrade)
+  |--- HandshakeResp41 --->|                        |  (이제부터 TLS 위에서 전송)
+  |                        |--- SSLRequest(32B) --->|  (Proxy가 서버로 재전송)
+  |                        |      [TLS Handshake]   |  (Backend 측 TLS upgrade)
+  |                        |--- HandshakeResp41 --->|  (서버에 auth 데이터 전송)
+  |                        |<-- OK/ERR/AuthSwitch --|
+  |<-- relay --------------|                        |
+```
+
+#### 핵심 변경사항
+
+1. **AsyncStream에 `upgrade_to_ssl()` 메서드** (계획):
+   ```cpp
+   // TCP 소켓을 in-place로 TLS stream으로 업그레이드
+   auto upgrade_to_ssl(ssl::context& ctx, const std::string& sni_name)
+       -> boost::asio::awaitable<std::expected<void, ParseError>>;
+   ```
+   - 평문 tcp::socket을 ssl::stream<tcp::socket>으로 변환
+   - 기존 `std::visit` 기반 호출 유지로 투명성 보장
+
+2. **HandshakeRelay 상태 머신 확장** (계획):
+   - 기존: `kWaitServerGreeting` → `kWaitClientResponse` → ... → `kDone`
+   - 새 상태: `kWaitClientSSLRequest` (CLIENT_SSL 선택 시)
+   - SSLRequest 감지 후 `stream.upgrade_to_ssl()` 호출
+
+3. **CLIENT_SSL 비트 조건부 유지** (계획):
+   - Backend SSL 설정 활성화 시: `CLIENT_SSL` 비트 유지
+   - Backend SSL 미설정 시: `CLIENT_SSL` 비트 제거 (기존 동작)
+   - `Session::backend_ssl_ctx_`를 기준으로 판정
+
+4. **신규 함수: SSLRequest 생성 및 검증** (계획):
+   - SSLRequest는 fixed 32B: capability(4) + max_packet(4) + charset(1) + reserved(23)
+   - auth_data/username/db_name 없음
+   - Proxy가 양쪽 SSLRequest를 독립적으로 생성 가능
+
+5. **Fail-close 원칙** (계획):
+   - TLS 핸드셰이크 실패 시 세션 즉시 종료
+   - 부분 업그레이드 상태에서 롤백 불가능
+
+#### 단계적 구현 계획
+
+**Phase 3.1**: `AsyncStream::upgrade_to_ssl()` 메서드 추가
+- 호출: `stream.upgrade_to_ssl(ssl_ctx, sni_hostname)`
+- 반환: `awaitable<expected<void, ParseError>>`
+- 평문 모드에서만 호출 (이미 TLS면 오류)
+
+**Phase 3.2**: HandshakeRelay에 SSL upgrade 상태 추가
+- `detail::HandshakeState`에 `kWaitClientSSLRequest` 추가
+- SSLRequest 패킷 감지 로직
+- Frontend/Backend 간 독립적 upgrade
+
+**Phase 3.3**: Session::run()에서 MySQL 프로토콜 기반 upgrade 처리
+- Backend SSL 설정 시 handshake 루프 내에서 upgrade 트리거
+- 기존 TCP 레벨 upgrade는 MySQL protocol level로 전환
+
+**Phase 3.4**: 테스트 & 호환성 검증
+- mysql-connector-python / JDBC / mysql-connector-java 호환성 검증
+- `CLIENT_SSL` 비트 제거/유지 시나리오 테스트
+
+### 제약사항 및 한계
+
+1. **현재 미구현 (Phase 3 예정)**:
+   - SSLRequest 패킷 파싱/생성
+   - MySQL 프로토콜 레벨 upload 상태 머신
+   - AsyncStream::upgrade_to_ssl()
+
+2. **기존 기능과의 호환성**:
+   - TCP 레벨 TLS (현재): 계속 지원
+   - MySQL 프로토콜 레벨 TLS: 신규 모드 (향후)
+   - 동시 활성화 불가 (둘 중 하나만 선택)
+
+3. **준비 증거**:
+   - ADR-007의 `AsyncStream` 설계가 protocol-agnostic 이므로 확장 가능
+   - `Session::backend_ssl_ctx_` 존재로 backend SSL config 이미 지원
+
 ## References
 
 ### 구현 파일
 
-- `src/common/async_stream.hpp` — AsyncStream 클래스 정의
+- `src/common/async_stream.hpp` — AsyncStream 클래스 정의 (Phase 3에서 `upgrade_to_ssl()` 메서드 추가 예정)
 - `src/common/async_stream.cpp` — AsyncStream 메서드 구현
-- `src/protocol/handshake.hpp` — HandshakeRelay 인터페이스 변경
-- `src/proxy/session.hpp` — Session 생성자/필드 변경
-- `src/proxy/proxy_server.hpp` — ProxyConfig 구조 정의 (frontend_ssl_*, backend_ssl_*, upstream_ssl_sni 필드)
+- `src/protocol/handshake.hpp` — HandshakeRelay 인터페이스
+- `src/protocol/handshake.cpp` (라인 125-168, 178-205) — 현재 CLIENT_SSL 비트 제거 로직 (Phase 3에서 조건부 유지로 변경 예정)
+- `src/proxy/session.hpp` — Session 생성자/필드
+- `src/proxy/session.cpp` (라인 838-938) — 현재 TCP 레벨 backend SSL 업그레이드 (Phase 3에서 MySQL protocol level로 전환 예정)
+- `src/proxy/proxy_server.hpp` — ProxyConfig 구조 정의
 
 ### 관련 문서
 
 - `docs/architecture.md` — SSL/TLS 아키텍처 다이어그램
 - `docs/interface-reference.md` — HandshakeRelay 인터페이스 레퍼런스
 - `CLAUDE.md` — C++ 아키텍처 규칙 (Module Dependency)
+
+### MySQL 프로토콜 참고
+
+- [MySQL 핸드셰이크 프로토콜](https://dev.mysql.com/doc/internals/en/connection-phase.html)
+- `CLIENT_SSL` capability flag (0x0800)
+- SSLRequest packet: 32 bytes fixed (capability + max_packet + charset + reserved, no auth data)
 
 ### Boost.Asio 참고
 
