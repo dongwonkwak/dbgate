@@ -128,8 +128,13 @@ sequenceDiagram
 ```
 
 **HandshakeRelay의 역할:**
-- 클라이언트 ↔ 서버 간 패킷을 투명하게 릴레이
+- 클라이언트 ↔ 서버 간 패킷을 투명하게 릴레이 (MySQL 프로토콜 레벨 SSL 업그레이드 지원)
 - auth plugin 메커니즘 개입 없음 (호환성 최대화)
+- MySQL 프로토콜 레벨 SSL 업그레이드 (SSLRequest) 수행 (DON-79):
+  - Backend SSL: 서버 greeting 수신 후 SSLRequest 전송 → Backend TLS 업그레이드
+  - Frontend SSL: 클라이언트가 SSLRequest 발송 시 → Frontend TLS 업그레이드 → HandshakeResponse41 재읽기
+  - seq_id 자동 보정: Frontend/Backend 간 시퀀스 번호 델타 추적 및 적용
+  - Fail-close: TLS 핸드셰이크 실패 시 세션 즉시 종료
 - 핸드셰이크 완료 후 SessionContext 채우기:
   - `db_user`: HandshakeResponse에서 추출
   - `db_name`: 초기 접속 DB 이름
@@ -292,7 +297,7 @@ try {
 | `common/types.hpp` | ✓ 완료 | SessionContext, ParseError 등 공통 타입 |
 | `common/async_stream.hpp` | ✓ 완료 | **TCP/TLS 타입 소거 래퍼; async_read_some/write_some/handshake/shutdown (DON-31)** |
 | `protocol/mysql_packet.hpp` | ✓ 완료 | MySQL 패킷 파싱/직렬화 |
-| `protocol/handshake.hpp` | ✓ 완료 | **핸드셰이크 패스스루, relay_handshake(AsyncStream&, AsyncStream&, ...) (DON-31)** |
+| `protocol/handshake.hpp` | ✓ 완료 | **핸드셰이크 패스스루 + MySQL 프로토콜 레벨 SSL 업그레이드 (DON-31, DON-79)** |
 | `protocol/command.hpp` | ✓ 완료 | CommandType 추출, COM_QUERY 파싱 |
 | `parser/` | ✓ 완료 | SQL 파싱, Injection 탐지, 프로시저 탐지 |
 | `policy/` | ✓ 완료 | 정책 엔진, YAML 로더, Hot Reload |
