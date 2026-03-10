@@ -238,28 +238,6 @@ auto strip_unsupported_client_capabilities(const MysqlPacket& pkt, bool keep_cli
 }
 
 // -----------------------------------------------------------------------
-// write_packet
-//   MysqlPacket을 serialize()한 뒤 소켓에 비동기 전송한다.
-// -----------------------------------------------------------------------
-auto write_packet(AsyncStream& stream, const MysqlPacket& pkt)
-    -> boost::asio::awaitable<std::expected<void, ParseError>> {
-    const auto bytes = pkt.serialize();
-    boost::system::error_code ec;
-
-    co_await boost::asio::async_write(stream,
-                                      boost::asio::buffer(bytes),
-                                      boost::asio::redirect_error(boost::asio::use_awaitable, ec));
-
-    if (ec) {
-        co_return std::unexpected(ParseError{.code = ParseErrorCode::kInternalError,
-                                             .message = "failed to write packet",
-                                             .context = ec.message()});
-    }
-
-    co_return std::expected<void, ParseError>{};
-}
-
-// -----------------------------------------------------------------------
 // write_raw_bytes
 //   원시 바이트를 소켓에 비동기 전송한다.
 // -----------------------------------------------------------------------
