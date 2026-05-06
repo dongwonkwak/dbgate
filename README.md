@@ -3,12 +3,28 @@
 [![C++ CI](https://github.com/dongwonkwak/dbgate/actions/workflows/ci.yml/badge.svg)](https://github.com/dongwonkwak/dbgate/actions/workflows/ci.yml)
 [![Go CI](https://github.com/dongwonkwak/dbgate/actions/workflows/go.yml/badge.svg)](https://github.com/dongwonkwak/dbgate/actions/workflows/go.yml)
 [![Lint](https://github.com/dongwonkwak/dbgate/actions/workflows/lint.yml/badge.svg)](https://github.com/dongwonkwak/dbgate/actions/workflows/lint.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Language: C++23](https://img.shields.io/badge/C%2B%2B-23-blue.svg)](https://en.cppreference.com/w/cpp/23)
+[![Language: Go](https://img.shields.io/badge/Go-1.25%2B-00ADD8.svg)](https://golang.org/)
 
-MySQL 클라이언트와 서버 사이에 위치하는 **DB 접근제어 프록시**. SQL을 실시간으로 파싱하고 정책 기반으로 차단/허용/로깅을 수행한다.
+**DB 접근제어 프록시(DB Access Control Proxy)** — MySQL 클라이언트와 서버 사이에 위치하여 SQL을 실시간 파싱하고 정책 기반으로 차단·허용·로깅한다.
 
 높은 성능이 요구되는 데이터패스(data path)는 **C++23**(Boost.Asio, 코루틴)으로, 운영 편의성이 중요한 컨트롤플레인(control plane)은 **Go**로 구현되어 있으며, 두 컴포넌트는 Unix Domain Socket으로 통신한다.
 
 Network DLP 개발 경험을 DB 접근제어 도메인에 적용한 포트폴리오 프로젝트. DBSAFER 같은 상용 DB 보안 솔루션의 핵심 기능(SQL 파싱, 정책 기반 차단, 감사 로그)을 C++23/Go로 직접 구현.
+
+## 기술 스택
+
+| 영역 | 기술 |
+|------|------|
+| 코어 언어 | C++23 (Boost.Asio 비동기 I/O, 코루틴) |
+| 운영 도구 | Go 1.25+ (CLI, Dashboard) |
+| 빌드 시스템 | CMake 3.25+, vcpkg, CMakePresets |
+| 컨테이너·배포 | Docker, docker-compose, HAProxy (다중 인스턴스 라우팅) |
+| 정적 분석·포맷 | clang-tidy, clang-format, golangci-lint |
+| 동적 분석 | AddressSanitizer (ASan), ThreadSanitizer (TSan) — GitHub Actions CI 빌드 검증 |
+| 테스트 | C++ 단위/통합/퍼즈 테스트, sysbench 벤치마크 |
+| CI | GitHub Actions (C++ / Go / Lint 분리 파이프라인) |
 
 ## 아키텍처
 
@@ -34,20 +50,12 @@ Client ──► HAProxy(:13306) ──┬── dbgate-1 ──► MySQL Primar
 
 ## 주요 기능
 
-- **SQL 구문 분류 및 차단**: SELECT, INSERT, UPDATE, DELETE, DROP, TRUNCATE 등 구문별 접근 제어
-- **SQL Injection 탐지**: 정규식 패턴 기반 (Boolean-based, Time-based, UNION SELECT)
-- **프로시저 제어**: whitelist/blacklist 모드, 동적 SQL(`PREPARE`/`EXECUTE`) 차단
-- **사용자/IP/시간대별 접근 제어**: CIDR 기반 IP 필터, 시간대 제한, 테이블별 권한
-- **스키마 접근 차단**: `information_schema`, `mysql`, `performance_schema`, `sys` 보호
-- **정책 Hot Reload**: SIGHUP 시그널로 재시작 없이 정책 변경 반영
-- **Fail-Close 원칙**: 파싱 실패, 정책 오류, 미분류 SQL 등 불확실한 상황에서 항상 차단
-- **SSL/TLS**: Frontend(클라이언트↔프록시), Backend(프록시↔MySQL) 독립 TLS 지원
-- **투명 인증 릴레이**: 핸드셰이크를 패스스루하여 auth plugin에 개입하지 않음
-- **웹 대시보드**: Go + htmx 기반 실시간 모니터링 (QPS, 차단율, 세션 현황)
-- **CLI 도구**: 세션 조회, 통계, 정책 리로드 등 운영 명령
-- **Policy Explain / Dry-run API**: 정책 적용 시뮬레이션 및 설명 생성
-- **Staged Rollout**: 정책 변경 시 monitor 모드→enforce 모드 단계적 전환
-- **정책 버전 관리 및 즉시 롤백**: 정책 변경 이력 관리 및 빠른 복구
+| 카테고리 | 기능 |
+|----------|------|
+| **프로토콜 처리** | 투명 인증 릴레이 (핸드셰이크 패스스루, auth plugin 개입 없음) / Frontend·Backend 독립 SSL/TLS |
+| **정책 엔진** | SQL 구문 분류·차단 (SELECT·INSERT·UPDATE·DELETE·DROP·TRUNCATE) / 사용자·IP·시간대별 접근 제어 (CIDR·테이블 권한) / 스키마 접근 차단 / 정책 Hot Reload (SIGHUP) / Staged Rollout (monitor→enforce) / 정책 버전 관리 및 즉시 롤백 / Fail-Close 원칙 |
+| **탐지** | SQL Injection 탐지 (Boolean-based·Time-based·UNION SELECT 정규식 패턴) / 프로시저 제어 (whitelist/blacklist 모드, 동적 SQL `PREPARE`/`EXECUTE` 차단) |
+| **운영·관측** | 웹 대시보드 (Go+htmx, QPS·차단율·세션 현황) / CLI 도구 (세션 조회·통계·정책 리로드) / Policy Explain/Dry-run API |
 
 ## Quick Start
 
